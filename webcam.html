@@ -1,0 +1,425 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Fast SAM 3D Body Live Mesh</title>
+  <style>
+    body {
+      margin: 0;
+      background: #111;
+      color: white;
+      font-family: sans-serif;
+    }
+
+    #controls {
+      padding: 12px;
+    }
+
+    button {
+      padding: 10px 18px;
+      font-size: 16px;
+    }
+
+    #status {
+      margin-top: 10px;
+      white-space: pre-wrap;
+    }
+
+    #views {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 8px;
+      padding: 8px;
+      height: calc(100vh - 110px);
+    }
+
+    video, #overlay, #mesh {
+      width: 100%;
+      height: 100%;
+      min-height: 400px;
+      object-fit: contain;
+      background: black;
+      border: 1px solid #555;
+    }
+
+    canvas.capture {
+      display: none;
+    }
+  </style>
+</head>
+
+<body>
+  <div id="controls">
+    <button id="start">Start webcam and inference</button>
+    <button id="stop" disabled>Stop webcam</button>
+    <div id="status">Waiting to start</div>
+  </div>
+
+  <div id="views">
+    <video id="video" autoplay playsinline muted></video>
+    <canvas id="overlay"></canvas>
+    <div id="mesh"></div>
+  </div>
+
+  <canvas id="capture" class="capture"></canvas>
+
+  <script type="module">
+    import * as THREE from
+      "https://esm.sh/three@0.180.0";
+
+    import { OrbitControls } from
+      "https://esm.sh/three@0.180.0/examples/jsm/controls/OrbitControls.js";
+
+    const button = document.getElementById("start");
+    const stopButton = document.getElementById("stop");
+    const video = document.getElementById("video");
+    const status = document.getElementById("status");
+    const capture = document.getElementById("capture");
+    const context = capture.getContext("2d");
+    const overlayCanvas = document.getElementById("overlay");
+    const overlayContext = overlayCanvas.getContext("2d");
+    const meshView = document.getElementById("mesh");
+
+    let renderer;
+    let scene;
+    let camera;
+    let controls;
+    let bodyMesh;
+    let topology;
+    let lastMeshId = 0;
+    let framesSent = 0;
+    let uploadBusy = false;
+    let running = false;
+    let mediaStream = null;
+    let meshFramed = false;
+
+    function initializeRenderer() {
+      scene = new THREE.Scene();
+      scene.background = new THREE.Color(0x101010);
+
+      camera = new THREE.PerspectiveCamera(
+        45,
+        meshView.clientWidth / meshView.clientHeight,
+        0.01,
+        100
+      );
+
+      camera.position.set(0, 0, 4);
+
+      renderer = new THREE.WebGLRenderer({
+        antialias: true,
+        alpha: false
+      });
+
+      renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+      renderer.setSize(
+        meshView.clientWidth,
+        meshView.clientHeight
+      );
+
+      meshView.appendChild(renderer.domElement);
+
+      controls = new OrbitControls(camera, renderer.domElement);
+      controls.enableDamping = true;
+
+      scene.add(new THREE.HemisphereLight(
+        0xffffff,
+        0x303030,
+        2.5
+      ));
+
+      const directional = new THREE.DirectionalLight(
+        0xffffff,
+        2.0
+      );
+
+      directional.position.set(2, 3, 4);
+      scene.add(directional);
+
+      window.addEventListener("resize", resizeRenderer);
+
+      function animate() {
+        requestAnimationFrame(animate);
+        controls.update();
+        renderer.render(scene, camera);
+      }
+
+      animate();
+    }
+
+    function resizeRenderer() {
+      if (!renderer) return;
+
+      const width = meshView.clientWidth;
+      const height = meshView.clientHeight;
+
+      camera.aspect = width / height;
+      camera.updateProjectionMatrix();
+      renderer.setSize(width, height);
+    }
+
+    async function loadTopology() {
+      const response = await fetch("/topology");
+
+      if (!response.ok) {
+        throw new Error(
+          "Topology unavailable: HTTP " + response.status
+        );
+      }
+
+      topology = await response.json();
+
+      if (!topology.ready) {
+        throw new Error("Estimator is not ready");
+      }
+
+      const geometry = new THREE.BufferGeometry();
+
+      geometry.setAttribute(
+        "position",
+        new THREE.BufferAttribute(
+          new Float32Array(topology.vertex_count * 3),
+          3
+        )
+      );
+
+      geometry.setIndex(
+        new THREE.BufferAttribute(
+          new Uint32Array(topology.faces),
+          1
+        )
+      );
+
+      const material = new THREE.MeshStandardMaterial({
+        color: 0x4aa3ff,
+        roughness: 0.65,
+        metalness: 0.05,
+        side: THREE.DoubleSide
+      });
+
+      bodyMesh = new THREE.Mesh(geometry, material);
+      bodyMesh.rotation.z = Math.PI;
+      bodyMesh.rotation.y = Math.PI;
+      scene.add(bodyMesh);
+    }
+
+    function updateMesh(vertexValues) {
+      const positions = bodyMesh.geometry.attributes.position.array;
+      positions.set(vertexValues);
+
+      bodyMesh.geometry.attributes.position.needsUpdate = true;
+      if (lastMeshId % 5 === 0) bodyMesh.geometry.computeVertexNormals();
+      bodyMesh.geometry.computeBoundingBox();
+      bodyMesh.geometry.computeBoundingSphere();
+
+      const center = new THREE.Vector3();
+      bodyMesh.geometry.boundingBox.getCenter(center);
+
+      bodyMesh.position.set(
+        center.x,
+        center.y,
+        -center.z
+      );
+
+      const radius = bodyMesh.geometry.boundingSphere.radius;
+
+      if (radius > 0 && !meshFramed) {
+        camera.position.set(0, 0, radius * 3.0);
+        camera.near = Math.max(radius / 100, 0.001);
+        camera.far = radius * 100;
+        camera.updateProjectionMatrix();
+        controls.target.set(0, 0, 0);
+        controls.update();
+        meshFramed = true;
+      }
+    }
+
+    function updateOverlay(vertices, predCamT, focalLength) {
+      if (!video.videoWidth || !topology) return;
+
+      const width = 640;
+      const height = Math.round(
+        width * video.videoHeight / video.videoWidth
+      );
+
+      overlayCanvas.width = width;
+      overlayCanvas.height = height;
+
+      overlayContext.drawImage(video, 0, 0, width, height);
+
+      const cx = width / 2;
+      const cy = height / 2;
+      const projected = new Float32Array(topology.vertex_count * 2);
+
+      for (let i = 0; i < topology.vertex_count; i++) {
+        const j = i * 3;
+        const x = vertices[j] + predCamT[0];
+        const y = vertices[j + 1] + predCamT[1];
+        const z = vertices[j + 2] + predCamT[2];
+        const k = i * 2;
+
+        projected[k] = focalLength * x / z + cx;
+        projected[k + 1] = focalLength * y / z + cy;
+      }
+
+      overlayContext.strokeStyle = "rgba(0, 255, 255, 0.55)";
+      overlayContext.lineWidth = 0.7;
+      overlayContext.beginPath();
+
+      const faces = topology.faces;
+
+      for (let i = 0; i < faces.length; i += 24) {
+        const a = faces[i] * 2;
+        const b = faces[i + 1] * 2;
+        const c = faces[i + 2] * 2;
+
+        overlayContext.moveTo(projected[a], projected[a + 1]);
+        overlayContext.lineTo(projected[b], projected[b + 1]);
+        overlayContext.lineTo(projected[c], projected[c + 1]);
+        overlayContext.closePath();
+      }
+
+      overlayContext.stroke();
+    }
+
+    async function pollMesh() {
+      if (!running) return;
+
+      try {
+        const response = await fetch(
+          "/mesh?after=" + lastMeshId,
+          { cache: "no-store" }
+        );
+
+        if (response.status === 200) {
+          const buffer = await response.arrayBuffer();
+          const vertices = new Float32Array(buffer);
+          const meshId = Number(response.headers.get("X-Mesh-Id"));
+          const sourceFrameId = Number(
+            response.headers.get("X-Source-Frame-Id")
+          );
+          const inferenceSeconds = Number(
+            response.headers.get("X-Inference-Seconds")
+          );
+          const predCamT = response.headers.get("X-Pred-Cam-T").split(",").map(Number);
+          const focalLength = Number(response.headers.get("X-Focal-Length"));
+          const captureTimestampMs = Number(
+            response.headers.get("X-Capture-Timestamp-Ms")
+          );
+          const endToEndMs = Date.now() - captureTimestampMs;
+
+          lastMeshId = meshId;
+          updateMesh(vertices);
+          updateOverlay(vertices, predCamT, focalLength);
+
+          status.textContent =
+            "Camera active" +
+            " | frames sent: " + framesSent +
+            " | mesh: " + meshId +
+            " | source frame: " + sourceFrameId +
+            " | inference: " +
+            inferenceSeconds.toFixed(3) + " s" + " | end-to-end: " + endToEndMs + " ms";
+        }
+      } catch (error) {
+        status.textContent =
+          "Mesh polling error: " + error.message;
+      }
+
+      window.setTimeout(pollMesh, 100);
+    }
+
+    async function sendFrame() {
+      if (!running || uploadBusy || !video.videoWidth) return;
+
+      uploadBusy = true;
+      const captureTimestampMs = Date.now();
+
+      capture.width = 640;
+      capture.height = Math.round(
+        640 * video.videoHeight / video.videoWidth
+      );
+
+      context.drawImage(
+        video,
+        0,
+        0,
+        capture.width,
+        capture.height
+      );
+
+      capture.toBlob(async blob => {
+        try {
+          if (!blob) return;
+
+          const response = await fetch("/frame", {
+            method: "POST",
+            headers: {
+              "Content-Type": "image/jpeg",
+              "X-Capture-Timestamp-Ms": String(captureTimestampMs)
+            },
+            body: blob
+          });
+
+          if (response.ok) {
+            framesSent++;
+          } else {
+            status.textContent =
+              "Frame upload failed: HTTP " + response.status;
+          }
+        } catch (error) {
+          status.textContent =
+            "Frame upload error: " + error.message;
+        } finally {
+          uploadBusy = false;
+        }
+      }, "image/jpeg", 0.80);
+    }
+
+    stopButton.onclick = () => {
+      running = false;
+      if (mediaStream) mediaStream.getTracks().forEach(track => track.stop());
+      mediaStream = null;
+      video.srcObject = null;
+      stopButton.disabled = true;
+      button.disabled = false;
+      status.textContent = "Webcam stopped";
+    };
+
+    button.onclick = async () => {
+      try {
+        button.disabled = true;
+        status.textContent = "Starting camera...";
+
+        mediaStream =
+          await navigator.mediaDevices.getUserMedia({
+            video: {
+              width: { ideal: 1280 },
+              height: { ideal: 720 }
+            },
+            audio: false
+          });
+
+        video.srcObject = mediaStream;
+        await video.play();
+
+        initializeRenderer();
+        status.textContent = "Loading mesh topology...";
+
+        await loadTopology();
+
+        running = true;
+        stopButton.disabled = false;
+        status.textContent =
+          "Camera active. Waiting for first mesh...";
+
+        window.setInterval(sendFrame, 275);
+        pollMesh();
+      } catch (error) {
+        button.disabled = false;
+        status.textContent =
+          error.name + ": " + error.message;
+      }
+    };
+  </script>
+</body>
+</html>
