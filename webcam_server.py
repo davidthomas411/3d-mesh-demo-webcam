@@ -70,8 +70,11 @@ def inference_worker():
         if item is None:
             continue
 
-        current_frame_id, client_timestamp_ms, jpeg_bytes = item
+        current_frame_id, client_timestamp_ms, encode_ms, server_receive_ns, jpeg_bytes = item
+        worker_take_ns = time.perf_counter_ns()
+        queue_wait_ms = (worker_take_ns - server_receive_ns) / 1e6
 
+        decode_start_ns = time.perf_counter_ns()
         image = cv2.imdecode(
             np.frombuffer(jpeg_bytes, dtype=np.uint8),
             cv2.IMREAD_COLOR,
@@ -83,6 +86,7 @@ def inference_worker():
             continue
 
         image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        decode_ms = (time.perf_counter_ns() - decode_start_ns) / 1e6
 
         start = time.perf_counter()
 
@@ -119,6 +123,9 @@ def inference_worker():
                     "mesh_id": mesh_id,
                     "source_frame_id": current_frame_id,
                     "vertices": vertices,
+                    "encode_ms": float(encode_ms),
+                    "queue_wait_ms": queue_wait_ms,
+                    "decode_ms": decode_ms,
                     "pred_cam_t": to_numpy(outputs[0]["pred_cam_t"]).reshape(-1),
                     "focal_length": float(np.asarray(outputs[0]["focal_length"]).reshape(-1)[0]),
                     "client_timestamp_ms": client_timestamp_ms,
@@ -149,8 +156,10 @@ def receive_frame():
     global frame_id
     global dropped_frames
 
+    server_receive_ns = time.perf_counter_ns()
     jpeg_bytes = request.get_data(cache=False)
     client_timestamp_ms = request.headers.get("X-Capture-Timestamp-Ms", "")
+    encode_ms = request.headers.get("X-Encode-Ms", "0")
 
     if len(jpeg_bytes) < 100:
         return Response("Invalid frame", status=400)
@@ -159,7 +168,7 @@ def receive_frame():
         frame_id += 1
         if latest_frame is not None:
             dropped_frames += 1
-        latest_frame = (frame_id, client_timestamp_ms, jpeg_bytes)
+        latest_frame = (frame_id, client_timestamp_ms, encode_ms, server_receive_ns, jpeg_bytes)
         accepted_frame_id = frame_id
 
     frame_event.set()
@@ -200,6 +209,9 @@ def mesh():
     response.headers["X-Mesh-Id"] = str(current["mesh_id"])
     response.headers["X-Source-Frame-Id"] = str(current["source_frame_id"])
     response.headers["X-Inference-Seconds"] = str(inference_seconds)
+    response.headers["X-Encode-Ms"] = str(current["encode_ms"])
+    response.headers["X-Queue-Wait-Ms"] = str(current["queue_wait_ms"])
+    response.headers["X-Decode-Ms"] = str(current["decode_ms"])
     response.headers["X-Capture-Timestamp-Ms"] = current["client_timestamp_ms"]
     response.headers["X-Pred-Cam-T"] = ",".join(map(str, current["pred_cam_t"]))
     response.headers["X-Focal-Length"] = str(current["focal_length"])

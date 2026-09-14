@@ -53,6 +53,7 @@
     <button id="start">Start webcam and inference</button>
     <button id="stop" disabled>Stop webcam</button>
     <div id="status">Waiting to start</div>
+    <pre id="latencyHud">Latency HUD: waiting for data</pre>
   </div>
 
   <div id="views">
@@ -74,6 +75,7 @@
     const stopButton = document.getElementById("stop");
     const video = document.getElementById("video");
     const status = document.getElementById("status");
+    const latencyHud = document.getElementById("latencyHud");
     const capture = document.getElementById("capture");
     const context = capture.getContext("2d");
     const overlayCanvas = document.getElementById("overlay");
@@ -92,6 +94,60 @@
     let running = false;
     let mediaStream = null;
     let meshFramed = false;
+    let latestEncodeMs = 0;
+    const latencyHistory = { encode: [], queue: [], decode: [], inference: [], transfer: [], render: [], endToEnd: [] };
+
+    function recordLatency(name, value) {
+      if (!Number.isFinite(value)) return;
+      const values = latencyHistory[name];
+      values.push(value);
+      if (values.length > 120) values.shift();
+    }
+
+    function latencyStats(name) {
+      const values = latencyHistory[name];
+      if (!values.length) {
+        return { current: 0, median: 0, p90: 0 };
+      }
+
+      const sorted = [...values].sort((a, b) => a - b);
+      const percentile = p =>
+        sorted[Math.min(
+          sorted.length - 1,
+          Math.floor((sorted.length - 1) * p)
+        )];
+
+      return {
+        current: values[values.length - 1],
+        median: percentile(0.50),
+        p90: percentile(0.90)
+      };
+    }
+
+    function formatLatencyRow(label, name) {
+      const x = latencyStats(name);
+      return (
+        label.padEnd(18) +
+        x.current.toFixed(1).padStart(8) +
+        x.median.toFixed(1).padStart(9) +
+        x.p90.toFixed(1).padStart(9)
+      );
+    }
+
+    function updateLatencyHud() {
+      latencyHud.textContent = [
+        "LATENCY HUD          NOW   MEDIAN      P90",
+        "-------------------------------------------",
+        formatLatencyRow("JPEG encode", "encode"),
+        formatLatencyRow("Server queue", "queue"),
+        formatLatencyRow("JPEG decode", "decode"),
+        formatLatencyRow("Inference", "inference"),
+        formatLatencyRow("Mesh transfer", "transfer"),
+        formatLatencyRow("Browser render", "render"),
+        "-------------------------------------------",
+        formatLatencyRow("Capture to render", "endToEnd")
+      ].join("\n") + "\nAll values in milliseconds";
+    }
 
     function initializeRenderer() {
       scene = new THREE.Scene();
@@ -286,6 +342,7 @@
       if (!running) return;
 
       try {
+        const meshFetchStartMs = performance.now();
         const response = await fetch(
           "/mesh?after=" + lastMeshId,
           { cache: "no-store" }
@@ -293,11 +350,15 @@
 
         if (response.status === 200) {
           const buffer = await response.arrayBuffer();
+          const transferMs = performance.now() - meshFetchStartMs;
           const vertices = new Float32Array(buffer);
           const meshId = Number(response.headers.get("X-Mesh-Id"));
           const sourceFrameId = Number(
             response.headers.get("X-Source-Frame-Id")
           );
+          const encodeMs = Number(response.headers.get("X-Encode-Ms"));
+          const queueWaitMs = Number(response.headers.get("X-Queue-Wait-Ms"));
+          const decodeMs = Number(response.headers.get("X-Decode-Ms"));
           const inferenceSeconds = Number(
             response.headers.get("X-Inference-Seconds")
           );
@@ -309,8 +370,19 @@
           const endToEndMs = Date.now() - captureTimestampMs;
 
           lastMeshId = meshId;
+          const renderStartMs = performance.now();
           updateMesh(vertices);
           updateOverlay(vertices, predCamT, focalLength);
+          const renderMs = performance.now() - renderStartMs;
+          const captureToRenderMs = Date.now() - captureTimestampMs;
+          recordLatency("encode", encodeMs);
+          recordLatency("queue", queueWaitMs);
+          recordLatency("decode", decodeMs);
+          recordLatency("inference", inferenceSeconds * 1000);
+          recordLatency("transfer", transferMs);
+          recordLatency("render", renderMs);
+          recordLatency("endToEnd", captureToRenderMs);
+          updateLatencyHud();
 
           status.textContent =
             "Camera active" +
@@ -347,7 +419,9 @@
         capture.height
       );
 
+      const encodeStartMs = performance.now();
       capture.toBlob(async blob => {
+        latestEncodeMs = performance.now() - encodeStartMs;
         try {
           if (!blob) return;
 
@@ -355,7 +429,8 @@
             method: "POST",
             headers: {
               "Content-Type": "image/jpeg",
-              "X-Capture-Timestamp-Ms": String(captureTimestampMs)
+              "X-Capture-Timestamp-Ms": String(captureTimestampMs),
+              "X-Encode-Ms": latestEncodeMs.toFixed(3)
             },
             body: blob
           });
