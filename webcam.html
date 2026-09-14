@@ -45,6 +45,66 @@
     canvas.capture {
       display: none;
     }
+
+    /* Teams-friendly demo layout */
+    #controls {
+      display: grid;
+      grid-template-columns: auto auto 1fr;
+      gap: 10px;
+      align-items: start;
+      padding: 12px 16px;
+    }
+
+    #status {
+      grid-column: 3;
+      margin: 0;
+      font-size: 18px;
+      font-weight: 600;
+    }
+
+    #latencyHud {
+      grid-column: 1 / -1;
+      margin: 4px 0 0;
+      padding: 12px 16px;
+      background: #181818;
+      border: 1px solid #555;
+      color: #7dff9b;
+      font: 700 20px/1.35 monospace;
+      white-space: pre;
+      overflow-x: auto;
+    }
+
+    #views {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+      padding: 0 10px 10px;
+      height: calc(100vh - 325px);
+      min-height: 520px;
+    }
+
+    #leftViews {
+      display: grid;
+      grid-template-rows: 1fr 1fr;
+      gap: 10px;
+      min-width: 0;
+      min-height: 0;
+    }
+
+    #video, #overlay, #mesh {
+      width: 100%;
+      height: 100%;
+      min-height: 0;
+      object-fit: contain;
+      background: #000;
+      border: 1px solid #555;
+      box-sizing: border-box;
+    }
+
+    #mesh {
+      min-width: 0;
+      min-height: 0;
+    }
   </style>
 </head>
 
@@ -53,12 +113,88 @@
     <button id="start">Start webcam and inference</button>
     <button id="stop" disabled>Stop webcam</button>
     <div id="status">Waiting to start</div>
-    <pre id="latencyHud">Latency HUD: waiting for data</pre>
   </div>
 
   <div id="views">
-    <video id="video" autoplay playsinline muted></video>
-    <canvas id="overlay"></canvas>
+    <button id="toggleRuntimePanel" type="button">Hide parameters</button>
+    <div id="runtimePanel">
+      <div class="panelTitle">Runtime Parameters</div>
+
+      <label>
+        Inference mode
+        <select id="inferenceMode">
+          <option value="body" selected>Body only, low latency</option>
+          <option value="full">Full body + hands</option>
+        </select>
+      </label>
+
+      <label>
+        Camera intrinsics
+        <select id="intrinsicsMode">
+          <option value="fixed" selected>Fixed calibrated median</option>
+          <option value="dynamic">Dynamic MoGe per frame</option>
+        </select>
+      </label>
+
+      <div class="controlRow">
+        <button id="recalibrate" type="button">Recalibrate</button>
+        <span id="calibrationStatus">Calibration: unknown</span>
+      </div>
+
+      <label class="checkRow">
+        <input id="lockMeshCenter" type="checkbox" checked>
+        Lock independent 3D center
+      </label>
+
+      <label class="checkRow">
+        <input id="showOverlay" type="checkbox" checked>
+        Show projected overlay
+      </label>
+
+      <label>
+        Overlay density
+        <select id="overlayDensity">
+          <option value="24">Dense</option>
+          <option value="48" selected>Medium</option>
+          <option value="96">Sparse</option>
+        </select>
+      </label>
+
+      <label>
+        Overlay opacity
+        <input id="overlayOpacity"
+               type="range"
+               min="0.2"
+               max="1"
+               step="0.05"
+               value="0.95">
+      </label>
+
+      <label>
+        Overlay line width
+        <input id="overlayLineWidth"
+               type="range"
+               min="0.5"
+               max="4"
+               step="0.25"
+               value="1.5">
+      </label>
+
+      <button id="resetMeshCamera" type="button">
+        Reset 3D camera
+      </button>
+
+      <div id="serverConfig">
+        512 model input · YOLO11m-Pose<br>
+        RTX A6000 · WebSocket · 8 CPU threads
+      </div>
+    </div>
+
+    <pre id="latencyHud">Latency HUD: waiting for data</pre>
+    <div id="leftViews">
+      <video id="video" autoplay playsinline muted></video>
+      <canvas id="overlay"></canvas>
+    </div>
     <div id="mesh"></div>
   </div>
 
@@ -76,11 +212,25 @@
     const video = document.getElementById("video");
     const status = document.getElementById("status");
     const latencyHud = document.getElementById("latencyHud");
+    const toggleRuntimePanel =
+      document.getElementById("toggleRuntimePanel");
+    const runtimePanel =
+      document.getElementById("runtimePanel");
     const capture = document.getElementById("capture");
     const context = capture.getContext("2d");
     const overlayCanvas = document.getElementById("overlay");
     const overlayContext = overlayCanvas.getContext("2d");
     const meshView = document.getElementById("mesh");
+    const inferenceModeSelect = document.getElementById("inferenceMode");
+    const intrinsicsModeSelect = document.getElementById("intrinsicsMode");
+    const recalibrateButton = document.getElementById("recalibrate");
+    const calibrationStatus = document.getElementById("calibrationStatus");
+    const lockMeshCenter = document.getElementById("lockMeshCenter");
+    const showOverlay = document.getElementById("showOverlay");
+    const overlayDensity = document.getElementById("overlayDensity");
+    const overlayOpacity = document.getElementById("overlayOpacity");
+    const overlayLineWidth = document.getElementById("overlayLineWidth");
+    const resetMeshCamera = document.getElementById("resetMeshCamera");
 
     let renderer;
     let scene;
@@ -93,9 +243,13 @@
     let uploadBusy = false;
     let running = false;
     let mediaStream = null;
+    let streamSocket = null;
+    let pendingMeshMetadata = null;
+    let websocketRequestStartMs = 0;
     let meshFramed = false;
     let latestEncodeMs = 0;
-    const latencyHistory = { encode: [], queue: [], decode: [], inference: [], transfer: [], render: [], endToEnd: [] };
+    const latencyHistory = { encode: [], upload: [], intake: [], queue: [], decode: [], inference: [], transfer: [], render: [], endToEnd: [] };
+    const frameTimings = new Map();
 
     function recordLatency(name, value) {
       if (!Number.isFinite(value)) return;
@@ -135,18 +289,35 @@
     }
 
     function updateLatencyHud() {
+      const row = (label, name) => {
+        const x = latencyStats(name);
+        return (
+          label.padEnd(17) +
+          x.current.toFixed(1).padStart(8) +
+          x.median.toFixed(1).padStart(9) +
+          x.p90.toFixed(1).padStart(9)
+        );
+      };
+
       latencyHud.textContent = [
-        "LATENCY HUD          NOW   MEDIAN      P90",
+        "LATENCY             NOW   MEDIAN      P90",
         "-------------------------------------------",
-        formatLatencyRow("JPEG encode", "encode"),
-        formatLatencyRow("Server queue", "queue"),
-        formatLatencyRow("JPEG decode", "decode"),
-        formatLatencyRow("Inference", "inference"),
-        formatLatencyRow("Mesh transfer", "transfer"),
-        formatLatencyRow("Browser render", "render"),
+        "INPUT",
+        row("JPEG encode", "encode"),
+        "",
+        "SERVER / MODEL",
+        row("Server queue", "queue"),
+        row("JPEG decode", "decode"),
+        row("Inference", "inference"),
+        "",
+        "OUTPUT",
+        row("Network + HTTP", "transfer"),
+        row("Browser render", "render"),
         "-------------------------------------------",
-        formatLatencyRow("Capture to render", "endToEnd")
-      ].join("\n") + "\nAll values in milliseconds";
+        row("TOTAL", "endToEnd"),
+        "",
+        "All values in milliseconds"
+      ].join("\n");
     }
 
     function initializeRenderer() {
@@ -260,37 +431,48 @@
     }
 
     function updateMesh(vertexValues) {
-      const positions = bodyMesh.geometry.attributes.position.array;
+      const geometry = bodyMesh.geometry;
+      const positions = geometry.attributes.position.array;
+
       positions.set(vertexValues);
+      geometry.attributes.position.needsUpdate = true;
 
-      bodyMesh.geometry.attributes.position.needsUpdate = true;
-      if (lastMeshId % 5 === 0) bodyMesh.geometry.computeVertexNormals();
-      bodyMesh.geometry.computeBoundingBox();
-      bodyMesh.geometry.computeBoundingSphere();
+      if (!meshFramed || !lockMeshCenter.checked) {
+        geometry.computeVertexNormals();
+        geometry.computeBoundingBox();
+        geometry.computeBoundingSphere();
 
-      const center = new THREE.Vector3();
-      bodyMesh.geometry.boundingBox.getCenter(center);
+        const center = new THREE.Vector3();
+        geometry.boundingBox.getCenter(center);
 
-      bodyMesh.position.set(
-        center.x,
-        center.y,
-        -center.z
-      );
+        bodyMesh.position.set(
+          center.x,
+          center.y,
+          -center.z
+        );
 
-      const radius = bodyMesh.geometry.boundingSphere.radius;
+        const radius = geometry.boundingSphere.radius;
 
-      if (radius > 0 && !meshFramed) {
-        camera.position.set(0, 0, radius * 3.0);
-        camera.near = Math.max(radius / 100, 0.001);
-        camera.far = radius * 100;
-        camera.updateProjectionMatrix();
-        controls.target.set(0, 0, 0);
-        controls.update();
+        if (radius > 0) {
+          camera.position.set(0, 0, radius * 3.0);
+          camera.near = Math.max(radius / 100, 0.001);
+          camera.far = radius * 100;
+          camera.updateProjectionMatrix();
+
+          controls.target.set(0, 0, 0);
+          controls.update();
+        }
+
         meshFramed = true;
       }
     }
 
     function updateOverlay(vertices, predCamT, focalLength) {
+      if (!showOverlay.checked) {
+        overlayCanvas.style.visibility = "hidden";
+        return;
+      }
+      overlayCanvas.style.visibility = "visible";
       if (!video.videoWidth || !topology) return;
 
       const width = 640;
@@ -318,13 +500,16 @@
         projected[k + 1] = focalLength * y / z + cy;
       }
 
-      overlayContext.strokeStyle = "rgba(0, 255, 255, 0.55)";
-      overlayContext.lineWidth = 0.7;
+      overlayContext.strokeStyle =
+        "rgba(180, 255, 0, " + overlayOpacity.value + ")";
+      overlayContext.lineWidth = Number(overlayLineWidth.value);
       overlayContext.beginPath();
 
       const faces = topology.faces;
 
-      for (let i = 0; i < faces.length; i += 24) {
+      const faceStride = Number(overlayDensity.value);
+
+      for (let i = 0; i < faces.length; i += faceStride) {
         const a = faces[i] * 2;
         const b = faces[i + 1] * 2;
         const c = faces[i + 2] * 2;
@@ -338,70 +523,195 @@
       overlayContext.stroke();
     }
 
-    async function pollMesh() {
-      if (!running) return;
+    function sendRuntimeConfig(action, value = null) {
+      if (
+        !streamSocket ||
+        streamSocket.readyState !== WebSocket.OPEN
+      ) {
+        return;
+      }
 
-      try {
-        const meshFetchStartMs = performance.now();
-        const response = await fetch(
-          "/mesh?after=" + lastMeshId,
-          { cache: "no-store" }
+      const message = {
+        type: "config",
+        action: action
+      };
+
+      if (value !== null) {
+        message.value = value;
+      }
+
+      if (action === "recalibrate") {
+        message.frames = 30;
+      }
+
+      streamSocket.send(JSON.stringify(message));
+    }
+
+    function updateCalibrationStatus(metadata) {
+      const calibrated = Boolean(metadata.calibrated);
+      const samples = Number(metadata.calibration_samples || 0);
+
+      calibrationStatus.textContent =
+        calibrated
+          ? "Calibration: ready (" + samples + " samples)"
+          : "Calibration: collecting " + samples + " / 30";
+
+      if (metadata.inference_mode) {
+        inferenceModeSelect.value = metadata.inference_mode;
+      }
+
+      if (metadata.intrinsics_mode) {
+        intrinsicsModeSelect.value = metadata.intrinsics_mode;
+      }
+    }
+
+    function connectStreamSocket() {
+      return new Promise((resolve, reject) => {
+        const protocol =
+          window.location.protocol === "https:" ? "wss:" : "ws:";
+
+        streamSocket = new WebSocket(
+          protocol + "//" + window.location.host + "/stream"
         );
 
-        if (response.status === 200) {
-          const buffer = await response.arrayBuffer();
-          const transferMs = performance.now() - meshFetchStartMs;
-          const vertices = new Float32Array(buffer);
-          const meshId = Number(response.headers.get("X-Mesh-Id"));
-          const sourceFrameId = Number(
-            response.headers.get("X-Source-Frame-Id")
-          );
-          const encodeMs = Number(response.headers.get("X-Encode-Ms"));
-          const queueWaitMs = Number(response.headers.get("X-Queue-Wait-Ms"));
-          const decodeMs = Number(response.headers.get("X-Decode-Ms"));
-          const inferenceSeconds = Number(
-            response.headers.get("X-Inference-Seconds")
-          );
-          const predCamT = response.headers.get("X-Pred-Cam-T").split(",").map(Number);
-          const focalLength = Number(response.headers.get("X-Focal-Length"));
-          const captureTimestampMs = Number(
-            response.headers.get("X-Capture-Timestamp-Ms")
-          );
-          const endToEndMs = Date.now() - captureTimestampMs;
+        streamSocket.binaryType = "arraybuffer";
 
-          lastMeshId = meshId;
+        streamSocket.onopen = () => {
+          status.textContent =
+            "WebSocket connected. Starting inference...";
+
+          sendRuntimeConfig(
+            "set_inference_mode",
+            inferenceModeSelect.value
+          );
+
+          sendRuntimeConfig(
+            "set_intrinsics_mode",
+            intrinsicsModeSelect.value
+          );
+
+          resolve();
+        };
+
+        streamSocket.onerror = () => {
+          reject(new Error("WebSocket connection failed"));
+        };
+
+        streamSocket.onclose = () => {
+          if (running) {
+            status.textContent = "WebSocket disconnected";
+          }
+        };
+
+        streamSocket.onmessage = event => {
+          if (typeof event.data === "string") {
+            const metadata = JSON.parse(event.data);
+
+            if (metadata.error) {
+              uploadBusy = false;
+              status.textContent =
+                "Inference error: " + metadata.error;
+
+              if (running) {
+                window.setTimeout(sendFrame, 0);
+              }
+              return;
+            }
+
+            if (metadata.type === "config") {
+              updateCalibrationStatus(metadata);
+              return;
+            }
+
+            updateCalibrationStatus(metadata);
+            pendingMeshMetadata = metadata;
+            return;
+          }
+
+          if (!pendingMeshMetadata) {
+            uploadBusy = false;
+            status.textContent =
+              "Received mesh without metadata";
+            return;
+          }
+
+          const metadata = pendingMeshMetadata;
+          pendingMeshMetadata = null;
+
+          const requestCycleMs =
+            performance.now() - websocketRequestStartMs;
+
+          const vertices = new Float32Array(event.data);
+          const queueWaitMs = metadata.queue_wait_ms;
+          const decodeMs = metadata.decode_ms;
+          const inferenceMs = metadata.inference_ms;
+          const encodeMs = metadata.encode_ms;
+
+          const networkMs = Math.max(
+            0,
+            requestCycleMs -
+            queueWaitMs -
+            decodeMs -
+            inferenceMs
+          );
+
+          lastMeshId = metadata.mesh_id;
+
           const renderStartMs = performance.now();
+
           updateMesh(vertices);
-          updateOverlay(vertices, predCamT, focalLength);
-          const renderMs = performance.now() - renderStartMs;
-          const captureToRenderMs = Date.now() - captureTimestampMs;
+          updateOverlay(
+            vertices,
+            metadata.pred_cam_t,
+            metadata.focal_length
+          );
+
+          const renderMs =
+            performance.now() - renderStartMs;
+
+          const totalMs =
+            Date.now() -
+            Number(metadata.capture_timestamp_ms);
+
+          framesSent++;
+
           recordLatency("encode", encodeMs);
           recordLatency("queue", queueWaitMs);
           recordLatency("decode", decodeMs);
-          recordLatency("inference", inferenceSeconds * 1000);
-          recordLatency("transfer", transferMs);
+          recordLatency("inference", inferenceMs);
+          recordLatency("transfer", networkMs);
           recordLatency("render", renderMs);
-          recordLatency("endToEnd", captureToRenderMs);
+          recordLatency("endToEnd", totalMs);
           updateLatencyHud();
 
           status.textContent =
             "Camera active" +
-            " | frames sent: " + framesSent +
-            " | mesh: " + meshId +
-            " | source frame: " + sourceFrameId +
+            " | frames: " + framesSent +
+            " | mesh: " + metadata.mesh_id +
             " | inference: " +
-            inferenceSeconds.toFixed(3) + " s" + " | end-to-end: " + endToEndMs + " ms";
-        }
-      } catch (error) {
-        status.textContent =
-          "Mesh polling error: " + error.message;
-      }
+            inferenceMs.toFixed(1) + " ms" +
+            " | end-to-end: " +
+            totalMs.toFixed(0) + " ms";
 
-      window.setTimeout(pollMesh, 100);
+          uploadBusy = false;
+
+          if (running) {
+            window.setTimeout(sendFrame, 0);
+          }
+        };
+      });
     }
 
     async function sendFrame() {
-      if (!running || uploadBusy || !video.videoWidth) return;
+      if (
+        !running ||
+        uploadBusy ||
+        !video.videoWidth ||
+        !streamSocket ||
+        streamSocket.readyState !== WebSocket.OPEN
+      ) {
+        return;
+      }
 
       uploadBusy = true;
       const captureTimestampMs = Date.now();
@@ -419,42 +729,110 @@
         capture.height
       );
 
-      const encodeStartMs = performance.now();
-      capture.toBlob(async blob => {
-        latestEncodeMs = performance.now() - encodeStartMs;
-        try {
-          if (!blob) return;
+      try {
+        const encodeStartMs = performance.now();
 
-          const response = await fetch("/frame", {
-            method: "POST",
-            headers: {
-              "Content-Type": "image/jpeg",
-              "X-Capture-Timestamp-Ms": String(captureTimestampMs),
-              "X-Encode-Ms": latestEncodeMs.toFixed(3)
-            },
-            body: blob
-          });
+        const blob = await new Promise(resolve => {
+          capture.toBlob(resolve, "image/jpeg", 0.80);
+        });
 
-          if (response.ok) {
-            framesSent++;
-          } else {
-            status.textContent =
-              "Frame upload failed: HTTP " + response.status;
-          }
-        } catch (error) {
-          status.textContent =
-            "Frame upload error: " + error.message;
-        } finally {
-          uploadBusy = false;
+        const encodeMs =
+          performance.now() - encodeStartMs;
+
+        if (!blob) {
+          throw new Error("JPEG encoding failed");
         }
-      }, "image/jpeg", 0.80);
+
+        websocketRequestStartMs = performance.now();
+
+        streamSocket.send(JSON.stringify({
+          capture_timestamp_ms: captureTimestampMs,
+          encode_ms: encodeMs
+        }));
+
+        streamSocket.send(blob);
+
+      } catch (error) {
+        uploadBusy = false;
+        status.textContent =
+          "WebSocket frame error: " + error.message;
+
+        if (running) {
+          window.setTimeout(sendFrame, 0);
+        }
+      }
     }
+
+    toggleRuntimePanel.onclick = () => {
+      const isHidden =
+        runtimePanel.style.display === "none";
+
+      runtimePanel.style.display =
+        isHidden ? "" : "none";
+
+      toggleRuntimePanel.textContent =
+        isHidden ? "Hide parameters" : "Show parameters";
+    };
+
+    inferenceModeSelect.onchange = () => {
+      uploadBusy = false;
+      pendingMeshMetadata = null;
+
+      sendRuntimeConfig(
+        "set_inference_mode",
+        inferenceModeSelect.value
+      );
+
+      status.textContent =
+        "Switching inference mode to " +
+        inferenceModeSelect.options[
+          inferenceModeSelect.selectedIndex
+        ].text +
+        ". First use may compile.";
+    };
+
+    intrinsicsModeSelect.onchange = () => {
+      sendRuntimeConfig(
+        "set_intrinsics_mode",
+        intrinsicsModeSelect.value
+      );
+    };
+
+    recalibrateButton.onclick = () => {
+      intrinsicsModeSelect.value = "dynamic";
+      calibrationStatus.textContent =
+        "Calibration: collecting 0 / 30";
+      sendRuntimeConfig("recalibrate");
+    };
+
+    lockMeshCenter.onchange = () => {
+      if (lockMeshCenter.checked) {
+        meshFramed = false;
+      }
+    };
+
+    showOverlay.onchange = () => {
+      overlayCanvas.style.visibility =
+        showOverlay.checked ? "visible" : "hidden";
+    };
+
+    resetMeshCamera.onclick = () => {
+      meshFramed = false;
+    };
 
     stopButton.onclick = () => {
       running = false;
       if (mediaStream) mediaStream.getTracks().forEach(track => track.stop());
       mediaStream = null;
       video.srcObject = null;
+
+      if (streamSocket) {
+        streamSocket.close();
+        streamSocket = null;
+      }
+
+      pendingMeshMetadata = null;
+      uploadBusy = false;
       stopButton.disabled = true;
       button.disabled = false;
       status.textContent = "Webcam stopped";
@@ -482,13 +860,14 @@
 
         await loadTopology();
 
+        await connectStreamSocket();
+
         running = true;
         stopButton.disabled = false;
         status.textContent =
           "Camera active. Waiting for first mesh...";
 
-        window.setInterval(sendFrame, 275);
-        pollMesh();
+        sendFrame();
       } catch (error) {
         button.disabled = false;
         status.textContent =
@@ -498,3 +877,157 @@
   </script>
 </body>
 </html>
+<style>
+  #controls {
+    display: grid;
+    grid-template-columns: auto auto 1fr;
+  }
+
+  #controls #status {
+    grid-column: 3;
+  }
+
+  #views {
+    grid-template-columns: minmax(390px, 0.8fr) minmax(480px, 1.15fr) minmax(480px, 1.15fr);
+    height: calc(100vh - 75px);
+    min-height: 650px;
+  }
+
+  #latencyHud {
+    grid-column: auto;
+    margin: 0;
+    padding: 20px;
+    font: 700 20px/1.55 monospace;
+    white-space: pre;
+    overflow: auto;
+  }
+</style>
+<style>
+  #views {
+    grid-template-columns:
+      minmax(400px, 0.85fr)
+      minmax(480px, 1.1fr)
+      minmax(480px, 1.1fr);
+  }
+
+  #views > :first-child {
+    min-width: 0;
+  }
+
+  #runtimePanel {
+    position: absolute;
+    left: 10px;
+    top: 82px;
+    width: 360px;
+    z-index: 2;
+    padding: 16px;
+    background: rgba(24, 24, 24, 0.96);
+    border: 1px solid #555;
+    border-radius: 8px;
+    box-sizing: border-box;
+    font-size: 16px;
+  }
+
+  #runtimePanel .panelTitle {
+    margin-bottom: 14px;
+    color: #7dff9b;
+    font-size: 21px;
+    font-weight: 700;
+  }
+
+  #runtimePanel label {
+    display: grid;
+    gap: 6px;
+    margin: 12px 0;
+    font-weight: 600;
+  }
+
+  #runtimePanel select,
+  #runtimePanel input[type="range"] {
+    width: 100%;
+    box-sizing: border-box;
+  }
+
+  #runtimePanel select {
+    padding: 8px;
+    color: white;
+    background: #292929;
+    border: 1px solid #666;
+    border-radius: 4px;
+    font-size: 15px;
+  }
+
+  #runtimePanel .checkRow {
+    display: flex;
+    gap: 9px;
+    align-items: center;
+  }
+
+  #runtimePanel .checkRow input {
+    width: 18px;
+    height: 18px;
+  }
+
+  #runtimePanel .controlRow {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    gap: 10px;
+    align-items: center;
+    margin: 12px 0;
+  }
+
+  #runtimePanel button {
+    padding: 8px 12px;
+    font-size: 14px;
+  }
+
+  #calibrationStatus {
+    color: #bbb;
+    font-size: 14px;
+  }
+
+  #serverConfig {
+    margin-top: 14px;
+    padding-top: 12px;
+    border-top: 1px solid #444;
+    color: #aaa;
+    font: 13px/1.45 monospace;
+  }
+
+  #latencyHud {
+    padding-top: 475px;
+    box-sizing: border-box;
+  }
+</style>
+
+<style>
+#views {
+  grid-template-columns: minmax(390px,0.85fr) minmax(480px,1.1fr) minmax(480px,1.1fr);
+  grid-template-rows: auto 1fr;
+  height: calc(100vh - 75px);
+  align-items: stretch;
+}
+#runtimePanel {
+  position: static;
+  grid-column: 1;
+  grid-row: 1;
+  width: auto;
+  margin: 0;
+  z-index: auto;
+}
+#latencyHud {
+  grid-column: 1;
+  grid-row: 2;
+  padding: 18px;
+  margin: 0;
+  min-height: 0;
+}
+#leftViews {
+  grid-column: 2;
+  grid-row: 1 / 3;
+}
+#mesh {
+  grid-column: 3;
+  grid-row: 1 / 3;
+}
+</style>
