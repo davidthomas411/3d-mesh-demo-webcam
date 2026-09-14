@@ -2,7 +2,7 @@
 
 Live browser webcam inference using Fast SAM 3D Body on a remote NVIDIA GPU server.
 
-docs/demo-screenshot.png
+![screenshot](docs/demo-screenshot.png)
 
 ## Overview
 
