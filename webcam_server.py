@@ -127,13 +127,32 @@ def inference_worker():
             elapsed = time.perf_counter() - start
 
             if len(outputs) != 1:
-                with state_lock:
+                with mesh_condition:
+                    mesh_id += 1
+
+                    latest_mesh = {
+                        "mesh_id": mesh_id,
+                        "source_frame_id": current_frame_id,
+                        "no_person": True,
+                        "client_timestamp_ms": client_timestamp_ms,
+                        "encode_ms": float(encode_ms),
+                        "queue_wait_ms": queue_wait_ms,
+                        "decode_ms": decode_ms,
+                    }
+
                     last_inference_seconds = elapsed
-                    last_error = (
-                        f"Expected one person, detected {len(outputs)}"
-                    )
+                    last_error = None
+                    mesh_condition.notify_all()
+
+                print(
+                    f"NO_PERSON frame={current_frame_id} "
+                    f"detected={len(outputs)} "
+                    f"inference={elapsed:.3f}s",
+                    flush=True,
+                )
                 continue
 
+            print("KEYPOINT_SHAPE", np.asarray(outputs[0]["pred_keypoints_2d"]).shape, flush=True)
             focal_length = float(
                 np.asarray(outputs[0]["focal_length"]).reshape(-1)[0]
             )
@@ -183,11 +202,13 @@ def inference_worker():
                 latest_mesh = {
                     "mesh_id": mesh_id,
                     "source_frame_id": current_frame_id,
+                    "no_person": False,
                     "vertices": vertices,
                     "server_receive_wall_ms": server_receive_wall_ms,
                     "encode_ms": float(encode_ms),
                     "queue_wait_ms": queue_wait_ms,
                     "decode_ms": decode_ms,
+                    "pred_keypoints_2d": to_numpy(outputs[0]["pred_keypoints_2d"]),
                     "pred_cam_t": to_numpy(outputs[0]["pred_cam_t"]).reshape(-1),
                     "focal_length": focal_length,
                     "client_timestamp_ms": client_timestamp_ms,
@@ -468,7 +489,22 @@ def stream_socket(ws):
                 current = latest_mesh
                 inference_seconds = last_inference_seconds
 
+            if current.get("no_person", False):
+                ws.send(json.dumps({
+                    "no_person": True,
+                    "mesh_id": current["mesh_id"],
+                    "source_frame_id": current["source_frame_id"],
+                    "encode_ms": current["encode_ms"],
+                    "queue_wait_ms": current["queue_wait_ms"],
+                    "decode_ms": current["decode_ms"],
+                    "inference_ms": inference_seconds * 1000,
+                    "capture_timestamp_ms":
+                        current["client_timestamp_ms"],
+                }))
+                continue
+
             ws.send(json.dumps({
+                "no_person": False,
                 "mesh_id": current["mesh_id"],
                 "source_frame_id": current["source_frame_id"],
                 "encode_ms": current["encode_ms"],
@@ -476,6 +512,7 @@ def stream_socket(ws):
                 "decode_ms": current["decode_ms"],
                 "inference_ms": inference_seconds * 1000,
                 "capture_timestamp_ms": current["client_timestamp_ms"],
+                "pred_keypoints_2d": current["pred_keypoints_2d"].tolist(),
                 "pred_cam_t": current["pred_cam_t"].tolist(),
                 "focal_length": current["focal_length"],
                 "inference_mode": runtime_config["inference_mode"],

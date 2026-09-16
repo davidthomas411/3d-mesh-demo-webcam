@@ -184,6 +184,155 @@
         Reset 3D camera
       </button>
 
+      <div id="referencePanel">
+        <div class="panelTitle">Reference Tracking</div>
+
+        <div class="controlRow">
+          <button id="captureReference" type="button">
+            Capture reference
+          </button>
+
+          <button id="clearReference" type="button" disabled>
+            Clear
+          </button>
+        </div>
+
+        <div id="referenceStatus">
+          No reference captured
+        </div>
+
+        <label>
+          Tracking region
+          <select id="trackingRegion">
+            <option value="fullBody" selected>Full body</option>
+            <option value="torso">Whole torso</option>
+            <option value="upperChest">Upper chest</option>
+            <option value="thorax">Thorax</option>
+            <option value="abdomen">Abdomen</option>
+            <option value="pelvis">Pelvis</option>
+            <option value="head">Head</option>
+          </select>
+        </label>
+
+        <div id="trackingThresholds">
+          <label>
+            Translation tolerance
+            <div class="thresholdInput">
+              <input
+                id="translationTolerance"
+                type="range"
+                min="1"
+                max="50"
+                step="0.5"
+                value="10">
+              <output id="translationToleranceValue">
+                10.0 mm
+              </output>
+            </div>
+          </label>
+
+          <label>
+            Rotation tolerance
+            <div class="thresholdInput">
+              <input
+                id="rotationTolerance"
+                type="range"
+                min="0.1"
+                max="10"
+                step="0.1"
+                value="1">
+              <output id="rotationToleranceValue">
+                1.0°
+              </output>
+            </div>
+          </label>
+        </div>
+
+        <div id="trackingReadout">
+          <div data-metric="vrt">
+      <span>VRT</span>
+      <strong id="trackingVrt">--</strong>
+      <div class="positionBar" id="barVrt">
+        <div class="negativeZone"></div>
+        <div class="positiveZone"></div>
+        <div class="toleranceZone"></div>
+        <div class="zeroLine"></div>
+        <div class="positionMarker"></div>
+      </div>
+    </div>
+          <div data-metric="lat">
+      <span>LAT</span>
+      <strong id="trackingLat">--</strong>
+      <div class="positionBar" id="barLat">
+        <div class="negativeZone"></div>
+        <div class="positiveZone"></div>
+        <div class="toleranceZone"></div>
+        <div class="zeroLine"></div>
+        <div class="positionMarker"></div>
+      </div>
+    </div>
+          <div data-metric="lng">
+      <span>LNG</span>
+      <strong id="trackingLng">--</strong>
+      <div class="positionBar" id="barLng">
+        <div class="negativeZone"></div>
+        <div class="positiveZone"></div>
+        <div class="toleranceZone"></div>
+        <div class="zeroLine"></div>
+        <div class="positionMarker"></div>
+      </div>
+    </div>
+          <div data-metric="magnitude">
+      <span>MAG</span>
+      <strong id="trackingMagnitude">--</strong>
+      <div class="positionBar magnitudeBar" id="barMagnitude">
+        <div class="negativeZone"></div>
+        <div class="positiveZone"></div>
+        <div class="toleranceZone"></div>
+        <div class="zeroLine"></div>
+        <div class="positionMarker"></div>
+      </div>
+    </div>
+          <div data-metric="yaw">
+      <span>YAW</span>
+      <strong id="trackingYaw">--</strong>
+      <div class="positionBar" id="barYaw">
+        <div class="negativeZone"></div>
+        <div class="positiveZone"></div>
+        <div class="toleranceZone"></div>
+        <div class="zeroLine"></div>
+        <div class="positionMarker"></div>
+      </div>
+    </div>
+          <div data-metric="pitch">
+      <span>PITCH</span>
+      <strong id="trackingPitch">--</strong>
+      <div class="positionBar" id="barPitch">
+        <div class="negativeZone"></div>
+        <div class="positiveZone"></div>
+        <div class="toleranceZone"></div>
+        <div class="zeroLine"></div>
+        <div class="positionMarker"></div>
+      </div>
+    </div>
+          <div data-metric="roll">
+      <span>ROLL</span>
+      <strong id="trackingRoll">--</strong>
+      <div class="positionBar" id="barRoll">
+        <div class="negativeZone"></div>
+        <div class="positiveZone"></div>
+        <div class="toleranceZone"></div>
+        <div class="zeroLine"></div>
+        <div class="positionMarker"></div>
+      </div>
+    </div>
+        </div>
+
+        <div class="researchNotice">
+          Research demonstration only. Not for clinical positioning.
+        </div>
+      </div>
+
       <div id="serverConfig">
         512 model input · YOLO11m-Pose<br>
         RTX A6000 · WebSocket · 8 CPU threads
@@ -216,6 +365,15 @@
       document.getElementById("toggleRuntimePanel");
     const runtimePanel =
       document.getElementById("runtimePanel");
+    const referencePanel =
+      document.getElementById("referencePanel");
+
+    // Keep reference tracking independent of the collapsible
+    // model-parameters panel.
+    runtimePanel.insertAdjacentElement(
+      "afterend",
+      referencePanel
+    );
     const capture = document.getElementById("capture");
     const context = capture.getContext("2d");
     const overlayCanvas = document.getElementById("overlay");
@@ -232,11 +390,45 @@
     const overlayLineWidth = document.getElementById("overlayLineWidth");
     const resetMeshCamera = document.getElementById("resetMeshCamera");
 
+    const captureReferenceButton =
+      document.getElementById("captureReference");
+    const clearReferenceButton =
+      document.getElementById("clearReference");
+    const referenceStatus =
+      document.getElementById("referenceStatus");
+    const trackingRegion =
+      document.getElementById("trackingRegion");
+
+    const trackingVrt =
+      document.getElementById("trackingVrt");
+    const trackingLat =
+      document.getElementById("trackingLat");
+    const trackingLng =
+      document.getElementById("trackingLng");
+    const trackingMagnitude =
+      document.getElementById("trackingMagnitude");
+    const trackingYaw =
+      document.getElementById("trackingYaw");
+    const trackingPitch =
+      document.getElementById("trackingPitch");
+    const trackingRoll =
+      document.getElementById("trackingRoll");
+
+    const translationTolerance =
+      document.getElementById("translationTolerance");
+    const translationToleranceValue =
+      document.getElementById("translationToleranceValue");
+    const rotationTolerance =
+      document.getElementById("rotationTolerance");
+    const rotationToleranceValue =
+      document.getElementById("rotationToleranceValue");
+
     let renderer;
     let scene;
     let camera;
     let controls;
     let bodyMesh;
+    let referenceMesh = null;
     let topology;
     let lastMeshId = 0;
     let framesSent = 0;
@@ -247,6 +439,12 @@
     let pendingMeshMetadata = null;
     let websocketRequestStartMs = 0;
     let meshFramed = false;
+    let latestVertices = null;
+    let latestPredCamT = null;
+    let referenceVertices = null;
+    let referencePredCamT = null;
+    let referenceCapturedAt = null;
+    let anatomicalRegions = null;
     let latestEncodeMs = 0;
     const latencyHistory = { encode: [], upload: [], intake: [], queue: [], decode: [], inference: [], transfer: [], render: [], endToEnd: [] };
     const frameTimings = new Map();
@@ -430,50 +628,614 @@
       scene.add(bodyMesh);
     }
 
-    function updateMesh(vertexValues) {
+    function buildAnatomicalRegions(vertexValues) {
+      const vertexCount = vertexValues.length / 3;
+
+      let minX = Infinity;
+      let maxX = -Infinity;
+      let minY = Infinity;
+      let maxY = -Infinity;
+
+      for (let index = 0; index < vertexCount; index++) {
+        const offset = index * 3;
+        const x = vertexValues[offset];
+        const y = vertexValues[offset + 1];
+
+        minX = Math.min(minX, x);
+        maxX = Math.max(maxX, x);
+        minY = Math.min(minY, y);
+        maxY = Math.max(maxY, y);
+      }
+
+      const width = Math.max(maxX - minX, 1e-6);
+      const height = Math.max(maxY - minY, 1e-6);
+      const centerX = (minX + maxX) * 0.5;
+
+      const regions = {
+        fullBody: [],
+        torso: [],
+        upperChest: [],
+        thorax: [],
+        abdomen: [],
+        pelvis: [],
+        head: []
+      };
+
+      /*
+       * Heuristic reference-space regions:
+       *
+       * normalizedY = 0 at the mesh minimum
+       * normalizedY = 1 at the mesh maximum
+       *
+       * The central-width filters reduce inclusion of arms.
+       * Region membership is frozen at reference capture.
+       */
+      for (let index = 0; index < vertexCount; index++) {
+        const offset = index * 3;
+        const x = vertexValues[offset];
+        const y = vertexValues[offset + 1];
+
+        const normalizedY = (maxY - y) / height;
+        const normalizedX =
+          Math.abs(x - centerX) / width;
+
+        /*
+         * Full-body mode includes every mesh vertex.
+         */
+        regions.fullBody.push(index);
+
+        /*
+         * Broader central-width filters. These intentionally
+         * include more lateral torso surface and shoulder anatomy
+         * than the initial tightly cropped regions.
+         */
+        const centralTorso = normalizedX <= 0.43;
+        const centralChest = normalizedX <= 0.48;
+        const centralPelvis = normalizedX <= 0.38;
+        const centralHead = normalizedX <= 0.25;
+
+        if (
+          centralTorso &&
+          normalizedY >= 0.34 &&
+          normalizedY <= 0.82
+        ) {
+          regions.torso.push(index);
+        }
+
+        if (
+          centralChest &&
+          normalizedY >= 0.65 &&
+          normalizedY < 0.82
+        ) {
+          regions.upperChest.push(index);
+        }
+
+        if (
+          centralChest &&
+          normalizedY >= 0.53 &&
+          normalizedY < 0.72
+        ) {
+          regions.thorax.push(index);
+        }
+
+        if (
+          centralTorso &&
+          normalizedY >= 0.40 &&
+          normalizedY < 0.58
+        ) {
+          regions.abdomen.push(index);
+        }
+
+        if (
+          centralPelvis &&
+          normalizedY >= 0.30 &&
+          normalizedY < 0.45
+        ) {
+          regions.pelvis.push(index);
+        }
+
+        if (
+          centralHead &&
+          normalizedY >= 0.80
+        ) {
+          regions.head.push(index);
+        }
+      }
+
+      return regions;
+    }
+
+    function describeAnatomicalRegions(regions) {
+      return Object.entries(regions)
+        .map(([name, indices]) => name + "=" + indices.length)
+        .join(", ");
+    }
+
+    function removeReferenceMesh() {
+      if (!referenceMesh) return;
+
+      scene.remove(referenceMesh);
+      referenceMesh.geometry.dispose();
+      referenceMesh.material.dispose();
+      referenceMesh = null;
+    }
+
+    function makeVertexColors(
+      vertexValues,
+      selectedIndices,
+      selectedColor,
+      backgroundColor
+    ) {
+      const vertexCount = vertexValues.length / 3;
+      const colors = new Float32Array(vertexCount * 3);
+
+      const selected = new Set(selectedIndices || []);
+
+      const selectedThreeColor =
+        new THREE.Color(selectedColor);
+
+      const backgroundThreeColor =
+        new THREE.Color(backgroundColor);
+
+      for (let index = 0; index < vertexCount; index++) {
+        const color = selected.has(index)
+          ? selectedThreeColor
+          : backgroundThreeColor;
+
+        const offset = index * 3;
+
+        colors[offset] = color.r;
+        colors[offset + 1] = color.g;
+        colors[offset + 2] = color.b;
+      }
+
+      return colors;
+    }
+
+    function getSelectedRegionIndices() {
+      if (!anatomicalRegions) {
+        return [];
+      }
+
+      return anatomicalRegions[trackingRegion.value] || [];
+    }
+
+    function updateMeshRegionColors(liveColor = 0x39d98a) {
+      if (!anatomicalRegions) {
+        return;
+      }
+
+      const selectedIndices =
+        getSelectedRegionIndices();
+
+      if (bodyMesh && latestVertices) {
+        const liveColors = makeVertexColors(
+          latestVertices,
+          selectedIndices,
+          liveColor,
+          0x4b5563
+        );
+
+        bodyMesh.geometry.setAttribute(
+          "color",
+          new THREE.BufferAttribute(liveColors, 3)
+        );
+
+        bodyMesh.material.vertexColors = true;
+        bodyMesh.material.color.setHex(0xffffff);
+        bodyMesh.material.needsUpdate = true;
+      }
+
+      if (referenceMesh && referenceVertices) {
+        const referenceColors = makeVertexColors(
+          referenceVertices,
+          selectedIndices,
+          0x35d5ff,
+          0x334155
+        );
+
+        referenceMesh.geometry.setAttribute(
+          "color",
+          new THREE.BufferAttribute(referenceColors, 3)
+        );
+
+        referenceMesh.material.vertexColors = true;
+        referenceMesh.material.color.setHex(0xffffff);
+        referenceMesh.material.needsUpdate = true;
+      }
+    }
+
+    function createReferenceMesh(vertexValues) {
+      removeReferenceMesh();
+
+      const geometry = new THREE.BufferGeometry();
+
+      geometry.setAttribute(
+        "position",
+        new THREE.BufferAttribute(
+          new Float32Array(vertexValues),
+          3
+        )
+      );
+
+      geometry.setIndex(
+        new THREE.BufferAttribute(
+          new Uint32Array(topology.faces),
+          1
+        )
+      );
+
+      const material = new THREE.MeshBasicMaterial({
+        color: 0xffffff,
+        vertexColors: true,
+        transparent: true,
+        opacity: 0.42,
+        wireframe: true,
+        depthWrite: false,
+        side: THREE.DoubleSide
+      });
+
+      referenceMesh = new THREE.Mesh(geometry, material);
+
+      referenceMesh.rotation.copy(bodyMesh.rotation);
+      referenceMesh.position.copy(bodyMesh.position);
+      referenceMesh.renderOrder = 2;
+
+      scene.add(referenceMesh);
+      updateMeshRegionColors();
+    }
+
+    function calculateReferenceRmsMm(live, reference) {
+      if (
+        !live ||
+        !reference ||
+        live.length !== reference.length
+      ) {
+        return null;
+      }
+
+      let sumSquared = 0;
+      let count = 0;
+
+      // Subsample corresponding vertices to minimize browser cost.
+      for (let i = 0; i < live.length; i += 48) {
+        const dx = live[i] - reference[i];
+        const dy = live[i + 1] - reference[i + 1];
+        const dz = live[i + 2] - reference[i + 2];
+
+        sumSquared += dx * dx + dy * dy + dz * dz;
+        count++;
+      }
+
+      if (!count) return null;
+
+      return Math.sqrt(sumSquared / count) * 1000;
+    }
+
+    function updatePositionBar(
+      barId,
+      value,
+      tolerance,
+      magnitudeOnly = false
+    ) {
+      const bar = document.getElementById(barId);
+      if (!bar || !Number.isFinite(value)) return;
+
+      /*
+       * Display range is twice the tolerance in each
+       * direction. Values outside the range clamp to
+       * the end of the bar.
+       */
+      const displayLimit = tolerance * 2;
+
+      const normalized = magnitudeOnly
+        ? Math.min(1, Math.abs(value) / displayLimit)
+        : Math.max(
+            -1,
+            Math.min(1, value / displayLimit)
+          );
+
+      const markerPosition = magnitudeOnly
+        ? 50 + normalized * 50
+        : 50 + normalized * 50;
+
+      const marker = bar.querySelector(".positionMarker");
+      marker.style.left = markerPosition + "%";
+
+      const toleranceHalfWidth =
+        Math.min(50, tolerance / displayLimit * 50);
+
+      const zone = bar.querySelector(".toleranceZone");
+      zone.style.left = "50%";
+      zone.style.width = toleranceHalfWidth + "%";
+
+      if (!magnitudeOnly) {
+        zone.style.left =
+          50 - toleranceHalfWidth + "%";
+        zone.style.width =
+          toleranceHalfWidth * 2 + "%";
+      }
+
+      marker.classList.remove(
+        "markerGreen",
+        "markerAmber",
+        "markerRed"
+      );
+
+      const ratio = Math.abs(value) / tolerance;
+
+      if (ratio <= 0.8) {
+        marker.classList.add("markerGreen");
+      } else if (ratio <= 1.0) {
+        marker.classList.add("markerAmber");
+      } else {
+        marker.classList.add("markerRed");
+      }
+    }
+
+    function refreshThresholdLabels() {
+      translationToleranceValue.textContent =
+        Number(translationTolerance.value).toFixed(1) +
+        " mm";
+
+      rotationToleranceValue.textContent =
+        Number(rotationTolerance.value).toFixed(1) +
+        "°";
+    }
+
+    function setTrackingRowState(element, ratio) {
+      const row = element.parentElement;
+
+      row.classList.remove(
+        "withinTolerance",
+        "nearTolerance",
+        "outsideTolerance"
+      );
+
+      if (!Number.isFinite(ratio)) {
+        return;
+      }
+
+      if (ratio <= 0.8) {
+        row.classList.add("withinTolerance");
+      } else if (ratio <= 1.0) {
+        row.classList.add("nearTolerance");
+      } else {
+        row.classList.add("outsideTolerance");
+      }
+    }
+
+    function updateLiveMeshAlignmentColor(vertexValues) {
+      if (!bodyMesh || !bodyMesh.material) return;
+
+      if (
+        !referenceVertices ||
+        !referencePredCamT ||
+        !latestPredCamT
+      ) {
+        bodyMesh.material.color.setHex(0x4aa3ff);
+        return;
+      }
+
+      /*
+       * Camera-coordinate convention used by the current
+       * projection:
+       *
+       * X: image-horizontal
+       * Y: image-vertical
+       * Z: camera depth
+       *
+       * UI mapping for this research display:
+       * LAT = X
+       * VRT = Y
+       * LNG = Z
+       */
+      const latMm =
+        (latestPredCamT[0] - referencePredCamT[0]) * 1000;
+
+      const vrtMm =
+        (latestPredCamT[1] - referencePredCamT[1]) * 1000;
+
+      const lngMm =
+        (latestPredCamT[2] - referencePredCamT[2]) * 1000;
+
+      const magnitudeMm = Math.hypot(
+        latMm,
+        vrtMm,
+        lngMm
+      );
+
+      const translationToleranceMm =
+        Number(translationTolerance.value);
+
+      trackingVrt.textContent =
+        (vrtMm >= 0 ? "+" : "") +
+        vrtMm.toFixed(1) +
+        " mm";
+
+      trackingLat.textContent =
+        (latMm >= 0 ? "+" : "") +
+        latMm.toFixed(1) +
+        " mm";
+
+      trackingLng.textContent =
+        (lngMm >= 0 ? "+" : "") +
+        lngMm.toFixed(1) +
+        " mm";
+
+      trackingMagnitude.textContent =
+        magnitudeMm.toFixed(1) +
+        " mm";
+
+      setTrackingRowState(
+        trackingVrt,
+        Math.abs(vrtMm) / translationToleranceMm
+      );
+
+      setTrackingRowState(
+        trackingLat,
+        Math.abs(latMm) / translationToleranceMm
+      );
+
+      setTrackingRowState(
+        trackingLng,
+        Math.abs(lngMm) / translationToleranceMm
+      );
+
+      setTrackingRowState(
+        trackingMagnitude,
+        magnitudeMm / translationToleranceMm
+      );
+
+      updatePositionBar(
+        "barVrt",
+        vrtMm,
+        translationToleranceMm
+      );
+
+      updatePositionBar(
+        "barLat",
+        latMm,
+        translationToleranceMm
+      );
+
+      updatePositionBar(
+        "barLng",
+        lngMm,
+        translationToleranceMm
+      );
+
+      updatePositionBar(
+        "barMagnitude",
+        magnitudeMm,
+        translationToleranceMm,
+        true
+      );
+
+      const alignmentRatio =
+        magnitudeMm / translationToleranceMm;
+
+      if (alignmentRatio <= 0.8) {
+        updateMeshRegionColors(0x39d98a);
+      } else if (alignmentRatio <= 1.0) {
+        updateMeshRegionColors(0xffbf3f);
+      } else {
+        updateMeshRegionColors(0xff4d5e);
+      }
+
+      /*
+       * Rotation remains unavailable until rigid
+       * torso registration is implemented.
+       */
+      trackingYaw.textContent = "--";
+      trackingPitch.textContent = "--";
+      trackingRoll.textContent = "--";
+    }
+
+    function updateMesh(vertexValues, predCamT) {
       const geometry = bodyMesh.geometry;
       const positions = geometry.attributes.position.array;
 
       positions.set(vertexValues);
       geometry.attributes.position.needsUpdate = true;
 
-      if (!meshFramed || !lockMeshCenter.checked) {
+      /*
+       * SAM 3D Body camera coordinates:
+       *   +X right
+       *   +Y down
+       *   +Z forward
+       *
+       * Three.js display coordinates:
+       *   +X right
+       *   +Y up
+       *   camera looks toward -Z
+       */
+      if (
+        predCamT &&
+        predCamT.length >= 3 &&
+        Number.isFinite(predCamT[0]) &&
+        Number.isFinite(predCamT[1]) &&
+        Number.isFinite(predCamT[2])
+      ) {
+        bodyMesh.position.set(
+          predCamT[0],
+          -predCamT[1],
+          -predCamT[2]
+        );
+      }
+
+      /*
+       * Recalculate geometry bounds only for viewer framing.
+       * Bounds no longer determine bodyMesh.position.
+       */
+      if (!meshFramed) {
         geometry.computeVertexNormals();
         geometry.computeBoundingBox();
         geometry.computeBoundingSphere();
 
-        const center = new THREE.Vector3();
-        geometry.boundingBox.getCenter(center);
-
-        bodyMesh.position.set(
-          center.x,
-          center.y,
-          -center.z
-        );
-
         const radius = geometry.boundingSphere.radius;
 
         if (radius > 0) {
-          camera.position.set(0, 0, radius * 3.0);
-          camera.near = Math.max(radius / 100, 0.001);
-          camera.far = radius * 100;
+          /*
+           * Frame a camera-relative working volume rather than
+           * repeatedly centering the camera on the person.
+           */
+          const initialDepth =
+            predCamT && Number.isFinite(predCamT[2])
+              ? Math.max(predCamT[2], radius * 2)
+              : radius * 4;
+
+          camera.position.set(
+            0,
+            0,
+            Math.max(radius * 3, initialDepth * 0.25)
+          );
+
+          camera.near = 0.01;
+          camera.far = Math.max(100, initialDepth * 10);
           camera.updateProjectionMatrix();
 
-          controls.target.set(0, 0, 0);
+          controls.target.set(
+            bodyMesh.position.x,
+            bodyMesh.position.y,
+            bodyMesh.position.z
+          );
+
           controls.update();
         }
 
         meshFramed = true;
       }
+
+      /*
+       * When center locking is enabled, follow the body with
+       * the viewer target. When disabled, leave the viewer
+       * fixed so movement is visible within the 3D scene.
+       */
+      if (lockMeshCenter.checked) {
+        controls.target.copy(bodyMesh.position);
+        controls.update();
+      }
+
+      updateLiveMeshAlignmentColor(vertexValues);
     }
 
-    function updateOverlay(vertices, predCamT, focalLength) {
+    function updateOverlay(
+      vertices,
+      predCamT,
+      focalLength,
+      keypoints
+    ) {
       if (!showOverlay.checked) {
         overlayCanvas.style.visibility = "hidden";
         return;
       }
+
       overlayCanvas.style.visibility = "visible";
-      if (!video.videoWidth || !topology) return;
+
+      if (!video.videoWidth || !keypoints || keypoints.length < 70) {
+        return;
+      }
 
       const width = 640;
       const height = Math.round(
@@ -485,42 +1247,135 @@
 
       overlayContext.drawImage(video, 0, 0, width, height);
 
-      const cx = width / 2;
-      const cy = height / 2;
-      const projected = new Float32Array(topology.vertex_count * 2);
+      const links = [
+        // Legs and pelvis
+        [13, 11], [11, 9],
+        [14, 12], [12, 10],
+        [9, 10],
 
-      for (let i = 0; i < topology.vertex_count; i++) {
-        const j = i * 3;
-        const x = vertices[j] + predCamT[0];
-        const y = vertices[j + 1] + predCamT[1];
-        const z = vertices[j + 2] + predCamT[2];
-        const k = i * 2;
+        // Torso and shoulders
+        [5, 9], [6, 10], [5, 6],
 
-        projected[k] = focalLength * x / z + cx;
-        projected[k + 1] = focalLength * y / z + cy;
+        // Arms
+        [5, 7], [7, 62],
+        [6, 8], [8, 41],
+
+        // Face and head
+        [1, 2], [0, 1], [0, 2],
+        [1, 3], [2, 4],
+        [3, 5], [4, 6],
+
+        // Feet
+        [13, 15], [13, 16], [13, 17],
+        [14, 18], [14, 19], [14, 20],
+
+        // Left thumb
+        [62, 45], [45, 44], [44, 43], [43, 42],
+
+        // Left index finger
+        [62, 49], [49, 48], [48, 47], [47, 46],
+
+        // Left middle finger
+        [62, 53], [53, 52], [52, 51], [51, 50],
+
+        // Left ring finger
+        [62, 57], [57, 56], [56, 55], [55, 54],
+
+        // Left little finger
+        [62, 61], [61, 60], [60, 59], [59, 58],
+
+        // Right thumb
+        [41, 24], [24, 23], [23, 22], [22, 21],
+
+        // Right index finger
+        [41, 28], [28, 27], [27, 26], [26, 25],
+
+        // Right middle finger
+        [41, 32], [32, 31], [31, 30], [30, 29],
+
+        // Right ring finger
+        [41, 36], [36, 35], [35, 34], [34, 33],
+
+        // Right little finger
+        [41, 40], [40, 39], [39, 38], [38, 37]
+      ];
+
+      const lineWidth = Number(overlayLineWidth.value);
+      const opacity = Number(overlayOpacity.value);
+
+      overlayContext.lineCap = "round";
+      overlayContext.lineJoin = "round";
+
+      function drawSkeleton(strokeStyle, widthValue) {
+        overlayContext.beginPath();
+
+        for (const [a, b] of links) {
+          const pointA = keypoints[a];
+          const pointB = keypoints[b];
+
+          if (
+            !pointA ||
+            !pointB ||
+            !Number.isFinite(pointA[0]) ||
+            !Number.isFinite(pointA[1]) ||
+            !Number.isFinite(pointB[0]) ||
+            !Number.isFinite(pointB[1])
+          ) {
+            continue;
+          }
+
+          overlayContext.moveTo(pointA[0], pointA[1]);
+          overlayContext.lineTo(pointB[0], pointB[1]);
+        }
+
+        overlayContext.strokeStyle = strokeStyle;
+        overlayContext.lineWidth = widthValue;
+        overlayContext.stroke();
       }
 
-      overlayContext.strokeStyle =
-        "rgba(180, 255, 0, " + overlayOpacity.value + ")";
-      overlayContext.lineWidth = Number(overlayLineWidth.value);
-      overlayContext.beginPath();
+      // Dark halo preserves visibility over bright backgrounds.
+      drawSkeleton(
+        "rgba(0, 0, 0, " + Math.min(1, opacity * 0.85) + ")",
+        lineWidth + 4
+      );
 
-      const faces = topology.faces;
+      // Bright tracking skeleton.
+      drawSkeleton(
+        "rgba(180, 255, 0, " + opacity + ")",
+        lineWidth + 1
+      );
 
-      const faceStride = Number(overlayDensity.value);
+      const jointIds =
+        Array.from({ length: 70 }, (_, index) => index);
 
-      for (let i = 0; i < faces.length; i += faceStride) {
-        const a = faces[i] * 2;
-        const b = faces[i + 1] * 2;
-        const c = faces[i + 2] * 2;
+      for (const id of jointIds) {
+        const point = keypoints[id];
 
-        overlayContext.moveTo(projected[a], projected[a + 1]);
-        overlayContext.lineTo(projected[b], projected[b + 1]);
-        overlayContext.lineTo(projected[c], projected[c + 1]);
-        overlayContext.closePath();
+        if (
+          !point ||
+          !Number.isFinite(point[0]) ||
+          !Number.isFinite(point[1])
+        ) {
+          continue;
+        }
+
+        overlayContext.beginPath();
+        overlayContext.arc(
+          point[0],
+          point[1],
+          Math.max(3, lineWidth + 1.5),
+          0,
+          Math.PI * 2
+        );
+
+        overlayContext.fillStyle =
+          "rgba(180, 255, 0, " + opacity + ")";
+        overlayContext.fill();
+
+        overlayContext.strokeStyle = "rgba(0, 0, 0, 0.9)";
+        overlayContext.lineWidth = 1.5;
+        overlayContext.stroke();
       }
-
-      overlayContext.stroke();
     }
 
     function sendRuntimeConfig(action, value = null) {
@@ -623,6 +1478,33 @@
               return;
             }
 
+            if (metadata.no_person === true) {
+              pendingMeshMetadata = null;
+              uploadBusy = false;
+
+              latestVertices = null;
+              latestPredCamT = null;
+
+              if (bodyMesh) {
+                bodyMesh.visible = false;
+              }
+
+              overlayContext.clearRect(
+                0,
+                0,
+                overlayCanvas.width,
+                overlayCanvas.height
+              );
+
+              status.textContent = "No person detected";
+
+              if (running) {
+                window.setTimeout(sendFrame, 0);
+              }
+
+              return;
+            }
+
             updateCalibrationStatus(metadata);
             pendingMeshMetadata = metadata;
             return;
@@ -642,6 +1524,15 @@
             performance.now() - websocketRequestStartMs;
 
           const vertices = new Float32Array(event.data);
+
+          if (bodyMesh) {
+            bodyMesh.visible = true;
+          }
+
+          latestVertices = new Float32Array(vertices);
+          latestPredCamT = new Float32Array(
+            metadata.pred_cam_t
+          );
           const queueWaitMs = metadata.queue_wait_ms;
           const decodeMs = metadata.decode_ms;
           const inferenceMs = metadata.inference_ms;
@@ -659,11 +1550,12 @@
 
           const renderStartMs = performance.now();
 
-          updateMesh(vertices);
+          updateMesh(vertices, metadata.pred_cam_t);
           updateOverlay(
             vertices,
             metadata.pred_cam_t,
-            metadata.focal_length
+            metadata.focal_length,
+            metadata.pred_keypoints_2d
           );
 
           const renderMs =
@@ -773,6 +1665,110 @@
       toggleRuntimePanel.textContent =
         isHidden ? "Hide parameters" : "Show parameters";
     };
+
+    function clearTrackingReadout() {
+      trackingVrt.textContent = "--";
+      trackingLat.textContent = "--";
+      trackingLng.textContent = "--";
+      trackingMagnitude.textContent = "--";
+      trackingYaw.textContent = "--";
+      trackingPitch.textContent = "--";
+      trackingRoll.textContent = "--";
+
+      for (const row of document.querySelectorAll(
+        "#trackingReadout > div"
+      )) {
+        row.classList.remove(
+          "withinTolerance",
+          "nearTolerance",
+          "outsideTolerance"
+        );
+      }
+    }
+
+    captureReferenceButton.onclick = () => {
+      if (!latestVertices) {
+        referenceStatus.textContent =
+          "Reference unavailable: no mesh received";
+        return;
+      }
+
+      referenceVertices =
+        new Float32Array(latestVertices);
+
+      referencePredCamT =
+        latestPredCamT
+          ? new Float32Array(latestPredCamT)
+          : null;
+
+      anatomicalRegions =
+        buildAnatomicalRegions(referenceVertices);
+
+      console.log(
+        "Heuristic anatomical regions:",
+        describeAnatomicalRegions(anatomicalRegions)
+      );
+
+      createReferenceMesh(referenceVertices);
+      updateLiveMeshAlignmentColor(latestVertices);
+
+      referenceCapturedAt =
+        new Date();
+
+      referenceStatus.textContent =
+        "Reference captured at " +
+        referenceCapturedAt.toLocaleTimeString();
+
+      clearReferenceButton.disabled = false;
+      clearTrackingReadout();
+    };
+
+    clearReferenceButton.onclick = () => {
+      referenceVertices = null;
+      referencePredCamT = null;
+      referenceCapturedAt = null;
+      anatomicalRegions = null;
+
+      removeReferenceMesh();
+
+      if (bodyMesh && bodyMesh.material) {
+        bodyMesh.material.color.setHex(0x4aa3ff);
+      }
+
+      referenceStatus.textContent =
+        "No reference captured";
+
+      clearReferenceButton.disabled = true;
+      clearTrackingReadout();
+    };
+
+    trackingRegion.onchange = () => {
+      if (
+        latestVertices &&
+        referenceVertices
+      ) {
+        updateLiveMeshAlignmentColor(latestVertices);
+      } else {
+        updateMeshRegionColors();
+      }
+    };
+
+    translationTolerance.oninput = () => {
+      refreshThresholdLabels();
+
+      if (
+        latestVertices &&
+        referenceVertices
+      ) {
+        updateLiveMeshAlignmentColor(latestVertices);
+      }
+    };
+
+    rotationTolerance.oninput = () => {
+      refreshThresholdLabels();
+    };
+
+    refreshThresholdLabels();
 
     inferenceModeSelect.onchange = () => {
       uploadBusy = false;
@@ -1030,4 +2026,230 @@
   grid-column: 3;
   grid-row: 1 / 3;
 }
+</style>
+<style>
+  #referencePanel {
+    margin-top: 18px;
+    padding-top: 16px;
+    border-top: 1px solid #555;
+  }
+
+  #referencePanel .panelTitle {
+    color: #58c8ff;
+  }
+
+  #referenceStatus {
+    margin: 10px 0;
+    color: #aaa;
+    font: 14px/1.4 monospace;
+  }
+
+  #trackingReadout {
+    display: grid;
+    gap: 6px;
+    margin-top: 12px;
+  }
+
+  #trackingReadout > div {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    align-items: center;
+    padding: 7px 9px;
+    background: #202020;
+    border-left: 4px solid #666;
+    font-family: monospace;
+  }
+
+  #trackingReadout span {
+    color: #ccc;
+    font-weight: 700;
+  }
+
+  #trackingReadout strong {
+    min-width: 90px;
+    color: #eee;
+    text-align: right;
+    font-size: 17px;
+  }
+
+  #trackingReadout .withinTolerance {
+    border-left-color: #55e070;
+  }
+
+  #trackingReadout .nearTolerance {
+    border-left-color: #ffc94a;
+  }
+
+  #trackingReadout .outsideTolerance {
+    border-left-color: #ff4f5e;
+  }
+
+  .researchNotice {
+    margin-top: 12px;
+    color: #888;
+    font-size: 12px;
+    line-height: 1.35;
+  }
+</style>
+
+<style>
+  #views {
+    grid-template-rows: auto auto minmax(0, 1fr);
+  }
+
+  #runtimePanel {
+    grid-column: 1;
+    grid-row: 1;
+  }
+
+  #referencePanel {
+    grid-column: 1;
+    grid-row: 2;
+    margin: 0;
+    padding: 16px;
+    background: #181818;
+    border: 1px solid #555;
+    border-radius: 8px;
+    box-sizing: border-box;
+  }
+
+  #latencyHud {
+    grid-column: 1;
+    grid-row: 3;
+    min-height: 0;
+    padding: 18px;
+  }
+
+  #leftViews {
+    grid-column: 2;
+    grid-row: 1 / 4;
+  }
+
+  #mesh {
+    grid-column: 3;
+    grid-row: 1 / 4;
+  }
+</style>
+
+<style>
+  #trackingThresholds {
+    display: grid;
+    gap: 8px;
+    margin: 12px 0 16px;
+  }
+
+  #trackingThresholds label {
+    margin: 0;
+    font-size: 13px;
+  }
+
+  .thresholdInput {
+    display: grid;
+    grid-template-columns: 1fr 70px;
+    gap: 8px;
+    align-items: center;
+  }
+
+  .thresholdInput output {
+    color: #ddd;
+    font: 700 13px/1 monospace;
+    text-align: right;
+  }
+
+  #trackingReadout > div {
+    grid-template-columns: 48px 82px minmax(110px, 1fr);
+    gap: 8px;
+  }
+
+  .positionBar {
+    position: relative;
+    height: 30px;
+    overflow: hidden;
+    background: #111827;
+    border: 1px solid #344055;
+    border-radius: 5px;
+  }
+
+  .negativeZone,
+  .positiveZone {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    width: 50%;
+  }
+
+  .negativeZone {
+    left: 0;
+    background:
+      linear-gradient(to right, #291b25, #18202d);
+  }
+
+  .positiveZone {
+    left: 50%;
+    background:
+      linear-gradient(to right, #18202d, #291b25);
+  }
+
+  .toleranceZone {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    background: rgba(75, 230, 125, 0.13);
+    border-left: 1px solid rgba(75, 230, 125, 0.45);
+    border-right: 1px solid rgba(75, 230, 125, 0.45);
+  }
+
+  .zeroLine {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: 50%;
+    width: 2px;
+    background: rgba(230, 235, 245, 0.75);
+    transform: translateX(-1px);
+  }
+
+  .positionMarker {
+    position: absolute;
+    top: 3px;
+    bottom: 3px;
+    left: 50%;
+    width: 4px;
+    border-radius: 2px;
+    transform: translateX(-2px);
+    box-shadow: 0 0 8px currentColor;
+    transition:
+      left 60ms linear,
+      color 60ms linear,
+      background 60ms linear;
+  }
+
+  .positionMarker.markerGreen {
+    color: #4dff8e;
+    background: #4dff8e;
+  }
+
+  .positionMarker.markerAmber {
+    color: #ffd35b;
+    background: #ffd35b;
+  }
+
+  .positionMarker.markerRed {
+    color: #ff4f68;
+    background: #ff4f68;
+  }
+
+  .magnitudeBar .toleranceZone {
+    background: rgba(75, 230, 125, 0.10);
+  }
+
+  @media (max-height: 900px) {
+    .positionBar {
+      height: 24px;
+    }
+
+    #trackingReadout > div {
+      padding: 5px 7px;
+    }
+  }
 </style>
