@@ -142,12 +142,12 @@
       </div>
 
       <label class="checkRow">
-        <input id="lockMeshCenter" type="checkbox" checked>
+        <input id="lockMeshCenter" type="checkbox">
         Lock independent 3D center
       </label>
 
       <label class="checkRow">
-        <input id="showOverlay" type="checkbox" checked>
+        <input id="showOverlay" type="checkbox">
         Show projected overlay
       </label>
 
@@ -201,18 +201,66 @@
           No reference captured
         </div>
 
-        <label>
-          Tracking region
-          <select id="trackingRegion">
-            <option value="fullBody" selected>Full body</option>
-            <option value="torso">Whole torso</option>
-            <option value="upperChest">Upper chest</option>
-            <option value="thorax">Thorax</option>
-            <option value="abdomen">Abdomen</option>
-            <option value="pelvis">Pelvis</option>
-            <option value="head">Head</option>
-          </select>
-        </label>
+        <fieldset id="trackingRegions">
+          <legend>Tracking regions</legend>
+
+          <label class="roiOption roiFullBody">
+            <input
+              type="checkbox"
+              name="trackingRegion"
+              value="fullBody"
+              checked>
+            <span>Full body</span>
+          </label>
+
+          <label class="roiOption">
+            <input
+              type="checkbox"
+              name="trackingRegion"
+              value="torso">
+            <span>Whole torso</span>
+          </label>
+
+          <label class="roiOption">
+            <input
+              type="checkbox"
+              name="trackingRegion"
+              value="head">
+            <span>Head</span>
+          </label>
+
+          <label class="roiOption">
+            <input
+              type="checkbox"
+              name="trackingRegion"
+              value="upperChest">
+            <span>Upper chest</span>
+          </label>
+
+          <label class="roiOption">
+            <input
+              type="checkbox"
+              name="trackingRegion"
+              value="thorax">
+            <span>Thorax</span>
+          </label>
+
+          <label class="roiOption">
+            <input
+              type="checkbox"
+              name="trackingRegion"
+              value="abdomen">
+            <span>Abdomen</span>
+          </label>
+
+          <label class="roiOption">
+            <input
+              type="checkbox"
+              name="trackingRegion"
+              value="pelvis">
+            <span>Pelvis</span>
+          </label>
+        </fieldset>
 
         <div id="trackingThresholds">
           <label>
@@ -396,8 +444,12 @@
       document.getElementById("clearReference");
     const referenceStatus =
       document.getElementById("referenceStatus");
-    const trackingRegion =
-      document.getElementById("trackingRegion");
+    const trackingRegionInputs =
+      Array.from(
+        document.querySelectorAll(
+          'input[name="trackingRegion"]'
+        )
+      );
 
     const trackingVrt =
       document.getElementById("trackingVrt");
@@ -792,15 +844,75 @@
       return colors;
     }
 
+    function getSelectedRegionNames() {
+      return trackingRegionInputs
+        .filter(input => input.checked)
+        .map(input => input.value);
+    }
+
     function getSelectedRegionIndices() {
       if (!anatomicalRegions) {
         return [];
       }
 
-      return anatomicalRegions[trackingRegion.value] || [];
+      const selectedNames = getSelectedRegionNames();
+      const combinedIndices = new Set();
+
+      for (const name of selectedNames) {
+        const indices = anatomicalRegions[name] || [];
+
+        for (const index of indices) {
+          combinedIndices.add(index);
+        }
+      }
+
+      return Array.from(combinedIndices);
     }
 
-    function updateMeshRegionColors(liveColor = 0x39d98a) {
+    function deviationColorHex(
+      deviationMm,
+      toleranceMm
+    ) {
+      const ratio = deviationMm / toleranceMm;
+
+      /*
+       * Continuous SGRT-style scale:
+       *
+       * 0.0           cyan-green
+       * 0.8 tolerance green
+       * 1.0 tolerance amber
+       * > tolerance   red
+       */
+      if (ratio <= 0.8) {
+        const fraction = Math.max(0, ratio / 0.8);
+
+        return new THREE.Color(0x35d5b0).lerp(
+          new THREE.Color(0x39d98a),
+          fraction
+        );
+      }
+
+      if (ratio <= 1.0) {
+        const fraction = (ratio - 0.8) / 0.2;
+
+        return new THREE.Color(0x39d98a).lerp(
+          new THREE.Color(0xffbf3f),
+          fraction
+        );
+      }
+
+      const fraction = Math.min(
+        1,
+        (ratio - 1.0) / 1.0
+      );
+
+      return new THREE.Color(0xffbf3f).lerp(
+        new THREE.Color(0xff4d5e),
+        fraction
+      );
+    }
+
+    function updateMeshRegionColors() {
       if (!anatomicalRegions) {
         return;
       }
@@ -808,36 +920,150 @@
       const selectedIndices =
         getSelectedRegionIndices();
 
-      if (bodyMesh && latestVertices) {
-        const liveColors = makeVertexColors(
-          latestVertices,
-          selectedIndices,
-          liveColor,
-          0x4b5563
-        );
+      const selected =
+        new Set(selectedIndices);
+
+      /*
+       * Live mesh:
+       *
+       * Selected vertices receive an independent color based
+       * on their displacement from the corresponding reference
+       * vertex in camera-relative world coordinates.
+       *
+       * Unselected vertices remain gray.
+       */
+      if (
+        bodyMesh &&
+        latestVertices
+      ) {
+        const vertexCount =
+          latestVertices.length / 3;
+
+        const liveColors =
+          new Float32Array(vertexCount * 3);
+
+        const unselectedColor =
+          new THREE.Color(0x4b5563);
+
+        const unavailableColor =
+          new THREE.Color(0x8a8f98);
+
+        const toleranceMm =
+          Number(translationTolerance.value);
+
+        const canCalculateDeviation =
+          referenceVertices &&
+          referenceVertices.length ===
+            latestVertices.length &&
+          referencePredCamT &&
+          latestPredCamT;
+
+        for (
+          let vertexIndex = 0;
+          vertexIndex < vertexCount;
+          vertexIndex++
+        ) {
+          const offset = vertexIndex * 3;
+          let color = unselectedColor;
+
+          if (selected.has(vertexIndex)) {
+            if (canCalculateDeviation) {
+              /*
+               * MHR local vertex position plus pred_cam_t gives
+               * the camera-relative world position.
+               *
+               * Distance is invariant to the later OpenCV-to-
+               * Three.js axis sign conversion.
+               */
+              const liveX =
+                latestVertices[offset] +
+                latestPredCamT[0];
+
+              const liveY =
+                latestVertices[offset + 1] +
+                latestPredCamT[1];
+
+              const liveZ =
+                latestVertices[offset + 2] +
+                latestPredCamT[2];
+
+              const referenceX =
+                referenceVertices[offset] +
+                referencePredCamT[0];
+
+              const referenceY =
+                referenceVertices[offset + 1] +
+                referencePredCamT[1];
+
+              const referenceZ =
+                referenceVertices[offset + 2] +
+                referencePredCamT[2];
+
+              const dx = liveX - referenceX;
+              const dy = liveY - referenceY;
+              const dz = liveZ - referenceZ;
+
+              const deviationMm =
+                Math.hypot(dx, dy, dz) * 1000;
+
+              color = deviationColorHex(
+                deviationMm,
+                toleranceMm
+              );
+            } else {
+              color = unavailableColor;
+            }
+          }
+
+          liveColors[offset] = color.r;
+          liveColors[offset + 1] = color.g;
+          liveColors[offset + 2] = color.b;
+        }
 
         bodyMesh.geometry.setAttribute(
           "color",
-          new THREE.BufferAttribute(liveColors, 3)
+          new THREE.BufferAttribute(
+            liveColors,
+            3
+          )
         );
+
+        bodyMesh.geometry.attributes.color
+          .needsUpdate = true;
 
         bodyMesh.material.vertexColors = true;
         bodyMesh.material.color.setHex(0xffffff);
         bodyMesh.material.needsUpdate = true;
       }
 
-      if (referenceMesh && referenceVertices) {
-        const referenceColors = makeVertexColors(
-          referenceVertices,
-          selectedIndices,
-          0x35d5ff,
-          0x334155
-        );
+      /*
+       * Reference mesh:
+       *
+       * Selected reference region remains cyan.
+       * Unselected reference anatomy remains blue-gray.
+       */
+      if (
+        referenceMesh &&
+        referenceVertices
+      ) {
+        const referenceColors =
+          makeVertexColors(
+            referenceVertices,
+            selectedIndices,
+            0x35d5ff,
+            0x334155
+          );
 
         referenceMesh.geometry.setAttribute(
           "color",
-          new THREE.BufferAttribute(referenceColors, 3)
+          new THREE.BufferAttribute(
+            referenceColors,
+            3
+          )
         );
+
+        referenceMesh.geometry.attributes.color
+          .needsUpdate = true;
 
         referenceMesh.material.vertexColors = true;
         referenceMesh.material.color.setHex(0xffffff);
@@ -1742,7 +1968,35 @@
       clearTrackingReadout();
     };
 
-    trackingRegion.onchange = () => {
+    function handleTrackingRegionChange(changedInput) {
+      const fullBodyInput =
+        trackingRegionInputs.find(
+          input => input.value === "fullBody"
+        );
+
+      if (
+        changedInput.value === "fullBody" &&
+        changedInput.checked
+      ) {
+        for (const input of trackingRegionInputs) {
+          if (input !== fullBodyInput) {
+            input.checked = false;
+          }
+        }
+      } else if (
+        changedInput.value !== "fullBody" &&
+        changedInput.checked
+      ) {
+        fullBodyInput.checked = false;
+      }
+
+      /*
+       * Never allow an empty ROI selection.
+       */
+      if (!trackingRegionInputs.some(input => input.checked)) {
+        fullBodyInput.checked = true;
+      }
+
       if (
         latestVertices &&
         referenceVertices
@@ -1751,7 +2005,14 @@
       } else {
         updateMeshRegionColors();
       }
-    };
+    }
+
+    for (const input of trackingRegionInputs) {
+      input.addEventListener(
+        "change",
+        () => handleTrackingRegionChange(input)
+      );
+    }
 
     translationTolerance.oninput = () => {
       refreshThresholdLabels();
@@ -2251,5 +2512,71 @@
     #trackingReadout > div {
       padding: 5px 7px;
     }
+  }
+</style>
+
+<style>
+  #trackingRegions {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 5px;
+    margin: 10px 0 12px;
+    padding: 8px;
+    min-width: 0;
+    border: 1px solid #3f4652;
+    border-radius: 6px;
+  }
+
+  #trackingRegions legend {
+    padding: 0 5px;
+    color: #bbb;
+    font-size: 12px;
+    font-weight: 700;
+  }
+
+  #trackingRegions .roiOption {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+    margin: 0;
+    padding: 5px 7px;
+    background: #20242b;
+    border: 1px solid #343b47;
+    border-radius: 4px;
+    color: #d7dbe2;
+    font-size: 12px;
+    line-height: 1.1;
+    cursor: pointer;
+    user-select: none;
+  }
+
+  #trackingRegions .roiOption:hover {
+    background: #272d36;
+    border-color: #4c596b;
+  }
+
+  #trackingRegions .roiOption:has(input:checked) {
+    background: rgba(53, 213, 255, 0.12);
+    border-color: #35d5ff;
+    color: #eefbff;
+  }
+
+  #trackingRegions .roiFullBody {
+    grid-column: 1 / -1;
+  }
+
+  #trackingRegions input {
+    width: 14px;
+    height: 14px;
+    margin: 0;
+    flex: 0 0 auto;
+    accent-color: #35d5ff;
+  }
+
+  #trackingRegions span {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 </style>
