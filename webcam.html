@@ -270,9 +270,9 @@
                 id="translationTolerance"
                 type="range"
                 min="1"
-                max="50"
-                step="0.5"
-                value="10">
+                max="20"
+                step="1"
+                value="3">
               <output id="translationToleranceValue">
                 10.0 mm
               </output>
@@ -288,12 +288,21 @@
                 min="0.1"
                 max="10"
                 step="0.1"
-                value="1">
+                value="2">
               <output id="rotationToleranceValue">
                 1.0°
               </output>
             </div>
           </label>
+        </div>
+
+        <div
+          id="overallTrackingStatus"
+          class="trackingStatus unavailable"
+          role="status"
+          aria-live="polite">
+          <span class="statusIcon">○</span>
+          <span class="statusText">REFERENCE REQUIRED</span>
         </div>
 
         <div id="trackingReadout">
@@ -387,12 +396,55 @@
       </div>
     </div>
 
-    <pre id="latencyHud">Latency HUD: waiting for data</pre>
     <div id="leftViews">
       <video id="video" autoplay playsinline muted></video>
-      <canvas id="overlay"></canvas>
+
+      <div id="secondaryView">
+        <button
+          id="toggleSecondaryView"
+          type="button"
+          aria-pressed="false">
+          Show overlay
+        </button>
+
+        <pre id="latencyHud">Latency HUD: waiting for data</pre>
+        <canvas id="overlay"></canvas>
+      </div>
     </div>
-    <div id="mesh"></div>
+    <div id="mesh">
+      <div id="axisIndicator"
+           aria-label="Head-first-supine tracking coordinate system">
+        <div class="axisTitle">HFS PATIENT AXES</div>
+
+        <div class="axisDiagram">
+          <div class="axisLong">
+            <span class="axisArrow">↑</span>
+            <strong>LNG</strong>
+            <small>CRANIAL</small>
+          </div>
+
+          <div class="axisLateral">
+            <small>LEFT</small>
+            <span class="axisLine">←</span>
+            <strong>LAT</strong>
+            <span class="axisLine">→</span>
+            <small>RIGHT</small>
+          </div>
+
+          <div class="axisVertical">
+            <span class="axisDepth">⊙</span>
+            <strong>VRT</strong>
+            <small>ANT/POST</small>
+          </div>
+        </div>
+
+        <div class="rotationKey">
+          <span><b>PITCH</b> about LAT</span>
+          <span><b>ROLL</b> about LNG</span>
+          <span><b>YAW</b> about VRT</span>
+        </div>
+      </div>
+    </div>
   </div>
 
   <canvas id="capture" class="capture"></canvas>
@@ -409,6 +461,8 @@
     const video = document.getElementById("video");
     const status = document.getElementById("status");
     const latencyHud = document.getElementById("latencyHud");
+    const toggleSecondaryView =
+      document.getElementById("toggleSecondaryView");
     const toggleRuntimePanel =
       document.getElementById("toggleRuntimePanel");
     const runtimePanel =
@@ -459,6 +513,9 @@
       document.getElementById("trackingLng");
     const trackingMagnitude =
       document.getElementById("trackingMagnitude");
+    const overallTrackingStatus =
+      document.getElementById("overallTrackingStatus");
+
     const trackingYaw =
       document.getElementById("trackingYaw");
     const trackingPitch =
@@ -528,30 +585,36 @@
       };
     }
 
+    function formatLatencyValue(value) {
+      return (value.toFixed(1) + " ms").padStart(11);
+    }
+
     function formatLatencyRow(label, name) {
       const x = latencyStats(name);
+
       return (
         label.padEnd(18) +
-        x.current.toFixed(1).padStart(8) +
-        x.median.toFixed(1).padStart(9) +
-        x.p90.toFixed(1).padStart(9)
+        formatLatencyValue(x.current) +
+        formatLatencyValue(x.median) +
+        formatLatencyValue(x.p90)
       );
     }
 
     function updateLatencyHud() {
       const row = (label, name) => {
         const x = latencyStats(name);
+
         return (
-          label.padEnd(17) +
-          x.current.toFixed(1).padStart(8) +
-          x.median.toFixed(1).padStart(9) +
-          x.p90.toFixed(1).padStart(9)
+          label.padEnd(18) +
+          formatLatencyValue(x.current) +
+          formatLatencyValue(x.median) +
+          formatLatencyValue(x.p90)
         );
       };
 
       latencyHud.textContent = [
-        "LATENCY             NOW   MEDIAN      P90",
-        "-------------------------------------------",
+        "LATENCY                  NOW     MEDIAN        P90",
+        "---------------------------------------------------",
         "INPUT",
         row("JPEG encode", "encode"),
         "",
@@ -563,10 +626,8 @@
         "OUTPUT",
         row("Network + HTTP", "transfer"),
         row("Browser render", "render"),
-        "-------------------------------------------",
-        row("TOTAL", "endToEnd"),
-        "",
-        "All values in milliseconds"
+        "---------------------------------------------------",
+        row("TOTAL", "endToEnd")
       ].join("\n");
     }
 
@@ -1148,11 +1209,21 @@
       if (!bar || !Number.isFinite(value)) return;
 
       /*
-       * Display range is twice the tolerance in each
-       * direction. Values outside the range clamp to
-       * the end of the bar.
+       * Fixed clinical display ranges:
+       *
+       * Translation: -20 to +20 mm
+       * Rotation:    -10 to +10 degrees
+       *
+       * The tolerance changes only the green zone.
        */
-      const displayLimit = tolerance * 2;
+      const isRotationBar = [
+        "barYaw",
+        "barPitch",
+        "barRoll"
+      ].includes(barId);
+
+      const displayLimit =
+        isRotationBar ? 10 : 20;
 
       const normalized = magnitudeOnly
         ? Math.min(1, Math.abs(value) / displayLimit)
@@ -1201,12 +1272,124 @@
 
     function refreshThresholdLabels() {
       translationToleranceValue.textContent =
-        Number(translationTolerance.value).toFixed(1) +
+        Number(translationTolerance.value).toFixed(0) +
         " mm";
 
       rotationToleranceValue.textContent =
         Number(rotationTolerance.value).toFixed(1) +
         "°";
+    }
+
+    function updateOverallTrackingStatus() {
+      const rows = Array.from(
+        document.querySelectorAll(
+          "#trackingReadout > div"
+        )
+      );
+
+      const hasReference =
+        referenceVertices &&
+        referencePredCamT &&
+        latestVertices &&
+        latestPredCamT;
+
+      overallTrackingStatus.classList.remove(
+        "unavailable",
+        "withinTolerance",
+        "nearTolerance",
+        "outsideTolerance"
+      );
+
+      referencePanel.classList.remove(
+        "statusUnavailable",
+        "statusWithinTolerance",
+        "statusNearTolerance",
+        "statusOutsideTolerance"
+      );
+
+      if (!hasReference) {
+        overallTrackingStatus.classList.add(
+          "unavailable"
+        );
+
+        referencePanel.classList.add(
+          "statusUnavailable"
+        );
+
+        overallTrackingStatus.querySelector(
+          ".statusIcon"
+        ).textContent = "○";
+
+        overallTrackingStatus.querySelector(
+          ".statusText"
+        ).textContent = "REFERENCE REQUIRED";
+
+        return;
+      }
+
+      const hasOutside = rows.some(row =>
+        row.classList.contains("outsideTolerance")
+      );
+
+      const hasNear = rows.some(row =>
+        row.classList.contains("nearTolerance")
+      );
+
+      if (hasOutside) {
+        overallTrackingStatus.classList.add(
+          "outsideTolerance"
+        );
+
+        referencePanel.classList.add(
+          "statusOutsideTolerance"
+        );
+
+        overallTrackingStatus.querySelector(
+          ".statusIcon"
+        ).textContent = "✕";
+
+        overallTrackingStatus.querySelector(
+          ".statusText"
+        ).textContent = "OUT OF TOLERANCE";
+
+        return;
+      }
+
+      if (hasNear) {
+        overallTrackingStatus.classList.add(
+          "nearTolerance"
+        );
+
+        referencePanel.classList.add(
+          "statusNearTolerance"
+        );
+
+        overallTrackingStatus.querySelector(
+          ".statusIcon"
+        ).textContent = "!";
+
+        overallTrackingStatus.querySelector(
+          ".statusText"
+        ).textContent = "NEAR TOLERANCE";
+
+        return;
+      }
+
+      overallTrackingStatus.classList.add(
+        "withinTolerance"
+      );
+
+      referencePanel.classList.add(
+        "statusWithinTolerance"
+      );
+
+      overallTrackingStatus.querySelector(
+        ".statusIcon"
+      ).textContent = "✓";
+
+      overallTrackingStatus.querySelector(
+        ".statusText"
+      ).textContent = "ALL WITHIN TOLERANCE";
     }
 
     function setTrackingRowState(element, ratio) {
@@ -1231,6 +1414,458 @@
       }
     }
 
+
+    /*
+     * Estimate the rigid rotation that maps centered reference
+     * ROI vertices onto centered live ROI vertices.
+     *
+     * Returns a row-major 3x3 rotation matrix:
+     *
+     *   [ r00 r01 r02
+     *     r10 r11 r12
+     *     r20 r21 r22 ]
+     *
+     * Horn's quaternion method is used so no external SVD
+     * dependency is required.
+     */
+    function estimateSelectedRoiRotation(
+      referenceValues,
+      liveValues,
+      selectedIndices
+    ) {
+      if (
+        !referenceValues ||
+        !liveValues ||
+        referenceValues.length !== liveValues.length ||
+        !selectedIndices ||
+        selectedIndices.length < 3
+      ) {
+        return null;
+      }
+
+      let referenceCx = 0;
+      let referenceCy = 0;
+      let referenceCz = 0;
+
+      let liveCx = 0;
+      let liveCy = 0;
+      let liveCz = 0;
+
+      let validCount = 0;
+
+      for (const vertexIndex of selectedIndices) {
+        const offset = vertexIndex * 3;
+
+        const referenceX = referenceValues[offset];
+        const referenceY = referenceValues[offset + 1];
+        const referenceZ = referenceValues[offset + 2];
+
+        const liveX = liveValues[offset];
+        const liveY = liveValues[offset + 1];
+        const liveZ = liveValues[offset + 2];
+
+        if (
+          !Number.isFinite(referenceX) ||
+          !Number.isFinite(referenceY) ||
+          !Number.isFinite(referenceZ) ||
+          !Number.isFinite(liveX) ||
+          !Number.isFinite(liveY) ||
+          !Number.isFinite(liveZ)
+        ) {
+          continue;
+        }
+
+        referenceCx += referenceX;
+        referenceCy += referenceY;
+        referenceCz += referenceZ;
+
+        liveCx += liveX;
+        liveCy += liveY;
+        liveCz += liveZ;
+
+        validCount++;
+      }
+
+      if (validCount < 3) {
+        return null;
+      }
+
+      referenceCx /= validCount;
+      referenceCy /= validCount;
+      referenceCz /= validCount;
+
+      liveCx /= validCount;
+      liveCy /= validCount;
+      liveCz /= validCount;
+
+      /*
+       * Cross-dispersion matrix:
+       *
+       * M = sum(referenceCentered * liveCentered^T)
+       */
+      let m00 = 0;
+      let m01 = 0;
+      let m02 = 0;
+
+      let m10 = 0;
+      let m11 = 0;
+      let m12 = 0;
+
+      let m20 = 0;
+      let m21 = 0;
+      let m22 = 0;
+
+      for (const vertexIndex of selectedIndices) {
+        const offset = vertexIndex * 3;
+
+        const referenceX =
+          referenceValues[offset] - referenceCx;
+        const referenceY =
+          referenceValues[offset + 1] - referenceCy;
+        const referenceZ =
+          referenceValues[offset + 2] - referenceCz;
+
+        const liveX =
+          liveValues[offset] - liveCx;
+        const liveY =
+          liveValues[offset + 1] - liveCy;
+        const liveZ =
+          liveValues[offset + 2] - liveCz;
+
+        if (
+          !Number.isFinite(referenceX) ||
+          !Number.isFinite(referenceY) ||
+          !Number.isFinite(referenceZ) ||
+          !Number.isFinite(liveX) ||
+          !Number.isFinite(liveY) ||
+          !Number.isFinite(liveZ)
+        ) {
+          continue;
+        }
+
+        m00 += referenceX * liveX;
+        m01 += referenceX * liveY;
+        m02 += referenceX * liveZ;
+
+        m10 += referenceY * liveX;
+        m11 += referenceY * liveY;
+        m12 += referenceY * liveZ;
+
+        m20 += referenceZ * liveX;
+        m21 += referenceZ * liveY;
+        m22 += referenceZ * liveZ;
+      }
+
+      const trace = m00 + m11 + m22;
+
+      /*
+       * Horn/Davenport symmetric 4x4 matrix.
+       * Quaternion component order is [w, x, y, z].
+       */
+      const n = [
+        [
+          trace,
+          m12 - m21,
+          m20 - m02,
+          m01 - m10
+        ],
+        [
+          m12 - m21,
+          m00 - m11 - m22,
+          m01 + m10,
+          m02 + m20
+        ],
+        [
+          m20 - m02,
+          m01 + m10,
+          -m00 + m11 - m22,
+          m12 + m21
+        ],
+        [
+          m01 - m10,
+          m02 + m20,
+          m12 + m21,
+          -m00 - m11 + m22
+        ]
+      ];
+
+      /*
+       * Power iteration for the eigenvector associated with
+       * the largest eigenvalue of the symmetric matrix.
+       */
+      let quaternion = [1, 0, 0, 0];
+
+      for (let iteration = 0; iteration < 32; iteration++) {
+        const next = [
+          n[0][0] * quaternion[0] +
+            n[0][1] * quaternion[1] +
+            n[0][2] * quaternion[2] +
+            n[0][3] * quaternion[3],
+
+          n[1][0] * quaternion[0] +
+            n[1][1] * quaternion[1] +
+            n[1][2] * quaternion[2] +
+            n[1][3] * quaternion[3],
+
+          n[2][0] * quaternion[0] +
+            n[2][1] * quaternion[1] +
+            n[2][2] * quaternion[2] +
+            n[2][3] * quaternion[3],
+
+          n[3][0] * quaternion[0] +
+            n[3][1] * quaternion[1] +
+            n[3][2] * quaternion[2] +
+            n[3][3] * quaternion[3]
+        ];
+
+        const norm = Math.hypot(
+          next[0],
+          next[1],
+          next[2],
+          next[3]
+        );
+
+        if (!Number.isFinite(norm) || norm < 1e-12) {
+          return null;
+        }
+
+        quaternion = next.map(value => value / norm);
+      }
+
+      let [w, x, y, z] = quaternion;
+
+      /*
+       * q and -q represent the same rotation. Keeping w
+       * nonnegative makes frame-to-frame output consistent.
+       */
+      if (w < 0) {
+        w = -w;
+        x = -x;
+        y = -y;
+        z = -z;
+      }
+
+      return [
+        1 - 2 * (y * y + z * z),
+        2 * (x * y - z * w),
+        2 * (x * z + y * w),
+
+        2 * (x * y + z * w),
+        1 - 2 * (x * x + z * z),
+        2 * (y * z - x * w),
+
+        2 * (x * z - y * w),
+        2 * (y * z + x * w),
+        1 - 2 * (x * x + y * y)
+      ];
+    }
+
+    function rotationMatrixToClinicalAngles(rotation) {
+      if (!rotation || rotation.length !== 9) {
+        return null;
+      }
+
+      /*
+       * Matrix4.set accepts values in row-major presentation
+       * order even though Three.js stores them internally in
+       * column-major order.
+       */
+      const matrix = new THREE.Matrix4();
+
+      matrix.set(
+        rotation[0], rotation[1], rotation[2], 0,
+        rotation[3], rotation[4], rotation[5], 0,
+        rotation[6], rotation[7], rotation[8], 0,
+        0,           0,           0,           1
+      );
+
+      /*
+       * Virtual HFS RadOnc convention:
+       *
+       * Pitch = rotation about X / LAT
+       * Roll  = rotation about Y / LNG
+       * Yaw   = rotation about Z / VRT
+       *
+       * YXZ is retained as the decomposition order, but the
+       * resulting components are assigned to the correct
+       * patient/couch axes.
+       */
+      const euler = new THREE.Euler();
+
+      euler.setFromRotationMatrix(matrix, "YXZ");
+
+      const radiansToDegrees = 180 / Math.PI;
+
+      return {
+        yaw: euler.z * radiansToDegrees,
+        pitch: euler.x * radiansToDegrees,
+        roll: euler.y * radiansToDegrees
+      };
+    }
+
+    function formatSignedDegrees(value) {
+      if (!Number.isFinite(value)) {
+        return "--";
+      }
+
+      return (
+        (value >= 0 ? "+" : "") +
+        value.toFixed(1) +
+        "\u00b0"
+      );
+    }
+
+
+    /*
+     * Adaptive low-latency smoothing for displayed 6DOF
+     * registration values.
+     *
+     * Slow/stationary signals receive stronger smoothing.
+     * Fast motion receives less smoothing.
+     */
+    class OneEuroFilter {
+      constructor(minCutoff, beta, derivativeCutoff = 1.0) {
+        this.minCutoff = minCutoff;
+        this.beta = beta;
+        this.derivativeCutoff = derivativeCutoff;
+
+        this.lastTimestamp = null;
+        this.lastRawValue = null;
+        this.filteredValue = null;
+        this.filteredDerivative = 0;
+      }
+
+      smoothingFactor(elapsedSeconds, cutoffHz) {
+        const timeConstant =
+          1 / (2 * Math.PI * cutoffHz);
+
+        return elapsedSeconds /
+          (elapsedSeconds + timeConstant);
+      }
+
+      lowPass(previous, current, alpha) {
+        return previous +
+          alpha * (current - previous);
+      }
+
+      filter(value, timestampSeconds) {
+        if (!Number.isFinite(value)) {
+          return value;
+        }
+
+        if (
+          this.lastTimestamp === null ||
+          this.lastRawValue === null ||
+          this.filteredValue === null
+        ) {
+          this.lastTimestamp = timestampSeconds;
+          this.lastRawValue = value;
+          this.filteredValue = value;
+          this.filteredDerivative = 0;
+
+          return value;
+        }
+
+        /*
+         * Protect against duplicate timestamps and unusually
+         * long gaps caused by tab switching or stalled frames.
+         */
+        const elapsedSeconds = Math.max(
+          1 / 120,
+          Math.min(
+            0.25,
+            timestampSeconds - this.lastTimestamp
+          )
+        );
+
+        const rawDerivative =
+          (value - this.lastRawValue) /
+          elapsedSeconds;
+
+        const derivativeAlpha =
+          this.smoothingFactor(
+            elapsedSeconds,
+            this.derivativeCutoff
+          );
+
+        this.filteredDerivative =
+          this.lowPass(
+            this.filteredDerivative,
+            rawDerivative,
+            derivativeAlpha
+          );
+
+        const adaptiveCutoff =
+          this.minCutoff +
+          this.beta *
+          Math.abs(this.filteredDerivative);
+
+        const valueAlpha =
+          this.smoothingFactor(
+            elapsedSeconds,
+            adaptiveCutoff
+          );
+
+        this.filteredValue =
+          this.lowPass(
+            this.filteredValue,
+            value,
+            valueAlpha
+          );
+
+        this.lastTimestamp = timestampSeconds;
+        this.lastRawValue = value;
+
+        return this.filteredValue;
+      }
+
+      reset() {
+        this.lastTimestamp = null;
+        this.lastRawValue = null;
+        this.filteredValue = null;
+        this.filteredDerivative = 0;
+      }
+    }
+
+    const trackingFilters = {
+      lat: new OneEuroFilter(1.0, 0.02),
+      lng: new OneEuroFilter(1.0, 0.02),
+      vrt: new OneEuroFilter(1.0, 0.02),
+
+      yaw: new OneEuroFilter(0.7, 0.03),
+      pitch: new OneEuroFilter(0.7, 0.03),
+      roll: new OneEuroFilter(0.7, 0.03)
+    };
+
+    let trackingFilterReferenceKey = null;
+
+    function resetTrackingFilters() {
+      for (
+        const filter of Object.values(trackingFilters)
+      ) {
+        filter.reset();
+      }
+    }
+
+    function prepareTrackingFilters() {
+      /*
+       * referenceCapturedAt changes whenever a new reference
+       * is captured. Resetting avoids blending measurements
+       * from two different reference coordinate systems.
+       */
+      const referenceKey =
+        referenceCapturedAt || referenceVertices;
+
+      if (
+        referenceKey !== trackingFilterReferenceKey
+      ) {
+        resetTrackingFilters();
+
+        trackingFilterReferenceKey =
+          referenceKey;
+      }
+    }
+
     function updateLiveMeshAlignmentColor(vertexValues) {
       if (!bodyMesh || !bodyMesh.material) return;
 
@@ -1251,20 +1886,51 @@
        * Y: image-vertical
        * Z: camera depth
        *
-       * UI mapping for this research display:
-       * LAT = X
-       * VRT = Y
-       * LNG = Z
+       * Virtual head-first-supine RadOnc mapping:
+       *
+       * LAT = camera X = patient left/right
+       * LNG = camera Y = patient cranial/caudal
+       * VRT = camera Z = patient anterior/posterior
+       *
+       * The webcam subject is upright, but is interpreted
+       * as a head-first-supine patient viewed from above.
        */
-      const latMm =
+      prepareTrackingFilters();
+
+      const timestampSeconds =
+        performance.now() / 1000;
+
+      const rawLatMm =
         (latestPredCamT[0] - referencePredCamT[0]) * 1000;
 
-      const vrtMm =
+      const rawLngMm =
         (latestPredCamT[1] - referencePredCamT[1]) * 1000;
 
-      const lngMm =
+      const rawVrtMm =
         (latestPredCamT[2] - referencePredCamT[2]) * 1000;
 
+      const latMm =
+        trackingFilters.lat.filter(
+          rawLatMm,
+          timestampSeconds
+        );
+
+      const lngMm =
+        trackingFilters.lng.filter(
+          rawLngMm,
+          timestampSeconds
+        );
+
+      const vrtMm =
+        trackingFilters.vrt.filter(
+          rawVrtMm,
+          timestampSeconds
+        );
+
+      /*
+       * Magnitude is derived from the three filtered
+       * translations so it remains geometrically consistent.
+       */
       const magnitudeMm = Math.hypot(
         latMm,
         vrtMm,
@@ -1276,21 +1942,21 @@
 
       trackingVrt.textContent =
         (vrtMm >= 0 ? "+" : "") +
-        vrtMm.toFixed(1) +
+        vrtMm.toFixed(0) +
         " mm";
 
       trackingLat.textContent =
         (latMm >= 0 ? "+" : "") +
-        latMm.toFixed(1) +
+        latMm.toFixed(0) +
         " mm";
 
       trackingLng.textContent =
         (lngMm >= 0 ? "+" : "") +
-        lngMm.toFixed(1) +
+        lngMm.toFixed(0) +
         " mm";
 
       trackingMagnitude.textContent =
-        magnitudeMm.toFixed(1) +
+        magnitudeMm.toFixed(0) +
         " mm";
 
       setTrackingRowState(
@@ -1350,12 +2016,91 @@
       }
 
       /*
-       * Rotation remains unavailable until rigid
-       * torso registration is implemented.
+       * Estimate rotation from corresponding vertices in the
+       * currently selected combined ROI.
        */
-      trackingYaw.textContent = "--";
-      trackingPitch.textContent = "--";
-      trackingRoll.textContent = "--";
+      const selectedIndices = getSelectedRegionIndices();
+
+      const rotationMatrix =
+        estimateSelectedRoiRotation(
+          referenceVertices,
+          vertexValues,
+          selectedIndices
+        );
+
+      const clinicalAngles =
+        rotationMatrixToClinicalAngles(rotationMatrix);
+
+      if (clinicalAngles) {
+        const yawDeg =
+          trackingFilters.yaw.filter(
+            clinicalAngles.yaw,
+            timestampSeconds
+          );
+
+        const pitchDeg =
+          trackingFilters.pitch.filter(
+            clinicalAngles.pitch,
+            timestampSeconds
+          );
+
+        const rollDeg =
+          trackingFilters.roll.filter(
+            clinicalAngles.roll,
+            timestampSeconds
+          );
+
+        const rotationToleranceDeg =
+          Number(rotationTolerance.value);
+
+        trackingYaw.textContent =
+          formatSignedDegrees(yawDeg);
+
+        trackingPitch.textContent =
+          formatSignedDegrees(pitchDeg);
+
+        trackingRoll.textContent =
+          formatSignedDegrees(rollDeg);
+
+        setTrackingRowState(
+          trackingYaw,
+          Math.abs(yawDeg) / rotationToleranceDeg
+        );
+
+        setTrackingRowState(
+          trackingPitch,
+          Math.abs(pitchDeg) / rotationToleranceDeg
+        );
+
+        setTrackingRowState(
+          trackingRoll,
+          Math.abs(rollDeg) / rotationToleranceDeg
+        );
+
+        updatePositionBar(
+          "barYaw",
+          yawDeg,
+          rotationToleranceDeg
+        );
+
+        updatePositionBar(
+          "barPitch",
+          pitchDeg,
+          rotationToleranceDeg
+        );
+
+        updatePositionBar(
+          "barRoll",
+          rollDeg,
+          rotationToleranceDeg
+        );
+      } else {
+        trackingYaw.textContent = "--";
+        trackingPitch.textContent = "--";
+        trackingRoll.textContent = "--";
+      }
+
+      updateOverallTrackingStatus();
     }
 
     function updateMesh(vertexValues, predCamT) {
@@ -1881,18 +2626,78 @@
       }
     }
 
-    toggleRuntimePanel.onclick = () => {
-      const isHidden =
-        runtimePanel.style.display === "none";
-
+    function setRuntimePanelVisible(visible) {
       runtimePanel.style.display =
-        isHidden ? "" : "none";
+        visible ? "" : "none";
 
       toggleRuntimePanel.textContent =
-        isHidden ? "Hide parameters" : "Show parameters";
+        visible ? "Hide parameters" : "Show parameters";
+
+      toggleRuntimePanel.setAttribute(
+        "aria-expanded",
+        String(visible)
+      );
+    }
+
+    toggleRuntimePanel.onclick = () => {
+      const isVisible =
+        runtimePanel.style.display !== "none";
+
+      setRuntimePanelVisible(!isVisible);
+
+      window.requestAnimationFrame(resizeRenderer);
     };
 
+    /*
+     * Parameters are visible initially.
+     */
+    setRuntimePanelVisible(true);
+
+    function setSecondaryView(showProjectedOverlay) {
+      overlayCanvas.style.display =
+        showProjectedOverlay ? "block" : "none";
+
+      latencyHud.style.display =
+        showProjectedOverlay ? "none" : "block";
+
+      toggleSecondaryView.textContent =
+        showProjectedOverlay
+          ? "Show latency"
+          : "Show overlay";
+
+      toggleSecondaryView.setAttribute(
+        "aria-pressed",
+        String(showProjectedOverlay)
+      );
+
+      showOverlay.checked = showProjectedOverlay;
+
+      if (!showProjectedOverlay) {
+        overlayContext.clearRect(
+          0,
+          0,
+          overlayCanvas.width,
+          overlayCanvas.height
+        );
+      }
+    }
+
+    toggleSecondaryView.onclick = () => {
+      const overlayIsVisible =
+        overlayCanvas.style.display !== "none";
+
+      setSecondaryView(!overlayIsVisible);
+    };
+
+    /*
+     * Default secondary pane: latency.
+     */
+    setSecondaryView(false);
+
     function clearTrackingReadout() {
+      resetTrackingFilters();
+      trackingFilterReferenceKey = null;
+
       trackingVrt.textContent = "--";
       trackingLat.textContent = "--";
       trackingLng.textContent = "--";
@@ -1966,6 +2771,7 @@
 
       clearReferenceButton.disabled = true;
       clearTrackingReadout();
+      updateOverallTrackingStatus();
     };
 
     function handleTrackingRegionChange(changedInput) {
@@ -2014,20 +2820,26 @@
       );
     }
 
-    translationTolerance.oninput = () => {
+    function refreshToleranceDisplay() {
       refreshThresholdLabels();
 
+      /*
+       * Recompute row states, marker colors, marker positions,
+       * and green tolerance-zone widths during slider movement.
+       */
       if (
         latestVertices &&
         referenceVertices
       ) {
         updateLiveMeshAlignmentColor(latestVertices);
       }
-    };
+    }
 
-    rotationTolerance.oninput = () => {
-      refreshThresholdLabels();
-    };
+    translationTolerance.oninput =
+      refreshToleranceDisplay;
+
+    rotationTolerance.oninput =
+      refreshToleranceDisplay;
 
     refreshThresholdLabels();
 
@@ -2132,6 +2944,726 @@
       }
     };
   </script>
+
+<style id="viewportLayoutFix">
+  /*
+   * Fixed application viewport.
+   * No document-level or nested-pane scrollbars.
+   */
+  html,
+  body {
+    width: 100%;
+    height: 100%;
+    margin: 0;
+    overflow: hidden;
+  }
+
+  body {
+    display: grid;
+    grid-template-rows: auto minmax(0, 1fr);
+  }
+
+  #controls {
+    min-height: 0;
+    padding: 8px 12px;
+  }
+
+  #controls button {
+    padding: 8px 14px;
+    font-size: 14px;
+  }
+
+  #status {
+    align-self: center;
+    font-size: 15px;
+  }
+
+  /*
+   * Four-row left dashboard:
+   * 1. Persistent parameters toggle
+   * 2. Optional runtime parameters
+   * 3. Reference tracking
+   * 4. Latency HUD
+   */
+  #views {
+    display: grid;
+    grid-template-columns:
+      minmax(390px, 0.82fr)
+      minmax(420px, 1.08fr)
+      minmax(420px, 1.08fr);
+    grid-template-rows:
+      auto
+      auto
+      auto
+      minmax(0, 1fr);
+    gap: 8px;
+    min-width: 0;
+    min-height: 0;
+    height: auto;
+    padding: 0 8px 8px;
+    overflow: hidden;
+    align-items: stretch;
+  }
+
+  #toggleRuntimePanel {
+    grid-column: 1;
+    grid-row: 1;
+    position: relative;
+    z-index: 10;
+    width: 100%;
+    min-height: 32px;
+    margin: 0;
+    padding: 6px 12px;
+    font-size: 13px;
+  }
+
+  #runtimePanel {
+    grid-column: 1;
+    grid-row: 2;
+    position: static;
+    width: auto;
+    min-width: 0;
+    margin: 0;
+    padding: 10px 12px;
+    overflow: hidden;
+    font-size: 12px;
+  }
+
+  #runtimePanel .panelTitle {
+    margin-bottom: 6px;
+    font-size: 16px;
+  }
+
+  #runtimePanel label {
+    gap: 3px;
+    margin: 5px 0;
+  }
+
+  #runtimePanel select {
+    padding: 5px 7px;
+    font-size: 12px;
+  }
+
+  #runtimePanel .controlRow {
+    gap: 6px;
+    margin: 5px 0;
+  }
+
+  #runtimePanel button {
+    padding: 5px 8px;
+    font-size: 12px;
+  }
+
+  #runtimePanel .checkRow input {
+    width: 14px;
+    height: 14px;
+  }
+
+  #calibrationStatus {
+    font-size: 11px;
+  }
+
+  #serverConfig {
+    margin-top: 6px;
+    padding-top: 6px;
+    font-size: 10px;
+    line-height: 1.25;
+  }
+
+  #referencePanel {
+    grid-column: 1;
+    grid-row: 3;
+    min-width: 0;
+    margin: 0;
+    padding: 9px 12px;
+    overflow: hidden;
+    border-radius: 6px;
+  }
+
+  #referencePanel .panelTitle {
+    font-size: 13px;
+  }
+
+  #referencePanel button {
+    padding: 5px 9px;
+    font-size: 12px;
+  }
+
+  #referenceStatus {
+    margin: 5px 0;
+    font-size: 10px;
+    line-height: 1.2;
+  }
+
+  #trackingRegions {
+    gap: 3px;
+    margin: 5px 0;
+    padding: 5px;
+  }
+
+  #trackingRegions .roiOption {
+    gap: 4px;
+    padding: 3px 5px;
+    font-size: 10px;
+  }
+
+  #trackingRegions input {
+    width: 11px;
+    height: 11px;
+  }
+
+  #trackingThresholds {
+    gap: 4px;
+    margin: 5px 0 6px;
+  }
+
+  #trackingThresholds label,
+  .thresholdInput output {
+    font-size: 10px;
+  }
+
+  .thresholdInput {
+    grid-template-columns: minmax(0, 1fr) 55px;
+    gap: 5px;
+  }
+
+  #trackingReadout {
+    gap: 3px;
+    margin-top: 5px;
+  }
+
+  #trackingReadout > div {
+    grid-template-columns: 38px 68px minmax(90px, 1fr);
+    gap: 5px;
+    padding: 3px 5px;
+  }
+
+  #trackingReadout span {
+    font-size: 10px;
+  }
+
+  #trackingReadout strong {
+    min-width: 0;
+    font-size: 12px;
+  }
+
+  .positionBar {
+    height: 18px;
+  }
+
+  .researchNotice {
+    margin-top: 5px;
+    font-size: 9px;
+    line-height: 1.1;
+  }
+
+  /*
+   * Latency pane consumes only remaining space.
+   * Content is compacted and clipped rather than scrolled.
+   */
+  #latencyHud {
+    grid-column: 1;
+    grid-row: 4;
+    min-width: 0;
+    min-height: 0;
+    height: auto;
+    margin: 0;
+    padding: 8px 12px;
+    overflow: hidden;
+    white-space: pre;
+    font: 700 11px/1.22 monospace;
+    box-sizing: border-box;
+  }
+
+  #leftViews {
+    grid-column: 2;
+    grid-row: 1 / 5;
+    min-width: 0;
+    min-height: 0;
+  }
+
+  #mesh {
+    grid-column: 3;
+    grid-row: 1 / 5;
+    position: relative;
+    min-width: 0;
+    min-height: 0;
+    overflow: hidden;
+  }
+
+  #video,
+  #overlay,
+  #mesh,
+  #mesh canvas {
+    min-width: 0;
+    min-height: 0;
+    max-height: 100%;
+  }
+
+  /*
+   * Small tracking-coordinate indicator.
+   * Camera convention:
+   * LAT = X, VRT = Y, LNG = Z.
+   */
+  #axisIndicator {
+    position: absolute;
+    top: 10px;
+    right: 10px;
+    z-index: 20;
+    width: 112px;
+    padding: 7px 8px;
+    color: #eaf7ff;
+    background: rgba(12, 16, 22, 0.82);
+    border: 1px solid rgba(117, 210, 255, 0.55);
+    border-radius: 6px;
+    box-sizing: border-box;
+    pointer-events: none;
+    user-select: none;
+    font-family: monospace;
+    box-shadow: 0 2px 10px rgba(0, 0, 0, 0.45);
+  }
+
+  .axisTitle {
+    margin-bottom: 4px;
+    color: #9da8b7;
+    text-align: center;
+    font-size: 8px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+  }
+
+  .axisGraphic {
+    position: relative;
+    width: 72px;
+    height: 50px;
+    margin: 0 auto 4px;
+    font-size: 9px;
+    font-weight: 700;
+  }
+
+  .axisVrt,
+  .axisLat,
+  .axisLng {
+    position: absolute;
+    display: flex;
+    align-items: center;
+    gap: 3px;
+  }
+
+  .axisVrt {
+    left: 29px;
+    top: 0;
+    flex-direction: column;
+    color: #58d68d;
+  }
+
+  .axisLat {
+    left: 35px;
+    top: 25px;
+    color: #ff6577;
+  }
+
+  .axisLng {
+    left: 4px;
+    top: 24px;
+    color: #55c8ff;
+  }
+
+  .axisArrow {
+    font-size: 18px;
+    line-height: 12px;
+  }
+
+  .axisDepth {
+    font-size: 17px;
+    line-height: 14px;
+  }
+
+  .rotationKey {
+    display: grid;
+    gap: 1px;
+    padding-top: 4px;
+    border-top: 1px solid rgba(255, 255, 255, 0.15);
+    color: #b9c1cc;
+    font-size: 7px;
+    line-height: 1.25;
+    text-align: center;
+  }
+
+  @media (max-height: 820px) {
+    #runtimePanel {
+      padding: 7px 10px;
+    }
+
+    #runtimePanel label {
+      margin: 3px 0;
+    }
+
+    #referencePanel {
+      padding: 7px 10px;
+    }
+
+    #trackingReadout > div {
+      padding: 2px 4px;
+    }
+
+    .positionBar {
+      height: 15px;
+    }
+
+    #latencyHud {
+      padding: 6px 10px;
+      font-size: 9px;
+      line-height: 1.12;
+    }
+  }
+</style>
+
+
+<style id="secondaryPaneLayoutFix">
+  /*
+   * Compact parameters button at the top-left.
+   */
+  #toggleRuntimePanel {
+    width: fit-content;
+    min-width: 128px;
+    min-height: 28px;
+    justify-self: start;
+    align-self: start;
+    padding: 5px 10px;
+    color: #ffffff;
+    background: #2a2a2a;
+    border: 1px solid #666666;
+    border-radius: 3px;
+    font-size: 11px;
+    font-weight: 600;
+    line-height: 1;
+  }
+
+  #toggleRuntimePanel:hover {
+    background: #363636;
+  }
+
+  /*
+   * Keep the runtime panel directly below the small button.
+   */
+  #views {
+    grid-template-rows:
+      auto
+      auto
+      minmax(0, 1fr);
+  }
+
+  #toggleRuntimePanel {
+    grid-column: 1;
+    grid-row: 1;
+  }
+
+  #runtimePanel {
+    grid-column: 1;
+    grid-row: 2;
+    display: block;
+  }
+
+  #referencePanel {
+    grid-column: 1;
+    grid-row: 3;
+    min-height: 0;
+  }
+
+  /*
+   * Remove latency from the left dashboard column.
+   */
+  #latencyHud {
+    grid-column: auto;
+    grid-row: auto;
+  }
+
+  /*
+   * Camera and secondary pane remain vertically stacked.
+   */
+  #leftViews {
+    grid-column: 2;
+    grid-row: 1 / 4;
+    display: grid;
+    grid-template-rows:
+      minmax(0, 1fr)
+      minmax(0, 1fr);
+    gap: 8px;
+    min-height: 0;
+  }
+
+  #mesh {
+    grid-column: 3;
+    grid-row: 1 / 4;
+  }
+
+  #secondaryView {
+    position: relative;
+    min-width: 0;
+    min-height: 0;
+    overflow: hidden;
+    background: #141414;
+    border: 1px solid #555555;
+    box-sizing: border-box;
+  }
+
+  #toggleSecondaryView {
+    position: absolute;
+    top: 7px;
+    right: 7px;
+    z-index: 15;
+    width: auto;
+    min-width: 92px;
+    padding: 5px 8px;
+    color: #ffffff;
+    background: rgba(42, 42, 42, 0.92);
+    border: 1px solid #777777;
+    border-radius: 3px;
+    font-size: 10px;
+    font-weight: 600;
+    line-height: 1;
+  }
+
+  #toggleSecondaryView:hover {
+    background: #3a3a3a;
+  }
+
+  #secondaryView #latencyHud,
+  #secondaryView #overlay {
+    width: 100%;
+    height: 100%;
+    margin: 0;
+    box-sizing: border-box;
+  }
+
+  #secondaryView #latencyHud {
+    display: block;
+    padding: 28px 14px 10px;
+    overflow: hidden;
+    color: #7dff9b;
+    background: #181818;
+    border: 0;
+    font: 700 12px/1.35 monospace;
+    white-space: pre;
+  }
+
+  #secondaryView #overlay {
+    display: none;
+    object-fit: contain;
+    background: #000000;
+    border: 0;
+  }
+
+  @media (max-height: 850px) {
+    #secondaryView #latencyHud {
+      padding: 26px 10px 7px;
+      font-size: 10px;
+      line-height: 1.18;
+    }
+  }
+</style>
+
+
+<style id="largerLatencyTextV3">
+  #secondaryView #latencyHud {
+    padding: 42px 26px 16px;
+    font-size: 24px;
+    line-height: 1.50;
+  }
+
+  @media (max-height: 850px) {
+    #secondaryView #latencyHud {
+      padding: 36px 20px 12px;
+      font-size: 20px;
+      line-height: 1.38;
+    }
+  }
+</style>
+
+
+<style id="trackingStatusAndReadoutSize">
+  /*
+   * Consolidated 6DOF status.
+   */
+  #overallTrackingStatus {
+    display: grid;
+    grid-template-columns: 34px 1fr;
+    gap: 9px;
+    align-items: center;
+    min-height: 42px;
+    margin: 8px 0 7px;
+    padding: 7px 12px;
+    border: 2px solid #667080;
+    border-radius: 6px;
+    box-sizing: border-box;
+    color: #c8ced7;
+    background: #252a31;
+    font-family: monospace;
+    font-weight: 800;
+    box-shadow: inset 0 0 12px rgba(0, 0, 0, 0.22);
+  }
+
+  #overallTrackingStatus .statusIcon {
+    display: grid;
+    place-items: center;
+    width: 30px;
+    height: 30px;
+    border: 2px solid currentColor;
+    border-radius: 50%;
+    box-sizing: border-box;
+    font-size: 21px;
+    line-height: 1;
+  }
+
+  #overallTrackingStatus .statusText {
+    font-size: 16px;
+    line-height: 1;
+    letter-spacing: 0.025em;
+  }
+
+  #overallTrackingStatus.withinTolerance {
+    color: #63ff9a;
+    background: rgba(25, 110, 61, 0.48);
+    border-color: #4dff8e;
+    box-shadow:
+      inset 0 0 16px rgba(77, 255, 142, 0.14),
+      0 0 10px rgba(77, 255, 142, 0.22);
+  }
+
+  #overallTrackingStatus.nearTolerance {
+    color: #ffd35b;
+    background: rgba(115, 78, 14, 0.48);
+    border-color: #ffd35b;
+    box-shadow:
+      inset 0 0 16px rgba(255, 211, 91, 0.12),
+      0 0 10px rgba(255, 211, 91, 0.18);
+  }
+
+  #overallTrackingStatus.outsideTolerance {
+    color: #ff6678;
+    background: rgba(125, 27, 42, 0.52);
+    border-color: #ff4f68;
+    box-shadow:
+      inset 0 0 16px rgba(255, 79, 104, 0.14),
+      0 0 10px rgba(255, 79, 104, 0.22);
+  }
+
+  #overallTrackingStatus.unavailable {
+    color: #aeb6c2;
+    background: #252a31;
+    border-color: #667080;
+  }
+
+  /*
+   * Larger shift and rotation readouts.
+   */
+  #trackingReadout > div {
+    grid-template-columns:
+      50px
+      96px
+      minmax(90px, 1fr);
+    min-height: 38px;
+    padding: 5px 7px;
+  }
+
+  #trackingReadout span {
+    font-size: 13px;
+    letter-spacing: 0.025em;
+  }
+
+  #trackingReadout strong {
+    min-width: 0;
+    font-size: 18px;
+    line-height: 1;
+    white-space: nowrap;
+  }
+
+  #trackingReadout .positionBar {
+    height: 25px;
+  }
+
+  @media (max-height: 850px) {
+    #overallTrackingStatus {
+      min-height: 36px;
+      margin: 5px 0;
+      padding: 4px 8px;
+    }
+
+    #overallTrackingStatus .statusIcon {
+      width: 26px;
+      height: 26px;
+      font-size: 17px;
+    }
+
+    #overallTrackingStatus .statusText {
+      font-size: 14px;
+    }
+
+    #trackingReadout > div {
+      grid-template-columns:
+        46px
+        88px
+        minmax(80px, 1fr);
+      min-height: 32px;
+      padding: 3px 5px;
+    }
+
+    #trackingReadout span {
+      font-size: 12px;
+    }
+
+    #trackingReadout strong {
+      font-size: 16px;
+    }
+
+    #trackingReadout .positionBar {
+      height: 21px;
+    }
+  }
+</style>
+
+
+<style id="subtleOverallPaneStatus">
+  #overallTrackingStatus {
+    display: none !important;
+  }
+
+  #referencePanel {
+    transition:
+      background-color 140ms ease,
+      border-color 140ms ease,
+      box-shadow 140ms ease;
+  }
+
+  #referencePanel.statusUnavailable {
+    background: #181818;
+    border-color: #555;
+    box-shadow: none;
+  }
+
+  #referencePanel.statusWithinTolerance {
+    background: rgba(25, 72, 46, 0.22);
+    border-color: rgba(77, 255, 142, 0.42);
+    box-shadow:
+      inset 0 0 28px rgba(77, 255, 142, 0.035);
+  }
+
+  #referencePanel.statusNearTolerance {
+    background: rgba(86, 65, 22, 0.22);
+    border-color: rgba(255, 211, 91, 0.45);
+    box-shadow:
+      inset 0 0 28px rgba(255, 211, 91, 0.035);
+  }
+
+  #referencePanel.statusOutsideTolerance {
+    background: rgba(84, 27, 36, 0.24);
+    border-color: rgba(255, 79, 104, 0.48);
+    box-shadow:
+      inset 0 0 28px rgba(255, 79, 104, 0.04);
+  }
+</style>
+
 </body>
 </html>
 <style>
@@ -2578,5 +4110,129 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+</style>
+
+<style id="hfsAxisIndicatorStyle">
+  #axisIndicator {
+    width: 176px;
+    padding: 10px 12px;
+    background: rgba(10, 14, 20, 0.90);
+    border: 1px solid rgba(117, 210, 255, 0.75);
+    border-radius: 7px;
+    font-family: monospace;
+  }
+
+  #axisIndicator .axisTitle {
+    margin-bottom: 7px;
+    color: #ffffff;
+    font-size: 11px;
+    letter-spacing: 0.06em;
+  }
+
+  #axisIndicator .axisDiagram {
+    position: relative;
+    width: 148px;
+    height: 100px;
+    margin: 0 auto 7px;
+  }
+
+  #axisIndicator .axisLong {
+    position: absolute;
+    top: 0;
+    left: 54px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    color: #55c8ff;
+  }
+
+  #axisIndicator .axisLong .axisArrow {
+    font-size: 30px;
+    line-height: 25px;
+  }
+
+  #axisIndicator .axisLateral {
+    position: absolute;
+    top: 48px;
+    left: 0;
+    width: 148px;
+    display: grid;
+    grid-template-columns: auto auto auto auto auto;
+    gap: 4px;
+    align-items: center;
+    color: #58d68d;
+  }
+
+  #axisIndicator .axisLine {
+    font-size: 23px;
+    line-height: 18px;
+  }
+
+  #axisIndicator .axisVertical {
+    position: absolute;
+    top: 70px;
+    left: 48px;
+    display: flex;
+    gap: 5px;
+    align-items: center;
+    color: #ff6577;
+  }
+
+  #axisIndicator .axisDepth {
+    font-size: 25px;
+    line-height: 20px;
+  }
+
+  #axisIndicator strong {
+    font-size: 13px;
+  }
+
+  #axisIndicator small {
+    font-size: 8px;
+    font-weight: 700;
+  }
+
+  #axisIndicator .rotationKey {
+    gap: 3px;
+    padding-top: 7px;
+    font-size: 10px;
+    line-height: 1.3;
+  }
+
+  #axisIndicator .rotationKey b {
+    color: #ffffff;
+  }
+</style>
+
+<style id="largerLatencyText">
+  #secondaryView #latencyHud {
+    padding: 34px 18px 12px;
+    font-size: 16px;
+    line-height: 1.42;
+  }
+
+  @media (max-height: 850px) {
+    #secondaryView #latencyHud {
+      padding: 30px 14px 9px;
+      font-size: 14px;
+      line-height: 1.30;
+    }
+  }
+</style>
+
+<style id="largerLatencyTextV2">
+  #secondaryView #latencyHud {
+    padding: 38px 22px 14px;
+    font-size: 20px;
+    line-height: 1.48;
+  }
+
+  @media (max-height: 850px) {
+    #secondaryView #latencyHud {
+      padding: 34px 18px 10px;
+      font-size: 17px;
+      line-height: 1.34;
+    }
   }
 </style>
