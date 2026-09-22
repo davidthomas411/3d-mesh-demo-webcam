@@ -110,8 +110,35 @@
 
 <body>
   <div id="controls">
-    <button id="start">Start webcam and inference</button>
-    <button id="stop" disabled>Stop webcam</button>
+    <select id="inputSource" aria-label="Input source">
+      <option value="webcam" selected>Webcam</option>
+      <option value="video">Uploaded video</option>
+      <option value="screen">Screen / window</option>
+    </select>
+
+    <input
+      id="videoFile"
+      type="file"
+      accept="video/*"
+      hidden>
+
+    <button id="chooseVideo" type="button" hidden>
+      Choose video
+    </button>
+
+    <label id="loopVideoLabel" hidden>
+      <input id="loopVideo" type="checkbox" checked>
+      Loop
+    </label>
+
+    <button id="start">
+      Start webcam and inference
+    </button>
+
+    <button id="stop" disabled>
+      Stop
+    </button>
+
     <div id="status">Waiting to start</div>
   </div>
 
@@ -124,6 +151,7 @@
         Inference mode
         <select id="inferenceMode">
           <option value="body" selected>Body only, low latency</option>
+          <option value="head_shoulders">Head + shoulders</option>
           <option value="full">Full body + hands</option>
         </select>
       </label>
@@ -259,6 +287,14 @@
               name="trackingRegion"
               value="pelvis">
             <span>Pelvis</span>
+          </label>
+
+          <label class="roiOption">
+            <input
+              type="checkbox"
+              name="trackingRegion"
+              value="arms">
+            <span>Arms</span>
           </label>
         </fieldset>
 
@@ -458,6 +494,22 @@
 
     const button = document.getElementById("start");
     const stopButton = document.getElementById("stop");
+
+    const inputSource =
+      document.getElementById("inputSource");
+
+    const videoFile =
+      document.getElementById("videoFile");
+
+    const chooseVideo =
+      document.getElementById("chooseVideo");
+
+    const loopVideo =
+      document.getElementById("loopVideo");
+
+    const loopVideoLabel =
+      document.getElementById("loopVideoLabel");
+
     const video = document.getElementById("video");
     const status = document.getElementById("status");
     const latencyHud = document.getElementById("latencyHud");
@@ -544,6 +596,7 @@
     let uploadBusy = false;
     let running = false;
     let mediaStream = null;
+    let uploadedVideoUrl = null;
     let streamSocket = null;
     let pendingMeshMetadata = null;
     let websocketRequestStartMs = 0;
@@ -710,6 +763,27 @@
       if (!topology.ready) {
         throw new Error("Estimator is not ready");
       }
+
+      if (
+        !topology.anatomical_regions ||
+        !Array.isArray(
+          topology.anatomical_regions.head
+        )
+      ) {
+        throw new Error(
+          "MHR anatomical regions unavailable"
+        );
+      }
+
+      anatomicalRegions =
+        topology.anatomical_regions;
+
+      console.log(
+        "MHR rig-derived anatomical regions:",
+        describeAnatomicalRegions(
+          anatomicalRegions
+        )
+      );
 
       const geometry = new THREE.BufferGeometry();
 
@@ -930,6 +1004,113 @@
       return Array.from(combinedIndices);
     }
 
+    /*
+     * Return triangles fully contained in the selected ROI.
+     * This changes rendering only.
+     */
+    function getSelectedRoiFaceIndices(
+      selectedIndices
+    ) {
+      if (
+        !topology ||
+        !topology.faces ||
+        !Number.isFinite(topology.vertex_count)
+      ) {
+        return null;
+      }
+
+      const selectedNames =
+        getSelectedRegionNames();
+
+      if (selectedNames.includes("fullBody")) {
+        return new Uint32Array(
+          topology.faces
+        );
+      }
+
+      const selectedVertex =
+        new Uint8Array(
+          topology.vertex_count
+        );
+
+      for (const vertexIndex of selectedIndices) {
+        if (
+          Number.isInteger(vertexIndex) &&
+          vertexIndex >= 0 &&
+          vertexIndex < topology.vertex_count
+        ) {
+          selectedVertex[vertexIndex] = 1;
+        }
+      }
+
+      const visibleFaces = [];
+
+      for (
+        let offset = 0;
+        offset + 2 < topology.faces.length;
+        offset += 3
+      ) {
+        const a = topology.faces[offset];
+        const b = topology.faces[offset + 1];
+        const c = topology.faces[offset + 2];
+
+        if (
+          selectedVertex[a] &&
+          selectedVertex[b] &&
+          selectedVertex[c]
+        ) {
+          visibleFaces.push(a, b, c);
+        }
+      }
+
+      return new Uint32Array(
+        visibleFaces
+      );
+    }
+
+    function updateVisibleRoiMeshes(
+      selectedIndices
+    ) {
+      const visibleFaces =
+        getSelectedRoiFaceIndices(
+          selectedIndices
+        );
+
+      if (!visibleFaces) {
+        return;
+      }
+
+      if (bodyMesh) {
+        bodyMesh.geometry.setIndex(
+          new THREE.BufferAttribute(
+            visibleFaces,
+            1
+          )
+        );
+
+        bodyMesh.geometry.index.needsUpdate =
+          true;
+
+        bodyMesh.geometry.computeBoundingSphere();
+      }
+
+      if (referenceMesh) {
+        referenceMesh.geometry.setIndex(
+          new THREE.BufferAttribute(
+            new Uint32Array(visibleFaces),
+            1
+          )
+        );
+
+        referenceMesh.geometry.index.needsUpdate =
+          true;
+
+        referenceMesh.geometry
+          .computeBoundingSphere();
+      }
+    }
+
+
     function deviationColorHex(
       deviationMm,
       toleranceMm
@@ -983,6 +1164,14 @@
 
       const selected =
         new Set(selectedIndices);
+
+      /*
+       * Restrict both displayed meshes to triangles fully
+       * contained in the selected anatomical ROI.
+       */
+      updateVisibleRoiMeshes(
+        selectedIndices
+      );
 
       /*
        * Live mesh:
@@ -1660,6 +1849,130 @@
       ];
     }
 
+    /*
+     * Estimate the rigid transform mapping the selected
+     * reference ROI onto the selected live ROI:
+     *
+     *   livePoint = rotation * referencePoint + translation
+     *
+     * Translation and rotation therefore come from the same
+     * selected anatomical vertices.
+     */
+    function estimateSelectedRoiRigidTransform(
+      referenceValues,
+      liveValues,
+      selectedIndices
+    ) {
+      const rotation =
+        estimateSelectedRoiRotation(
+          referenceValues,
+          liveValues,
+          selectedIndices
+        );
+
+      if (!rotation) {
+        return null;
+      }
+
+      let referenceCx = 0;
+      let referenceCy = 0;
+      let referenceCz = 0;
+
+      let liveCx = 0;
+      let liveCy = 0;
+      let liveCz = 0;
+
+      let validCount = 0;
+
+      for (const vertexIndex of selectedIndices) {
+        const offset = vertexIndex * 3;
+
+        const referenceX =
+          referenceValues[offset];
+        const referenceY =
+          referenceValues[offset + 1];
+        const referenceZ =
+          referenceValues[offset + 2];
+
+        const liveX =
+          liveValues[offset];
+        const liveY =
+          liveValues[offset + 1];
+        const liveZ =
+          liveValues[offset + 2];
+
+        if (
+          !Number.isFinite(referenceX) ||
+          !Number.isFinite(referenceY) ||
+          !Number.isFinite(referenceZ) ||
+          !Number.isFinite(liveX) ||
+          !Number.isFinite(liveY) ||
+          !Number.isFinite(liveZ)
+        ) {
+          continue;
+        }
+
+        referenceCx += referenceX;
+        referenceCy += referenceY;
+        referenceCz += referenceZ;
+
+        liveCx += liveX;
+        liveCy += liveY;
+        liveCz += liveZ;
+
+        validCount++;
+      }
+
+      if (validCount < 3) {
+        return null;
+      }
+
+      referenceCx /= validCount;
+      referenceCy /= validCount;
+      referenceCz /= validCount;
+
+      liveCx /= validCount;
+      liveCy /= validCount;
+      liveCz /= validCount;
+
+      /*
+       * Rotated reference centroid.
+       */
+      const rotatedReferenceCx =
+        rotation[0] * referenceCx +
+        rotation[1] * referenceCy +
+        rotation[2] * referenceCz;
+
+      const rotatedReferenceCy =
+        rotation[3] * referenceCx +
+        rotation[4] * referenceCy +
+        rotation[5] * referenceCz;
+
+      const rotatedReferenceCz =
+        rotation[6] * referenceCx +
+        rotation[7] * referenceCy +
+        rotation[8] * referenceCz;
+
+      const translation = [
+        liveCx - rotatedReferenceCx,
+        liveCy - rotatedReferenceCy,
+        liveCz - rotatedReferenceCz
+      ];
+
+      if (
+        !translation.every(Number.isFinite)
+      ) {
+        return null;
+      }
+
+      return {
+        rotation,
+        translation,
+        validCount
+      };
+    }
+
+
     function rotationMatrixToClinicalAngles(rotation) {
       if (!rotation || rotation.length !== 9) {
         return null;
@@ -1900,14 +2213,32 @@
       const timestampSeconds =
         performance.now() / 1000;
 
+      /*
+       * Calculate all six alignment values from one rigid
+       * registration of the currently selected anatomical ROI.
+       */
+      const selectedIndices =
+        getSelectedRegionIndices();
+
+      const roiRegistration =
+        estimateSelectedRoiRigidTransform(
+          referenceVertices,
+          vertexValues,
+          selectedIndices
+        );
+
+      if (!roiRegistration) {
+        return;
+      }
+
       const rawLatMm =
-        (latestPredCamT[0] - referencePredCamT[0]) * 1000;
+        roiRegistration.translation[0] * 1000;
 
       const rawLngMm =
-        (latestPredCamT[1] - referencePredCamT[1]) * 1000;
+        roiRegistration.translation[1] * 1000;
 
       const rawVrtMm =
-        (latestPredCamT[2] - referencePredCamT[2]) * 1000;
+        roiRegistration.translation[2] * 1000;
 
       const latMm =
         trackingFilters.lat.filter(
@@ -2019,14 +2350,8 @@
        * Estimate rotation from corresponding vertices in the
        * currently selected combined ROI.
        */
-      const selectedIndices = getSelectedRegionIndices();
-
       const rotationMatrix =
-        estimateSelectedRoiRotation(
-          referenceVertices,
-          vertexValues,
-          selectedIndices
-        );
+        roiRegistration.rotation;
 
       const clinicalAngles =
         rotationMatrixToClinicalAngles(rotationMatrix);
@@ -2195,7 +2520,8 @@
       vertices,
       predCamT,
       focalLength,
-      keypoints
+      keypoints,
+      metadata
     ) {
       if (!showOverlay.checked) {
         overlayCanvas.style.visibility = "hidden";
@@ -2346,6 +2672,480 @@
         overlayContext.strokeStyle = "rgba(0, 0, 0, 0.9)";
         overlayContext.lineWidth = 1.5;
         overlayContext.stroke();
+      }
+
+      /*
+       * In head-and-shoulders mode, display a lightweight
+       * MediaPipe facial contour and the stabilized box that
+       * is supplied to SAM 3D Body.
+       */
+      if (
+        metadata &&
+        metadata.inference_mode === "head_shoulders"
+      ) {
+        const faceLandmarks =
+          metadata.mediapipe_landmarks;
+
+        const point = index => {
+          if (!Array.isArray(faceLandmarks)) {
+            return null;
+          }
+
+          const landmark = faceLandmarks[index];
+
+          if (
+            !landmark ||
+            !Number.isFinite(landmark[0]) ||
+            !Number.isFinite(landmark[1])
+          ) {
+            return null;
+          }
+
+          return [
+            landmark[0] * width,
+            landmark[1] * height
+          ];
+        };
+
+        /*
+         * MediaPipe face-oval path plus stable internal
+         * features. Dense tessellation is intentionally not
+         * drawn so the MHR overlay remains visible.
+         */
+        const contourPaths = [
+          [
+            10, 338, 297, 332, 284, 251, 389, 356,
+            454, 323, 361, 288, 397, 365, 379, 378,
+            400, 377, 152, 148, 176, 149, 150, 136,
+            172, 58, 132, 93, 234, 127, 162, 21,
+            54, 103, 67, 109, 10
+          ],
+          [
+            33, 160, 158, 133, 153, 144, 33
+          ],
+          [
+            362, 385, 387, 263, 373, 380, 362
+          ],
+          [
+            61, 40, 37, 0, 267, 270, 291,
+            321, 314, 17, 84, 91, 61
+          ]
+        ];
+
+        function drawFacePaths(
+          strokeStyle,
+          strokeWidth
+        ) {
+          overlayContext.beginPath();
+
+          for (const path of contourPaths) {
+            let pathStarted = false;
+
+            for (const index of path) {
+              const currentPoint = point(index);
+
+              if (!currentPoint) {
+                pathStarted = false;
+                continue;
+              }
+
+              if (!pathStarted) {
+                overlayContext.moveTo(
+                  currentPoint[0],
+                  currentPoint[1]
+                );
+
+                pathStarted = true;
+              } else {
+                overlayContext.lineTo(
+                  currentPoint[0],
+                  currentPoint[1]
+                );
+              }
+            }
+          }
+
+          overlayContext.strokeStyle = strokeStyle;
+          overlayContext.lineWidth = strokeWidth;
+          overlayContext.stroke();
+        }
+
+        // Dark halo.
+        drawFacePaths(
+          "rgba(0, 0, 0, 0.75)",
+          Math.max(5, lineWidth + 4)
+        );
+
+        // MediaPipe contour.
+        drawFacePaths(
+          "rgba(60, 225, 255, 0.90)",
+          Math.max(2, lineWidth)
+        );
+
+        const selectedFacePoints = [
+          10, 152, 234, 454,
+          33, 133, 362, 263,
+          1, 4, 61, 291
+        ];
+
+        for (const index of selectedFacePoints) {
+          const currentPoint = point(index);
+
+          if (!currentPoint) continue;
+
+          overlayContext.beginPath();
+          overlayContext.arc(
+            currentPoint[0],
+            currentPoint[1],
+            Math.max(2.5, lineWidth),
+            0,
+            Math.PI * 2
+          );
+
+          overlayContext.fillStyle =
+            "rgba(60, 225, 255, 0.95)";
+
+          overlayContext.fill();
+
+          overlayContext.strokeStyle =
+            "rgba(0, 0, 0, 0.85)";
+
+          overlayContext.lineWidth = 1;
+          overlayContext.stroke();
+        }
+
+        /*
+         * The crop box is in original input-image pixels.
+         * Convert it into the 640-pixel overlay coordinate
+         * system.
+         */
+        /*
+         * HRFFA iBUG-68 landmarks. Visibility classes:
+         *   0 = outside image
+         *   1 = occluded
+         *   2 = visible
+         */
+        const headLandmarks =
+          metadata.head_landmarks;
+
+        const headVisibility =
+          metadata.head_landmark_visibility;
+
+        if (
+          Array.isArray(headLandmarks) &&
+          headLandmarks.length >= 68
+        ) {
+          const chains = [
+            { ids: Array.from(
+                { length: 17 },
+                (_, i) => i
+              ), closed: false },
+            { ids: [17, 18, 19, 20, 21],
+              closed: false },
+            { ids: [22, 23, 24, 25, 26],
+              closed: false },
+            { ids: [27, 28, 29, 30],
+              closed: false },
+            { ids: [31, 32, 33, 34, 35],
+              closed: false },
+            { ids: [36, 37, 38, 39, 40, 41],
+              closed: true },
+            { ids: [42, 43, 44, 45, 46, 47],
+              closed: true },
+            { ids: [
+                48, 49, 50, 51, 52, 53,
+                54, 55, 56, 57, 58, 59
+              ],
+              closed: true },
+            { ids: [
+                60, 61, 62, 63,
+                64, 65, 66, 67
+              ],
+              closed: true }
+          ];
+
+          const validLandmark = index => {
+            const landmark = headLandmarks[index];
+
+            if (
+              !landmark ||
+              !Number.isFinite(landmark[0]) ||
+              !Number.isFinite(landmark[1])
+            ) {
+              return false;
+            }
+
+            /*
+             * Do not draw points explicitly classified as
+             * outside the image. Draw visible and occluded
+             * points using different opacity.
+             */
+            return (
+              !Array.isArray(headVisibility) ||
+              Number(headVisibility[index]) !== 0
+            );
+          };
+
+          function drawHrffaChains(
+            color,
+            strokeWidth
+          ) {
+            overlayContext.beginPath();
+
+            for (const chain of chains) {
+              let firstPoint = null;
+              let previousValid = false;
+
+              for (const index of chain.ids) {
+                if (!validLandmark(index)) {
+                  previousValid = false;
+                  continue;
+                }
+
+                const landmark =
+                  headLandmarks[index];
+
+                const currentPoint = [
+                  landmark[0],
+                  landmark[1]
+                ];
+
+                if (!firstPoint) {
+                  firstPoint = currentPoint;
+                }
+
+                if (!previousValid) {
+                  overlayContext.moveTo(
+                    currentPoint[0],
+                    currentPoint[1]
+                  );
+                } else {
+                  overlayContext.lineTo(
+                    currentPoint[0],
+                    currentPoint[1]
+                  );
+                }
+
+                previousValid = true;
+              }
+
+              if (
+                chain.closed &&
+                previousValid &&
+                firstPoint
+              ) {
+                overlayContext.lineTo(
+                  firstPoint[0],
+                  firstPoint[1]
+                );
+              }
+            }
+
+            overlayContext.strokeStyle = color;
+            overlayContext.lineWidth = strokeWidth;
+            overlayContext.stroke();
+          }
+
+          // Dark halo for contrast on light video.
+          drawHrffaChains(
+            "rgba(0, 0, 0, 0.78)",
+            Math.max(4, lineWidth + 3)
+          );
+
+          // HRFFA facial contours.
+          drawHrffaChains(
+            "rgba(70, 230, 255, 0.94)",
+            Math.max(1.5, lineWidth)
+          );
+
+          for (
+            let index = 0;
+            index < 68;
+            index++
+          ) {
+            if (!validLandmark(index)) {
+              continue;
+            }
+
+            const landmark =
+              headLandmarks[index];
+
+            const visibility =
+              Array.isArray(headVisibility)
+                ? Number(headVisibility[index])
+                : 2;
+
+            overlayContext.beginPath();
+
+            overlayContext.arc(
+              landmark[0],
+              landmark[1],
+              visibility === 2 ? 2.4 : 1.8,
+              0,
+              Math.PI * 2
+            );
+
+            overlayContext.fillStyle =
+              visibility === 2
+                ? "rgba(70, 230, 255, 0.98)"
+                : "rgba(70, 230, 255, 0.40)";
+
+            overlayContext.fill();
+          }
+        }
+
+        /*
+         * Native whole-head detection returned by DEIMv2.
+         * Coordinates are already in the 640-pixel server
+         * frame used by this overlay.
+         */
+        const detectorBox =
+          metadata.head_detector_box;
+
+        if (
+          Array.isArray(detectorBox) &&
+          detectorBox.length >= 4
+        ) {
+          const detectorX = detectorBox[0];
+          const detectorY = detectorBox[1];
+          const detectorWidth =
+            detectorBox[2] - detectorBox[0];
+          const detectorHeight =
+            detectorBox[3] - detectorBox[1];
+
+          overlayContext.save();
+
+          overlayContext.setLineDash([]);
+          overlayContext.strokeStyle =
+            "rgba(45, 225, 255, 0.98)";
+          overlayContext.lineWidth = 2.5;
+
+          overlayContext.strokeRect(
+            detectorX,
+            detectorY,
+            detectorWidth,
+            detectorHeight
+          );
+
+          const score = Number(
+            metadata.head_detection_score
+          );
+
+          const detectorLabel =
+            "DEIMv2 HEAD" +
+            (
+              Number.isFinite(score)
+                ? " " + score.toFixed(2)
+                : ""
+            );
+
+          overlayContext.font =
+            "700 12px monospace";
+
+          const detectorLabelWidth =
+            overlayContext
+              .measureText(detectorLabel)
+              .width;
+
+          const detectorLabelY =
+            Math.max(18, detectorY - 7);
+
+          overlayContext.fillStyle =
+            "rgba(0, 0, 0, 0.72)";
+
+          overlayContext.fillRect(
+            detectorX,
+            detectorLabelY - 15,
+            detectorLabelWidth + 10,
+            19
+          );
+
+          overlayContext.fillStyle =
+            "rgba(45, 225, 255, 0.98)";
+
+          overlayContext.fillText(
+            detectorLabel,
+            detectorX + 5,
+            detectorLabelY
+          );
+
+          overlayContext.restore();
+        }
+
+        const cropBox =
+          metadata.head_shoulders_box;
+
+        if (
+          Array.isArray(cropBox) &&
+          cropBox.length >= 4 &&
+          video.videoWidth > 0 &&
+          video.videoHeight > 0
+        ) {
+          /*
+           * The server receives the same 640-pixel capture
+           * frame used by this overlay canvas. Therefore the
+           * crop box is already in overlay-canvas pixels.
+           *
+           * Do not rescale using video.videoWidth, which is
+           * the original webcam resolution and would shift
+           * and shrink the box.
+           */
+          const boxX = cropBox[0];
+          const boxY = cropBox[1];
+          const boxWidth =
+            cropBox[2] - cropBox[0];
+          const boxHeight =
+            cropBox[3] - cropBox[1];
+
+          overlayContext.save();
+
+          overlayContext.setLineDash([8, 6]);
+          overlayContext.strokeStyle =
+            "rgba(255, 205, 70, 0.88)";
+
+          overlayContext.lineWidth = 2;
+
+          overlayContext.strokeRect(
+            boxX,
+            boxY,
+            boxWidth,
+            boxHeight
+          );
+
+          overlayContext.setLineDash([]);
+
+          const label =
+            "SAM HEAD + SHOULDERS ROI";
+
+          overlayContext.font =
+            "700 12px monospace";
+
+          const labelWidth =
+            overlayContext.measureText(label).width;
+
+          const labelY = Math.max(18, boxY - 7);
+
+          overlayContext.fillStyle =
+            "rgba(0, 0, 0, 0.72)";
+
+          overlayContext.fillRect(
+            boxX,
+            labelY - 15,
+            labelWidth + 10,
+            19
+          );
+
+          overlayContext.fillStyle =
+            "rgba(255, 220, 95, 0.98)";
+
+          overlayContext.fillText(
+            label,
+            boxX + 5,
+            labelY
+          );
+
+          overlayContext.restore();
+        }
       }
     }
 
@@ -2526,7 +3326,8 @@
             vertices,
             metadata.pred_cam_t,
             metadata.focal_length,
-            metadata.pred_keypoints_2d
+            metadata.pred_keypoints_2d,
+            metadata
           );
 
           const renderMs =
@@ -2732,12 +3533,15 @@
           ? new Float32Array(latestPredCamT)
           : null;
 
-      anatomicalRegions =
-        buildAnatomicalRegions(referenceVertices);
-
+      /*
+       * Preserve the fixed MHR rig-derived regions loaded
+       * from /topology.
+       */
       console.log(
-        "Heuristic anatomical regions:",
-        describeAnatomicalRegions(anatomicalRegions)
+        "Reference uses MHR rig-derived regions:",
+        describeAnatomicalRegions(
+          anatomicalRegions
+        )
       );
 
       createReferenceMesh(referenceVertices);
@@ -2758,8 +3562,10 @@
       referenceVertices = null;
       referencePredCamT = null;
       referenceCapturedAt = null;
-      anatomicalRegions = null;
-
+      /*
+       * Keep anatomicalRegions because they belong to the
+       * fixed MHR topology, not to this reference capture.
+       */
       removeReferenceMesh();
 
       if (bodyMesh && bodyMesh.material) {
@@ -2889,11 +3695,129 @@
       meshFramed = false;
     };
 
+    function releaseUploadedVideo() {
+      video.pause();
+      video.removeAttribute("src");
+      video.load();
+
+      if (uploadedVideoUrl) {
+        URL.revokeObjectURL(uploadedVideoUrl);
+        uploadedVideoUrl = null;
+      }
+    }
+
+    function updateInputSourceControls() {
+      const usingVideo =
+        inputSource.value === "video";
+
+      const usingScreen =
+        inputSource.value === "screen";
+
+      chooseVideo.hidden = !usingVideo;
+      loopVideoLabel.hidden = !usingVideo;
+
+      if (usingVideo) {
+        button.textContent =
+          "Start video inference";
+      } else if (usingScreen) {
+        button.textContent =
+          "Select screen / window";
+      } else {
+        button.textContent =
+          "Start webcam and inference";
+      }
+
+      if (!running) {
+        if (usingVideo) {
+          status.textContent =
+            videoFile.files.length
+              ? "Video selected: " +
+                videoFile.files[0].name
+              : "Choose a video file";
+        } else if (usingScreen) {
+          status.textContent =
+            "Ready to select a screen or window";
+        } else {
+          status.textContent =
+            "Waiting to start";
+        }
+      }
+    }
+
+    inputSource.onchange = () => {
+      if (running) {
+        stopButton.click();
+      }
+
+      if (inputSource.value !== "video") {
+        releaseUploadedVideo();
+      }
+
+      updateInputSourceControls();
+    };
+
+    chooseVideo.onclick = () => {
+      videoFile.click();
+    };
+
+    videoFile.onchange = () => {
+      releaseUploadedVideo();
+
+      const file = videoFile.files[0];
+
+      if (!file) {
+        status.textContent = "Choose a video file";
+        return;
+      }
+
+      uploadedVideoUrl =
+        URL.createObjectURL(file);
+
+      video.srcObject = null;
+      video.src = uploadedVideoUrl;
+      video.loop = loopVideo.checked;
+      video.muted = true;
+      video.playsInline = true;
+
+      status.textContent =
+        "Video selected: " + file.name;
+    };
+
+    loopVideo.onchange = () => {
+      video.loop = loopVideo.checked;
+    };
+
+    video.addEventListener("ended", () => {
+      if (
+        running &&
+        inputSource.value === "video" &&
+        !video.loop
+      ) {
+        running = false;
+        uploadBusy = false;
+
+        stopButton.disabled = true;
+        button.disabled = false;
+
+        status.textContent =
+          "Video complete";
+      }
+    });
+
+    updateInputSourceControls();
+
     stopButton.onclick = () => {
       running = false;
-      if (mediaStream) mediaStream.getTracks().forEach(track => track.stop());
+
+      if (mediaStream) {
+        mediaStream
+          .getTracks()
+          .forEach(track => track.stop());
+      }
+
       mediaStream = null;
       video.srcObject = null;
+      video.pause();
 
       if (streamSocket) {
         streamSocket.close();
@@ -2902,43 +3826,163 @@
 
       pendingMeshMetadata = null;
       uploadBusy = false;
+
       stopButton.disabled = true;
       button.disabled = false;
-      status.textContent = "Webcam stopped";
+
+      if (inputSource.value === "video") {
+        status.textContent =
+          "Video stopped";
+      } else if (inputSource.value === "screen") {
+        status.textContent =
+          "Screen capture stopped";
+      } else {
+        status.textContent =
+          "Webcam stopped";
+      }
     };
 
     button.onclick = async () => {
       try {
         button.disabled = true;
-        status.textContent = "Starting camera...";
 
-        mediaStream =
-          await navigator.mediaDevices.getUserMedia({
-            video: {
-              width: { ideal: 1280 },
-              height: { ideal: 720 }
+        const usingUploadedVideo =
+          inputSource.value === "video";
+
+        const usingScreenCapture =
+          inputSource.value === "screen";
+
+        if (usingUploadedVideo) {
+          const file = videoFile.files[0];
+
+          if (!file || !uploadedVideoUrl) {
+            throw new Error(
+              "Choose a video file before starting"
+            );
+          }
+
+          status.textContent =
+            "Starting uploaded video...";
+
+          video.srcObject = null;
+          video.loop = loopVideo.checked;
+
+          /*
+           * Restart completed videos. Preserve the current
+           * position when resuming a paused video.
+           */
+          if (
+            video.ended ||
+            video.currentTime >= video.duration
+          ) {
+            video.currentTime = 0;
+          }
+        } else if (usingScreenCapture) {
+          if (
+            !navigator.mediaDevices ||
+            !navigator.mediaDevices.getDisplayMedia
+          ) {
+            throw new Error(
+              "Screen capture is not supported by this browser"
+            );
+          }
+
+          status.textContent =
+            "Choose a screen or application window...";
+
+          releaseUploadedVideo();
+
+          mediaStream =
+            await navigator.mediaDevices.getDisplayMedia({
+              video: {
+                frameRate: {
+                  ideal: 15,
+                  max: 30
+                }
+              },
+              audio: false
+            });
+
+          video.srcObject = mediaStream;
+          video.muted = true;
+          video.playsInline = true;
+
+          const screenTrack =
+            mediaStream.getVideoTracks()[0];
+
+          if (!screenTrack) {
+            throw new Error(
+              "The selected source has no video track"
+            );
+          }
+
+          /*
+           * The browser fires "ended" when the user selects
+           * Stop sharing from the browser or operating system.
+           */
+          screenTrack.addEventListener(
+            "ended",
+            () => {
+              if (
+                running &&
+                inputSource.value === "screen"
+              ) {
+                stopButton.click();
+              }
             },
-            audio: false
-          });
+            { once: true }
+          );
+        } else {
+          status.textContent =
+            "Starting camera...";
 
-        video.srcObject = mediaStream;
+          releaseUploadedVideo();
+
+          mediaStream =
+            await navigator.mediaDevices.getUserMedia({
+              video: {
+                width: { ideal: 1280 },
+                height: { ideal: 720 }
+              },
+              audio: false
+            });
+
+          video.srcObject = mediaStream;
+        }
+
         await video.play();
 
-        initializeRenderer();
-        status.textContent = "Loading mesh topology...";
+        if (!renderer) {
+          initializeRenderer();
+        }
 
-        await loadTopology();
+        status.textContent =
+          "Loading mesh topology...";
+
+        if (!topology) {
+          await loadTopology();
+        }
 
         await connectStreamSocket();
 
         running = true;
         stopButton.disabled = false;
-        status.textContent =
-          "Camera active. Waiting for first mesh...";
+
+        if (usingUploadedVideo) {
+          status.textContent =
+            "Video active. Waiting for first mesh...";
+        } else if (usingScreenCapture) {
+          status.textContent =
+            "Screen capture active. Waiting for first mesh...";
+        } else {
+          status.textContent =
+            "Camera active. Waiting for first mesh...";
+        }
 
         sendFrame();
       } catch (error) {
         button.disabled = false;
+
         status.textContent =
           error.name + ": " + error.message;
       }
@@ -3661,6 +4705,55 @@
     border-color: rgba(255, 79, 104, 0.48);
     box-shadow:
       inset 0 0 28px rgba(255, 79, 104, 0.04);
+  }
+</style>
+
+
+<style id="uploadedVideoSourceStyle">
+  #controls {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    min-width: 0;
+  }
+
+  #inputSource {
+    min-height: 34px;
+    padding: 5px 9px;
+    color: #ffffff;
+    background: #292929;
+    border: 1px solid #666666;
+    border-radius: 4px;
+    font-size: 13px;
+  }
+
+  #chooseVideo {
+    padding: 8px 12px;
+    font-size: 13px;
+  }
+
+  #loopVideoLabel {
+    align-items: center;
+    gap: 5px;
+    color: #d5d9df;
+    font-size: 12px;
+    white-space: nowrap;
+  }
+
+  #loopVideoLabel:not([hidden]) {
+    display: flex;
+  }
+
+  #loopVideo {
+    width: 15px;
+    height: 15px;
+    margin: 0;
+  }
+
+  #controls #status {
+    flex: 1 1 auto;
+    min-width: 0;
+    margin-left: 4px;
   }
 </style>
 
