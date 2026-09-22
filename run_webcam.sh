@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 
 export COMPILE_WARMUP_BATCH_SIZES=""
+export TORCHINDUCTOR_CACHE_DIR="$HOME/.cache/FastSam3dBody/torchinductor"
+export TRITON_CACHE_DIR="$HOME/.cache/FastSam3dBody/triton"
+export TORCHINDUCTOR_FX_GRAPH_CACHE=1
+export TORCHINDUCTOR_AUTOGRAD_CACHE=1
+
 set -euo pipefail
 
 cd "$(dirname "$0")"

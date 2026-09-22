@@ -229,6 +229,10 @@
           No reference captured
         </div>
 
+        <div id="scaleDriftStatus" style="display: none;">
+          Scale drift: --
+        </div>
+
         <fieldset id="trackingRegions">
           <legend>Tracking regions</legend>
 
@@ -550,6 +554,9 @@
       document.getElementById("clearReference");
     const referenceStatus =
       document.getElementById("referenceStatus");
+
+    const scaleDriftStatus =
+      document.getElementById("scaleDriftStatus");
     const trackingRegionInputs =
       Array.from(
         document.querySelectorAll(
@@ -1111,6 +1118,231 @@
     }
 
 
+    /*
+     * Estimate uniform scale change from corresponding mesh
+     * edge lengths. Translation and rotation do not change
+     * edge lengths, so this isolates global size variation.
+     */
+    function calculateScaleDrift(
+      referenceValues,
+      liveValues,
+      selectedIndices
+    ) {
+      if (
+        !referenceValues ||
+        !liveValues ||
+        referenceValues.length !== liveValues.length ||
+        !selectedIndices ||
+        selectedIndices.length < 3 ||
+        !topology ||
+        !topology.faces
+      ) {
+        return null;
+      }
+
+      const selected = new Uint8Array(
+        topology.vertex_count
+      );
+
+      for (const vertexIndex of selectedIndices) {
+        if (
+          Number.isInteger(vertexIndex) &&
+          vertexIndex >= 0 &&
+          vertexIndex < selected.length
+        ) {
+          selected[vertexIndex] = 1;
+        }
+      }
+
+      const ratios = [];
+      const faces = topology.faces;
+
+      function addEdgeRatio(a, b) {
+        if (!selected[a] || !selected[b]) {
+          return;
+        }
+
+        const aOffset = a * 3;
+        const bOffset = b * 3;
+
+        const referenceDx =
+          referenceValues[aOffset] -
+          referenceValues[bOffset];
+
+        const referenceDy =
+          referenceValues[aOffset + 1] -
+          referenceValues[bOffset + 1];
+
+        const referenceDz =
+          referenceValues[aOffset + 2] -
+          referenceValues[bOffset + 2];
+
+        const liveDx =
+          liveValues[aOffset] -
+          liveValues[bOffset];
+
+        const liveDy =
+          liveValues[aOffset + 1] -
+          liveValues[bOffset + 1];
+
+        const liveDz =
+          liveValues[aOffset + 2] -
+          liveValues[bOffset + 2];
+
+        const referenceLength = Math.hypot(
+          referenceDx,
+          referenceDy,
+          referenceDz
+        );
+
+        const liveLength = Math.hypot(
+          liveDx,
+          liveDy,
+          liveDz
+        );
+
+        if (
+          !Number.isFinite(referenceLength) ||
+          !Number.isFinite(liveLength) ||
+          referenceLength < 1e-6
+        ) {
+          return;
+        }
+
+        const ratio =
+          liveLength / referenceLength;
+
+        /*
+         * Reject gross reconstruction failures while retaining
+         * realistic scale and deformation variation.
+         */
+        if (
+          Number.isFinite(ratio) &&
+          ratio >= 0.5 &&
+          ratio <= 1.5
+        ) {
+          ratios.push(ratio);
+        }
+      }
+
+      /*
+       * Sample every sixth triangle to keep browser cost low.
+       * All measurements remain corresponding MHR mesh edges.
+       */
+      for (
+        let offset = 0;
+        offset + 2 < faces.length;
+        offset += 18
+      ) {
+        const a = faces[offset];
+        const b = faces[offset + 1];
+        const c = faces[offset + 2];
+
+        addEdgeRatio(a, b);
+        addEdgeRatio(b, c);
+        addEdgeRatio(c, a);
+      }
+
+      if (ratios.length < 20) {
+        return null;
+      }
+
+      ratios.sort((a, b) => a - b);
+
+      const middle =
+        Math.floor(ratios.length / 2);
+
+      const medianRatio =
+        ratios.length % 2
+          ? ratios[middle]
+          : 0.5 * (
+              ratios[middle - 1] +
+              ratios[middle]
+            );
+
+      const absoluteDeviations =
+        ratios
+          .map(value =>
+            Math.abs(value - medianRatio)
+          )
+          .sort((a, b) => a - b);
+
+      const medianDeviation =
+        absoluteDeviations[
+          Math.floor(
+            absoluteDeviations.length / 2
+          )
+        ];
+
+      return {
+        ratio: medianRatio,
+        driftPercent:
+          (medianRatio - 1.0) * 100.0,
+        medianAbsoluteDeviationPercent:
+          medianDeviation * 100.0,
+        edgeCount: ratios.length
+      };
+    }
+
+    function updateScaleDriftDiagnostic(
+      selectedIndices
+    ) {
+      if (!scaleDriftStatus) {
+        return;
+      }
+
+      const result =
+        calculateScaleDrift(
+          referenceVertices,
+          latestVertices,
+          selectedIndices
+        );
+
+      if (!result) {
+        scaleDriftStatus.textContent =
+          referenceVertices
+            ? "Scale drift: unavailable"
+            : "Scale drift: reference required";
+
+        return;
+      }
+
+      const sign =
+        result.driftPercent >= 0
+          ? "+"
+          : "";
+
+      scaleDriftStatus.textContent =
+        "Scale drift: " +
+        sign +
+        result.driftPercent.toFixed(2) +
+        "%  |  variability: " +
+        result
+          .medianAbsoluteDeviationPercent
+          .toFixed(2) +
+        "%  |  edges: " +
+        result.edgeCount;
+
+      /*
+       * Make large changes visible without changing alignment
+       * status or tolerances.
+       */
+      const magnitude =
+        Math.abs(result.driftPercent);
+
+      if (magnitude <= 0.5) {
+        scaleDriftStatus.style.color =
+          "#7dff9b";
+      } else if (magnitude <= 1.0) {
+        scaleDriftStatus.style.color =
+          "#ffbf3f";
+      } else {
+        scaleDriftStatus.style.color =
+          "#ff6577";
+      }
+    }
+
+
     function deviationColorHex(
       deviationMm,
       toleranceMm
@@ -1164,6 +1396,10 @@
 
       const selected =
         new Set(selectedIndices);
+
+      updateScaleDriftDiagnostic(
+        selectedIndices
+      );
 
       /*
        * Restrict both displayed meshes to triangles fully
