@@ -177,13 +177,13 @@ def panel(version, posed, skin, cor_z, centre):
     L = rr.radiograph(vol, bone, 2, st)                                    # bone-only AP radiograph
     u8 = rr.window(L.T, 0.0, 20.0, 0.75)
     u8 = rr.unsharp(u8, 2.2, 1.0)
-    ap = Image.fromarray(u8).convert("RGB").resize((330, int(u8.shape[0] * 330 / u8.shape[1])), Image.BICUBIC)
+    ap = Image.fromarray(u8).convert("RGB").resize((PW, int(u8.shape[0] * PW / u8.shape[1])), Image.BICUBIC)
     P, shape = W.plane(2, cor_z, 0, 1, centre, 260.0, (y1 - y0) / 2, 2.0)  # coronal reformat that follows the patient (through T9)
     src = W.source_positions(fld, P)
     hu = W.sample(W.hu_c, src).reshape(shape).astype(np.float32)
     g = rr.unsharp(rr.window(hu, 40 - 175, 40 + 175), 1.4, 0.6)
     rgb = np.stack([g] * 3, -1)                                             # real HU, bone not masked
-    cor = Image.fromarray(rgb).resize((330, int(rgb.shape[0] * 330 / rgb.shape[1])), Image.LANCZOS)
+    cor = Image.fromarray(rgb).resize((PW, int(rgb.shape[0] * PW / rgb.shape[1])), Image.LANCZOS)
     return ap, cor
 
 
@@ -197,15 +197,16 @@ def job(args):
     c9 = (((posed3["vertebrae_T9"] - t_) @ R_) / s_).mean(0)               # posed T9 in the CT frame
     cor_z = c9[2] - 55.0
     centre = np.array([CFG["c"][0], (CFG["y"][0] + CFG["y"][1]) / 2, CFG["c"][2]])
-    cols = [panel(v, posed_for(v, W.atlas, skin, PS), skin, cor_z, centre) for v, _, _ in VERSIONS]
+    SHOW = [t for t in VERSIONS if t[0] in SEL]
+    cols = [panel(v, posed_for(v, W.atlas, skin, PS), skin, cor_z, centre) for v, _, _ in SHOW]
     hs = [a.height + c.height for a, c in cols]
     head, foot, gap = 110, 44, 6
-    canvas = Image.new("RGB", (330 * 5 + gap * 4, max(hs) + head + foot), (0, 0, 0))
+    canvas = Image.new("RGB", (PW * len(SHOW) + gap * (len(SHOW) - 1), max(hs) + head + foot), (0, 0, 0))
     d = ImageDraw.Draw(canvas)
-    d.text((10, 8), "Anatomical-realism benchmark: the same real CT, the same motion, five stages of the model", fill=(240, 240, 240), font=rr.font(22))
+    d.text((10, 8), "Anatomical-realism benchmark: the same real CT, the same motion, " + ("five stages of the model" if len(SHOW) == 5 else "stage " + ", ".join(v for v, _, _ in SHOW)), fill=(240, 240, 240), font=rr.font(22))
     d.text((10, 36), f"motion: {name}   |   top: bone-only AP radiograph   bottom: coronal soft-tissue reformat through T9 (real HU, W350/L40)", fill=(170, 200, 230), font=rr.font(14))
-    for i, ((v, title, cap), (ap, cor)) in enumerate(zip(VERSIONS, cols)):
-        x = i * (330 + gap)
+    for i, ((v, title, cap), (ap, cor)) in enumerate(zip(SHOW, cols)):
+        x = i * (PW + gap)
         d.text((x + 4, 60), f"{v}  {title}", fill=(255, 220, 120), font=rr.font(16))
         d.text((x + 4, 82), cap.replace("\n", " "), fill=(150, 160, 175), font=rr.font(11))
         canvas.paste(ap, (x, head)); canvas.paste(cor, (x, head + ap.height))
@@ -216,12 +217,16 @@ def job(args):
 
 
 OUT = "."
+PW = 330
+SEL = ["V0", "V1", "V2", "V3", "V4"]
 if __name__ == "__main__":
     a = sys.argv[1:]
     if a[0] == "metrics":
         metrics(a[1])
     else:
         OUT = a[1]; os.makedirs(OUT, exist_ok=True)
+        if "--versions" in a: SEL = a[a.index("--versions") + 1].split(",")
+        if "--panel-width" in a: PW = int(a[a.index("--panel-width") + 1])
         per = [int(x) for x in a[a.index("--frames-per-phase") + 1].split(",")] if "--frames-per-phase" in a else [12, 9, 9]
         workers = int(a[a.index("--workers") + 1]) if "--workers" in a else 3
         plan = []
