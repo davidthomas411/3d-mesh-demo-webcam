@@ -63,21 +63,25 @@ of the modelled structures' motion (Gaussian weighting of landmark motion, rigid
 ## Premise audit: no gaps between bones, no bones out of joints (`experiments/joint_audit.py`)
 
 72 bone pairs touch or nearly touch at rest. For each, over three motions x seven poses, the worst change from rest: gap opened (mm) and
-interpenetration added (mm). A pair is counted as a violation above 3 mm. Raw results: `docs/joint_audit_results.json`.
+interpenetration added (mm); a pair counts as a violation above 3 mm. Interpenetration is exact (signed distance to the watertight
+mesh) except where the other bone's mesh is open (scapula, cartilage), where it falls back to a nearest-vertex sign test that over-reports.
+Raw results: `docs/joint_audit_results.json`.
 
-| Stage | Pairs opened > 3 mm | Pairs overlapping > 3 mm | Worst overlap |
+**Correction:** the first version of this audit used the nearest-vertex test for every pair and reported vertebra-to-vertebra overlaps of up to
+16 mm and a clavicle-cartilage overlap of 18 mm. With the exact test the vertebral overlaps are at most about 1 mm, and the exact
+reverse check of the clavicle against the cartilage found no overlap. Those findings were artefacts.
+
+| Stage | Pairs opened > 3 mm | Pairs overlapping > 3 mm | Main offenders |
 |---|---|---|---|
-| V1 per-structure fits | 3 | 21 | - |
-| V2 rigid chain, no joints | 0 | 11 | - |
-| V3 + joint rules | 1 | 10 | T11/T12 vertebrae 15.7 mm |
-| V4 + in-vivo spine split | 2 | 14 | left clavicle/costal cartilage 18.0 mm; T11/T12 8.8 mm |
+| V1 per-structure fits | 17 | 7 | everything; no coherent skeleton |
+| V2 rigid chain, no joints | 1 | 3 | humeral head sinks into the scapula |
+| V3 + joint rules | 1 | 2 | clavicle-sternum opens 2.6-3.8 mm; scapula/humerus/clavicle contacts (open mesh, indicative) |
+| V4 + in-vivo spine split | 1 | 3 | same as V3; T11/T12 opens 2.5 mm |
 
-Reading: the joint rules removed the large dislocations at the shoulder (humerus/scapula, hip), but **the premise is not yet met**.
-Remaining violations are (a) vertebra-to-vertebra interpenetration (spinous processes and facets are not constrained, only centroid spacing),
-(b) clavicle/costal-cartilage and rib/cartilage overlap and a 3-6 mm opening at the sternoclavicular joint and rib 9 cartilage, (c) no collision
-handling anywhere. The overlap estimate uses a nearest-vertex normal sign test, so it is indicative to a few mm, not a measurement; it is
-still enough to show that overlap exists and V4's spine split made vertebra contacts worse in places.
+The real defect found: costal cartilage was one rigid body carried by the ribs, so in V3/V4 the rib-cartilage junctions opened by up to 9 mm
+(V4: 10 pairs opened before the fix). Cartilage is flexible, so it is now a link whose ends follow the nearest rib and the sternum
+(`Atlas._cartilage`, ported to `anatomy.js`, parity-tested); this closed the rib-cartilage and cartilage-sternum junctions in the audit.
 
-Consequence for the design: constraints are currently added after fitting each bone to skin, so they can only reduce violations.
-Doing it by construction means a kinematic tree with joint coordinates (angles and translations within limits) as the unknowns that
-are solved against the camera or image data, plus a collision/penetration projection step, with this audit as a regression test.
+Still open: the sternoclavicular joint opens up to 3.8 mm (the saddle joint pins a centre, not the articular surfaces), scapulothoracic contact is
+not modelled, and there is no collision resolution. The route to a guarantee by construction is joint coordinates as the unknowns plus a
+penetration-resolving step; this audit is the regression test for it.

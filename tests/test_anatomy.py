@@ -103,7 +103,7 @@ def test_bones_stay_rigid_under_articulation():
     posed = a.pose(skin)
     worst = 0.0
     for s in a.structures:
-        if s["bind"] == "soft":
+        if s["bind"] == "soft" or s["name"] == "costal_cartilages":     # cartilage is a flexible link by design
             continue
         p, q = s["pos"][::9], posed[s["name"]][::9]
         dp = np.linalg.norm(p[:, None] - p[None], axis=-1); dq = np.linalg.norm(q[:, None] - q[None], axis=-1)

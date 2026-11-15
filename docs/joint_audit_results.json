@@ -2,140 +2,164 @@
  "V1": {
   "name": "Per-structure fits",
   "n_pairs": 72,
-  "n_open": 3,
-  "n_overlap": 21,
+  "n_open": 17,
+  "n_overlap": 7,
   "worst_open": [
    {
-    "pair": "clavicula_right | costal_cartilages",
-    "open_mm": 5.4,
-    "overlap_mm": 7.3
-   },
-   {
-    "pair": "rib_right_9 | vertebrae_T9",
-    "open_mm": 3.8,
+    "pair": "costal_cartilages | rib_left_4",
+    "exact": true,
+    "open_mm": 26.5,
     "overlap_mm": 0.0
    },
    {
-    "pair": "clavicula_left | sternum",
-    "open_mm": 3.1,
-    "overlap_mm": 0.0
+    "pair": "costal_cartilages | rib_right_4",
+    "exact": true,
+    "open_mm": 23.2,
+    "overlap_mm": 2.9
    },
    {
-    "pair": "rib_right_6 | vertebrae_T6",
-    "open_mm": 2.1,
-    "overlap_mm": 0.0
+    "pair": "costal_cartilages | rib_left_3",
+    "exact": true,
+    "open_mm": 20.0,
+    "overlap_mm": 0.1
    },
    {
-    "pair": "rib_right_7 | vertebrae_T7",
-    "open_mm": 2.1,
-    "overlap_mm": 4.7
+    "pair": "costal_cartilages | rib_left_5",
+    "exact": true,
+    "open_mm": 18.2,
+    "overlap_mm": 2.0
    },
    {
-    "pair": "rib_right_8 | vertebrae_T8",
-    "open_mm": 2.1,
-    "overlap_mm": 0.0
+    "pair": "costal_cartilages | rib_right_6",
+    "exact": true,
+    "open_mm": 18.2,
+    "overlap_mm": 3.9
+   },
+   {
+    "pair": "costal_cartilages | rib_right_3",
+    "exact": true,
+    "open_mm": 16.0,
+    "overlap_mm": 0.8
    }
   ],
   "worst_overlap": [
    {
     "pair": "clavicula_left | costal_cartilages",
+    "exact": false,
     "open_mm": 0.0,
     "overlap_mm": 21.3
    },
    {
-    "pair": "costal_cartilages | rib_left_5",
-    "open_mm": 0.0,
-    "overlap_mm": 17.9
+    "pair": "clavicula_right | costal_cartilages",
+    "exact": false,
+    "open_mm": 5.4,
+    "overlap_mm": 7.3
    },
    {
-    "pair": "vertebrae_T11 | vertebrae_T12",
-    "open_mm": 0.7,
-    "overlap_mm": 9.6
+    "pair": "humerus_left | scapula_left",
+    "exact": false,
+    "open_mm": 1.0,
+    "overlap_mm": 6.0
    },
    {
-    "pair": "costal_cartilages | rib_right_2",
-    "open_mm": 0.0,
-    "overlap_mm": 8.8
+    "pair": "costal_cartilages | rib_right_6",
+    "exact": true,
+    "open_mm": 18.2,
+    "overlap_mm": 3.9
    },
    {
-    "pair": "vertebrae_T10 | vertebrae_T11",
-    "open_mm": 0.0,
-    "overlap_mm": 8.6
+    "pair": "costal_cartilages | rib_right_1",
+    "exact": true,
+    "open_mm": 2.8,
+    "overlap_mm": 3.4
    },
    {
-    "pair": "costal_cartilages | rib_left_2",
+    "pair": "clavicula_right | scapula_right",
+    "exact": true,
     "open_mm": 0.0,
-    "overlap_mm": 7.7
+    "overlap_mm": 3.3
    }
   ]
  },
  "V2": {
   "name": "Rigid segments + chain",
   "n_pairs": 72,
-  "n_open": 0,
-  "n_overlap": 11,
+  "n_open": 1,
+  "n_overlap": 3,
   "worst_open": [
    {
-    "pair": "costal_cartilages | rib_left_9",
+    "pair": "costal_cartilages | rib_right_9",
+    "exact": true,
+    "open_mm": 4.1,
+    "overlap_mm": 0.6
+   },
+   {
+    "pair": "costal_cartilages | rib_right_3",
+    "exact": true,
+    "open_mm": 3.0,
+    "overlap_mm": 1.7
+   },
+   {
+    "pair": "costal_cartilages | rib_left_3",
+    "exact": true,
+    "open_mm": 2.9,
+    "overlap_mm": 1.1
+   },
+   {
+    "pair": "costal_cartilages | rib_left_4",
+    "exact": true,
+    "open_mm": 2.9,
+    "overlap_mm": 1.2
+   },
+   {
+    "pair": "costal_cartilages | rib_right_4",
+    "exact": true,
+    "open_mm": 2.8,
+    "overlap_mm": 1.9
+   },
+   {
+    "pair": "humerus_right | scapula_right",
+    "exact": true,
     "open_mm": 2.8,
     "overlap_mm": 3.3
-   },
-   {
-    "pair": "clavicula_left | costal_cartilages",
-    "open_mm": 1.3,
-    "overlap_mm": 15.4
-   },
-   {
-    "pair": "clavicula_right | costal_cartilages",
-    "open_mm": 1.3,
-    "overlap_mm": 0.0
-   },
-   {
-    "pair": "humerus_left | scapula_left",
-    "open_mm": 1.1,
-    "overlap_mm": 5.2
-   },
-   {
-    "pair": "clavicula_left | sternum",
-    "open_mm": 0.8,
-    "overlap_mm": 0.0
-   },
-   {
-    "pair": "clavicula_right | scapula_right",
-    "open_mm": 0.8,
-    "overlap_mm": 0.0
    }
   ],
   "worst_overlap": [
    {
-    "pair": "vertebrae_T11 | vertebrae_T12",
-    "open_mm": 0.3,
-    "overlap_mm": 15.7
-   },
-   {
     "pair": "clavicula_left | costal_cartilages",
+    "exact": false,
     "open_mm": 1.3,
     "overlap_mm": 15.4
    },
    {
-    "pair": "costal_cartilages | rib_right_9",
-    "open_mm": 0.0,
-    "overlap_mm": 8.2
-   },
-   {
     "pair": "humerus_left | scapula_left",
+    "exact": false,
     "open_mm": 1.1,
     "overlap_mm": 5.2
    },
    {
-    "pair": "vertebrae_C3 | vertebrae_C4",
-    "open_mm": 0.0,
-    "overlap_mm": 5.2
+    "pair": "humerus_right | scapula_right",
+    "exact": true,
+    "open_mm": 2.8,
+    "overlap_mm": 3.3
    },
    {
-    "pair": "costal_cartilages | rib_right_8",
+    "pair": "costal_cartilages | rib_left_1",
+    "exact": false,
     "open_mm": 0.0,
-    "overlap_mm": 5.0
+    "overlap_mm": 2.8
+   },
+   {
+    "pair": "costal_cartilages | rib_left_8",
+    "exact": true,
+    "open_mm": 1.8,
+    "overlap_mm": 2.8
+   },
+   {
+    "pair": "costal_cartilages | rib_right_1",
+    "exact": true,
+    "open_mm": 0.4,
+    "overlap_mm": 2.1
    }
   ]
  },
@@ -143,139 +167,163 @@
   "name": "+ Joint rules",
   "n_pairs": 72,
   "n_open": 1,
-  "n_overlap": 10,
+  "n_overlap": 2,
   "worst_open": [
    {
     "pair": "clavicula_right | sternum",
-    "open_mm": 3.5,
+    "exact": true,
+    "open_mm": 3.8,
     "overlap_mm": 0.0
    },
    {
     "pair": "clavicula_left | sternum",
-    "open_mm": 2.9,
+    "exact": true,
+    "open_mm": 2.6,
     "overlap_mm": 0.0
    },
    {
-    "pair": "costal_cartilages | rib_left_9",
-    "open_mm": 2.8,
-    "overlap_mm": 3.3
+    "pair": "vertebrae_T7 | vertebrae_T8",
+    "exact": true,
+    "open_mm": 1.2,
+    "overlap_mm": 0.0
    },
    {
-    "pair": "clavicula_right | costal_cartilages",
+    "pair": "vertebrae_T8 | vertebrae_T9",
+    "exact": true,
     "open_mm": 1.0,
-    "overlap_mm": 0.0
+    "overlap_mm": 0.4
    },
    {
-    "pair": "clavicula_left | costal_cartilages",
-    "open_mm": 0.7,
-    "overlap_mm": 0.0
+    "pair": "vertebrae_T11 | vertebrae_T12",
+    "exact": true,
+    "open_mm": 0.9,
+    "overlap_mm": 0.8
    },
    {
-    "pair": "humerus_left | scapula_left",
-    "open_mm": 0.3,
-    "overlap_mm": 4.6
+    "pair": "vertebrae_T5 | vertebrae_T6",
+    "exact": true,
+    "open_mm": 0.9,
+    "overlap_mm": 0.0
    }
   ],
   "worst_overlap": [
    {
-    "pair": "vertebrae_T11 | vertebrae_T12",
-    "open_mm": 0.3,
-    "overlap_mm": 15.7
-   },
-   {
-    "pair": "costal_cartilages | rib_right_9",
-    "open_mm": 0.0,
-    "overlap_mm": 8.2
-   },
-   {
-    "pair": "vertebrae_C3 | vertebrae_C4",
-    "open_mm": 0.0,
-    "overlap_mm": 5.2
-   },
-   {
-    "pair": "costal_cartilages | rib_right_8",
-    "open_mm": 0.0,
-    "overlap_mm": 5.0
-   },
-   {
     "pair": "clavicula_left | scapula_left",
+    "exact": false,
     "open_mm": 0.2,
     "overlap_mm": 4.8
    },
    {
-    "pair": "vertebrae_T3 | vertebrae_T4",
+    "pair": "humerus_left | scapula_left",
+    "exact": false,
+    "open_mm": 0.3,
+    "overlap_mm": 4.6
+   },
+   {
+    "pair": "vertebrae_T6 | vertebrae_T7",
+    "exact": true,
     "open_mm": 0.0,
-    "overlap_mm": 4.7
+    "overlap_mm": 1.3
+   },
+   {
+    "pair": "vertebrae_L1 | vertebrae_L2",
+    "exact": true,
+    "open_mm": 0.3,
+    "overlap_mm": 0.8
+   },
+   {
+    "pair": "vertebrae_T11 | vertebrae_T12",
+    "exact": true,
+    "open_mm": 0.9,
+    "overlap_mm": 0.8
+   },
+   {
+    "pair": "sacrum | vertebrae_L5",
+    "exact": true,
+    "open_mm": 0.0,
+    "overlap_mm": 0.7
    }
   ]
  },
  "V4": {
   "name": "+ In-vivo spine split",
   "n_pairs": 72,
-  "n_open": 2,
-  "n_overlap": 14,
+  "n_open": 1,
+  "n_overlap": 3,
   "worst_open": [
    {
-    "pair": "costal_cartilages | rib_left_9",
-    "open_mm": 6.5,
-    "overlap_mm": 4.5
+    "pair": "clavicula_right | sternum",
+    "exact": true,
+    "open_mm": 3.8,
+    "overlap_mm": 0.0
    },
    {
-    "pair": "clavicula_right | sternum",
-    "open_mm": 3.5,
+    "pair": "clavicula_right | costal_cartilages",
+    "exact": false,
+    "open_mm": 2.9,
     "overlap_mm": 0.0
    },
    {
     "pair": "clavicula_left | sternum",
-    "open_mm": 3.0,
+    "exact": true,
+    "open_mm": 2.7,
     "overlap_mm": 0.0
    },
    {
     "pair": "vertebrae_T11 | vertebrae_T12",
-    "open_mm": 2.2,
-    "overlap_mm": 8.8
+    "exact": true,
+    "open_mm": 2.5,
+    "overlap_mm": 0.0
    },
    {
-    "pair": "clavicula_left | costal_cartilages",
-    "open_mm": 2.0,
-    "overlap_mm": 18.0
+    "pair": "vertebrae_T10 | vertebrae_T11",
+    "exact": true,
+    "open_mm": 2.3,
+    "overlap_mm": 0.0
    },
    {
-    "pair": "clavicula_right | costal_cartilages",
-    "open_mm": 1.8,
+    "pair": "vertebrae_T10 | vertebrae_T9",
+    "exact": true,
+    "open_mm": 2.1,
     "overlap_mm": 0.0
    }
   ],
   "worst_overlap": [
    {
     "pair": "clavicula_left | costal_cartilages",
-    "open_mm": 2.0,
-    "overlap_mm": 18.0
+    "exact": false,
+    "open_mm": 1.0,
+    "overlap_mm": 13.4
    },
    {
-    "pair": "vertebrae_T11 | vertebrae_T12",
-    "open_mm": 2.2,
-    "overlap_mm": 8.8
+    "pair": "clavicula_left | scapula_left",
+    "exact": false,
+    "open_mm": 0.4,
+    "overlap_mm": 4.9
    },
    {
-    "pair": "costal_cartilages | rib_right_8",
+    "pair": "humerus_left | scapula_left",
+    "exact": false,
+    "open_mm": 0.4,
+    "overlap_mm": 4.8
+   },
+   {
+    "pair": "costal_cartilages | rib_left_1",
+    "exact": false,
     "open_mm": 0.0,
-    "overlap_mm": 8.3
+    "overlap_mm": 1.9
    },
    {
-    "pair": "vertebrae_L3 | vertebrae_L4",
+    "pair": "vertebrae_T6 | vertebrae_T7",
+    "exact": true,
     "open_mm": 0.0,
-    "overlap_mm": 6.6
+    "overlap_mm": 0.9
    },
    {
-    "pair": "vertebrae_T10 | vertebrae_T11",
+    "pair": "vertebrae_C4 | vertebrae_C5",
+    "exact": true,
     "open_mm": 0.0,
-    "overlap_mm": 6.4
-   },
-   {
-    "pair": "vertebrae_C3 | vertebrae_C4",
-    "open_mm": 0.0,
-    "overlap_mm": 5.2
+    "overlap_mm": 0.7
    }
   ]
  }

@@ -167,3 +167,17 @@ def test_physiologic_spine_split_follows_in_vivo_per_level_data(atlas):
     assert 0.2 < lumbar_share < 0.35                                          # lumbar share ~28% (in-vivo CT), not the skin-block split
     psi0, inc0 = profile(atlas.pose(skin))                                    # default mode keeps the skin-driven split
     assert abs(np.corrcoef(np.abs(inc0), ref)[0, 1]) < 0.95
+
+
+def test_costal_cartilage_stays_joined_to_ribs_and_sternum_under_large_motion(atlas):
+    """Cartilage is a flexible link: its ends follow the ribs and the sternum, so neither junction opens."""
+    by = {s["name"]: s["pos"] for s in atlas.structures}
+    rest_gap = cKDTree(by["sternum"]).query(by["costal_cartilages"])[0].min()
+    posed = atlas.pose(skin_with(atlas, BIG), breath=1.0)
+    gap_st = cKDTree(posed["sternum"]).query(posed["costal_cartilages"])[0].min()
+    assert gap_st <= rest_gap + 0.004
+    for r in range(3, 9):
+        n = f"rib_left_{r}"
+        g0 = cKDTree(by[n]).query(by["costal_cartilages"])[0].min()
+        g1 = cKDTree(posed[n]).query(posed["costal_cartilages"])[0].min()
+        assert g1 <= g0 + 0.004, (n, g0, g1)

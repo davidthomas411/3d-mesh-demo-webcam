@@ -212,6 +212,24 @@ class Atlas:
             F["skull"] = mk(c1[1] @ rig.limit_rotation(c1[1].T @ Rh, J["ao"]["limit_deg"]), Jao, _apply(c1, Jao))
         return F
 
+    def _cartilage(self, s, F):
+        """Costal cartilage is flexible, not a rigid bone: each vertex is carried by the rib it is nearest to at its rib end and by
+        the sternum at its sternal end, blended by rest-pose distance. Both ends therefore stay joined to the bones they connect
+        (no gap at the costochondral or sternocostal junction) however the ribs and sternum move relative to each other."""
+        if getattr(self, "_cart", None) is None:
+            from scipy.spatial import cKDTree
+            ribs = [t for t in self.structures if t["name"].startswith("rib_") and t["name"] in F]
+            rp = np.vstack([t["pos"] for t in ribs]); rown = np.concatenate([[t["name"]] * len(t["pos"]) for t in ribs])
+            sp = next(t["pos"] for t in self.structures if t["name"] == "sternum")
+            dr, ir = cKDTree(rp).query(s["pos"]); ds, _ = cKDTree(sp).query(s["pos"])
+            self._cart = (rown[ir], dr / np.maximum(dr + ds, 1e-9))
+        own, w = self._cart
+        out = np.empty_like(s["pos"]); xs = _apply(F["sternum"], s["pos"])
+        for r in np.unique(own):
+            m = own == r
+            out[m] = (1 - w[m, None]) * _apply(F[r], s["pos"][m]) + w[m, None] * xs[m]
+        return out
+
     def pose(self, skin, breath=0.0, depth=1.0, joints=True, spine="skin"):
         """skin: (V,3) live MHR vertices in the rest frame/units (metres). breath: 0 (end-expiration) .. 1
         (end-inspiration), depth: 1 = quiet breathing. joints=False reproduces the model stage before joint rules;
@@ -225,6 +243,8 @@ class Atlas:
                 out[s["name"]] = _apply(F[s["name"]], s["pos"])
             elif b == "frame":                               # rigid with another body's frame (brain with the skull)
                 out[s["name"]] = _apply(F[s["frame"]], s["pos"])
+            elif s["name"] == "costal_cartilages" and joints and "sternum" in F:
+                out[s["name"]] = self._cartilage(s, F)      # flexible link between the ribs' ends and the sternum
             elif b == "attach_ribs":
                 out[s["name"]] = _rigid(s["pos"], np.asarray(s["centroid"]), [(F[r], w) for r, w in s["attach_ribs"] if r in F])
             elif b == "bone":

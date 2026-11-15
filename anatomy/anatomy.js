@@ -44,7 +44,31 @@ export function parseAtlas(meta, buf) {
     return s;
   });
   const byName = new Map(structures.map(s => [s.name, s]));
+  prepareCartilage(structures, byName);
   return { meta, segments, structures, byName, chain: meta.chain || [], joints: meta.joints || [] };
+}
+
+// Costal cartilage is a flexible link: each vertex follows the rib nearest to it at the rib end and the sternum at the sternal
+// end, blended by rest distance (mirrors Atlas._cartilage in anatomy/runtime.py), so neither junction can open.
+function prepareCartilage(structures, byName) {
+  const c = byName.get("costal_cartilages"), st = byName.get("sternum");
+  if (!c || !st) return;
+  const ribs = structures.filter(s => s.name.startsWith("rib_"));
+  const nearest = (p, i, pos) => {
+    let best = Infinity, bj = -1;
+    for (let j = 0; j < pos.length; j += 3) {
+      const dx = p[i] - pos[j], dy = p[i + 1] - pos[j + 1], dz = p[i + 2] - pos[j + 2], d = dx * dx + dy * dy + dz * dz;
+      if (d < best) { best = d; bj = j; }
+    }
+    return [Math.sqrt(best), bj];
+  };
+  const n = c.pos.length / 3; c.cartOwner = new Array(n); c.cartW = new Float32Array(n);
+  for (let v = 0; v < n; v++) {
+    let dr = Infinity, own = null;
+    for (const r of ribs) { const [d] = nearest(c.pos, 3 * v, r.pos); if (d < dr) { dr = d; own = r.name; } }
+    const [ds] = nearest(c.pos, 3 * v, st.pos);
+    c.cartOwner[v] = own; c.cartW[v] = dr / Math.max(dr + ds, 1e-9);
+  }
 }
 
 // Largest-eigenvalue eigenvector of a symmetric 4x4 by cyclic Jacobi (robust, tiny).
@@ -301,6 +325,24 @@ export function transformStructure(s, fr, P, N, rn, f = 1) {
       }
       P[v] = ox; P[v + 1] = f * oy; P[v + 2] = f * oz;
       if (N) { N[v] = nx; N[v + 1] = f * ny; N[v + 2] = f * nz; }
+    }
+    return;
+  }
+  if (s.cartOwner && F.sternum) {                      // flexible costal cartilage (see prepareCartilage)
+    const S = F.sternum;
+    for (let v = 0; v < p.length; v += 3) {
+      const Fr = F[s.cartOwner[v / 3]], w = s.cartW[v / 3], R = Fr.R, c = Fr.c, cp = Fr.cp;
+      const x = p[v] - c[0], y = p[v + 1] - c[1], z = p[v + 2] - c[2];
+      const X = R[0] * x + R[1] * y + R[2] * z + cp[0], Y = R[3] * x + R[4] * y + R[5] * z + cp[1], Z = R[6] * x + R[7] * y + R[8] * z + cp[2];
+      const a = p[v] - S.c[0], b = p[v + 1] - S.c[1], d = p[v + 2] - S.c[2], Q = S.R;
+      const X2 = Q[0] * a + Q[1] * b + Q[2] * d + S.cp[0], Y2 = Q[3] * a + Q[4] * b + Q[5] * d + S.cp[1], Z2 = Q[6] * a + Q[7] * b + Q[8] * d + S.cp[2];
+      P[v] = (1 - w) * X + w * X2; P[v + 1] = f * ((1 - w) * Y + w * Y2); P[v + 2] = f * ((1 - w) * Z + w * Z2);
+      if (N) {                                          // normals: blend of the two rotations
+        const nx = (1 - w) * (R[0] * rn[v] + R[1] * rn[v + 1] + R[2] * rn[v + 2]) + w * (Q[0] * rn[v] + Q[1] * rn[v + 1] + Q[2] * rn[v + 2]);
+        const ny = (1 - w) * (R[3] * rn[v] + R[4] * rn[v + 1] + R[5] * rn[v + 2]) + w * (Q[3] * rn[v] + Q[4] * rn[v + 1] + Q[5] * rn[v + 2]);
+        const nz = (1 - w) * (R[6] * rn[v] + R[7] * rn[v + 1] + R[8] * rn[v + 2]) + w * (Q[6] * rn[v] + Q[7] * rn[v + 1] + Q[8] * rn[v + 2]);
+        N[v] = nx; N[v + 1] = f * ny; N[v + 2] = f * nz;
+      }
     }
     return;
   }

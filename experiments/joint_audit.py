@@ -23,14 +23,22 @@ def normals(P, F):
     return n / np.maximum(np.linalg.norm(n, axis=1, keepdims=True), 1e-12)
 
 
-def signed(PA, PB, NB, treeB):
+import trimesh
+from trimesh.proximity import signed_distance
+
+
+def signed(PA, mesh_b, PB, NB, treeB):
+    """Signed distance of points PA to mesh B (positive outside). Exact for watertight B; for open meshes (scapula, costal
+    cartilages) it falls back to the nearest-vertex-normal sign test, which is only indicative."""
+    if mesh_b is not None:
+        return -signed_distance(mesh_b, PA)             # trimesh: positive inside
     d, j = treeB.query(PA)
     s = np.sign(((PA - PB[j]) * NB[j]).sum(1))
     return d * np.where(s == 0, 1, s)
 
 
-def pair_stat(PA, PB, NB, tB, idx):
-    sd = signed(PA[idx], PB, NB, tB)
+def pair_stat(PA, mesh_b, PB, NB, tB, idx):
+    sd = signed(PA[idx], mesh_b, PB, NB, tB)
     return float(np.abs(sd).min()), float(max(0.0, -sd.min()))          # gap (mm), overlap depth (mm)
 
 
@@ -54,7 +62,11 @@ if __name__ == "__main__":
                 idx = np.flatnonzero(d < NEAR_MM + 15.0)              # contact patch of a (stays the same vertices as the model moves)
                 pairs.append((a, b, idx, np.flatnonzero(trees[a].query(R[b])[0] < NEAR_MM + 15.0)))
     print("touching bone pairs at rest:", len(pairs), flush=True)
-    rest_stat = {(a, b): (pair_stat(R[a], R[b], N0[b], trees[b], ia)[0], pair_stat(R[a], R[b], N0[b], trees[b], ia)[1]) for a, b, ia, ib in pairs}
+    def mk(P, n):
+        m = trimesh.Trimesh(P, F[n], process=False)
+        return m if m.is_watertight else None
+    exact = {n: mk(R[n], n) is not None for n in bones}
+    rest_stat = {(a, b): pair_stat(R[a], mk(R[b], b), R[b], N0[b], trees[b], ia) for a, b, ia, ib in pairs}
     skin_of = lambda p: sess.run(None, {"mhr_params": p, "shape_params": np.zeros((1, 45), np.float32)})[1][0].astype(float)
     res = {}
     for v, name, _ in VERSIONS[1:]:
@@ -66,14 +78,14 @@ if __name__ == "__main__":
                 NP = {}
                 for a, b, ia, ib in pairs:
                     if b not in NP:
-                        NP[b] = (normals(P[b], F[b]), cKDTree(P[b]))
-                    gap, ov = pair_stat(P[a], P[b], NP[b][0], NP[b][1], ia)
+                        NP[b] = (normals(P[b], F[b]), cKDTree(P[b]), mk(P[b], b))
+                    gap, ov = pair_stat(P[a], NP[b][2], P[b], NP[b][0], NP[b][1], ia)
                     g0, o0 = rest_stat[(a, b)]
                     k = (a, b)
                     w = worst.setdefault(k, {"open_mm": 0.0, "overlap_mm": 0.0})
                     w["open_mm"] = max(w["open_mm"], gap - g0 if ov == 0 and o0 == 0 else 0.0)
                     w["overlap_mm"] = max(w["overlap_mm"], ov - o0)
-        rows = [{"pair": f"{a} | {b}", **{k: round(x, 1) for k, x in w.items()}} for (a, b), w in worst.items()]
+        rows = [{"pair": f"{a} | {b}", "exact": exact[b], **{k: round(x, 1) for k, x in w.items()}} for (a, b), w in worst.items()]
         res[v] = {"name": name, "n_pairs": len(rows),
                   "n_open": sum(r["open_mm"] > TOL_MM for r in rows), "n_overlap": sum(r["overlap_mm"] > TOL_MM for r in rows),
                   "worst_open": sorted(rows, key=lambda r: -r["open_mm"])[:6], "worst_overlap": sorted(rows, key=lambda r: -r["overlap_mm"])[:6]}
