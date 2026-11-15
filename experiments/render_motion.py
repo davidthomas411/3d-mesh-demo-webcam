@@ -23,8 +23,9 @@ def edge(m):
 
 def plane_images(vol, bones, ax_z, cor_y, sag_x, lo, hi, zscale):
     ax = win(vol[ax_z], lo, hi); axb = edge(bones[ax_z])
-    cor = win(vol[:, cor_y, :], lo, hi); corb = edge(bones[:, cor_y, :])
-    sag = win(vol[:, :, sag_x], lo, hi); sagb = edge(bones[:, :, sag_x])
+    # volume z index 0 is the feet (DICOM z increases toward the head): flip so head is at the top of coronal/sagittal views
+    cor = win(vol[:, cor_y, :], lo, hi)[::-1]; corb = edge(bones[:, cor_y, :])[::-1]
+    sag = win(vol[:, :, sag_x], lo, hi)[::-1]; sagb = edge(bones[:, :, sag_x])[::-1]
     out = []
     for img, b, is_ax in ((ax, axb, True), (cor, corb, False), (sag, sagb, False)):
         rgb = np.stack([img] * 3, -1)
