@@ -18,6 +18,11 @@ export async function loadAtlas(jsonUrl, binUrl) {
     fetch(jsonUrl).then(r => { if (!r.ok) throw new Error("atlas json " + r.status); return r.json(); }),
     fetch(binUrl).then(r => { if (!r.ok) throw new Error("atlas bin " + r.status); return r.arrayBuffer(); }),
   ]);
+  return parseAtlas(meta, buf);
+}
+
+// meta: parsed atlas.json, buf: ArrayBuffer of atlas.bin (usable from Node with fs buffers)
+export function parseAtlas(meta, buf) {
   if (meta.version !== 2) throw new Error("atlas v2 required");
   const segments = meta.segments.map(g => ({
     name: g.name,
@@ -38,7 +43,8 @@ export async function loadAtlas(jsonUrl, binUrl) {
     }
     return s;
   });
-  return { meta, segments, structures, chain: meta.chain || [] };
+  const byName = new Map(structures.map(s => [s.name, s]));
+  return { meta, segments, structures, byName, chain: meta.chain || [], joints: meta.joints || [] };
 }
 
 // Largest-eigenvalue eigenvector of a symmetric 4x4 by cyclic Jacobi (robust, tiny).
@@ -127,6 +133,198 @@ function rigidFromFrames(frames, centroid) {
   for (const [f, w] of frames) { const m = mapPoint(f, centroid); for (let k = 0; k < 3; k++) cp[k] += w * m[k]; }
   return { R, cp };
 }
+function blendFrame(centroid, wf) {
+  const q = blendQuat(wf), cp = [0, 0, 0];
+  for (const [f, w] of wf) { const m = mapPoint(f, centroid); for (let k = 0; k < 3; k++) cp[k] += w * m[k]; }
+  return { q, R: quatToR(q), c: centroid, cp };
+}
+
+// ---- small rotation toolkit (row-major 3x3 in Float64Array(9)); mirrors anatomy/runtime.py
+const mul3 = (A, B) => {
+  const C = new Float64Array(9);
+  for (let i = 0; i < 3; i++) for (let j = 0; j < 3; j++) C[i * 3 + j] = A[i * 3] * B[j] + A[i * 3 + 1] * B[3 + j] + A[i * 3 + 2] * B[6 + j];
+  return C;
+};
+const tr3 = A => Float64Array.of(A[0], A[3], A[6], A[1], A[4], A[7], A[2], A[5], A[8]);
+function matToQuat(R) {                       // same branch structure as the numpy reference
+  const t = R[0] + R[4] + R[8];
+  let q;
+  if (t > 0) { const s = Math.sqrt(t + 1) * 2; q = [0.25 * s, (R[7] - R[5]) / s, (R[2] - R[6]) / s, (R[3] - R[1]) / s]; }
+  else if (R[0] > R[4] && R[0] > R[8]) { const s = Math.sqrt(1 + R[0] - R[4] - R[8]) * 2; q = [(R[7] - R[5]) / s, 0.25 * s, (R[1] + R[3]) / s, (R[2] + R[6]) / s]; }
+  else if (R[4] > R[8]) { const s = Math.sqrt(1 + R[4] - R[0] - R[8]) * 2; q = [(R[2] - R[6]) / s, (R[1] + R[3]) / s, 0.25 * s, (R[5] + R[7]) / s]; }
+  else { const s = Math.sqrt(1 + R[8] - R[0] - R[4]) * 2; q = [(R[3] - R[1]) / s, (R[2] + R[6]) / s, (R[5] + R[7]) / s, 0.25 * s]; }
+  const n = Math.hypot(...q);
+  return q.map(v => v / n);
+}
+function rodrigues(axis, ang) {
+  const n = Math.hypot(...axis);
+  if (n < 1e-12 || Math.abs(ang) < 1e-14) return Float64Array.of(1, 0, 0, 0, 1, 0, 0, 0, 1);
+  const [x, y, z] = axis.map(v => v / n), c = Math.cos(ang), s = Math.sin(ang), k = 1 - c;
+  return Float64Array.of(c + x * x * k, x * y * k - z * s, x * z * k + y * s,
+                         y * x * k + z * s, c + y * y * k, y * z * k - x * s,
+                         z * x * k - y * s, z * y * k + x * s, c + z * z * k);
+}
+function matToRotvec(R) {
+  let q = matToQuat(R);
+  if (q[0] < 0) q = q.map(v => -v);
+  const s = Math.hypot(q[1], q[2], q[3]);
+  if (s < 1e-12) return [0, 0, 0];
+  const ang = 2 * Math.atan2(s, q[0]);
+  return [q[1] / s * ang, q[2] / s * ang, q[3] / s * ang];
+}
+const DEG = Math.PI / 180;
+function limitRotation(R, maxDeg) {           // clamp the angle of a relative rotation (axis kept)
+  const rv = matToRotvec(R), ang = Math.hypot(...rv), m = maxDeg * DEG;
+  return ang > m ? rodrigues(rv, m) : R;
+}
+function aim(a, b, maxDeg) {                  // shortest-arc rotation taking a onto the direction of b, clamped
+  const na = Math.hypot(...a), nb = Math.hypot(...b);
+  if (na < 1e-9 || nb < 1e-9) return Float64Array.of(1, 0, 0, 0, 1, 0, 0, 0, 1);
+  const A = a.map(v => v / na), B = b.map(v => v / nb);
+  const v = [A[1] * B[2] - A[2] * B[1], A[2] * B[0] - A[0] * B[2], A[0] * B[1] - A[1] * B[0]];
+  const c = Math.max(-1, Math.min(1, A[0] * B[0] + A[1] * B[1] + A[2] * B[2])), sn = Math.hypot(...v);
+  if (sn < 1e-9) return Float64Array.of(1, 0, 0, 0, 1, 0, 0, 0, 1);
+  return rodrigues(v, Math.min(Math.atan2(sn, c), maxDeg * DEG));
+}
+const mkFrame = (R, J, pJ) => ({ q: matToQuat(R), R, c: J, cp: pJ });
+
+// ---------------------------------------------------------------------------------------------
+// Kinematics (no three.js): segment frames -> spine chain -> joint frames -> soft-tissue frames.
+// breath: 0 (end-expiration) .. 1 (end-inspiration); depth: 1 = quiet breathing.
+export function computeFrames(atlas, skin, breath = 0, depth = 1) {
+  const SEG = Object.fromEntries(atlas.segments.map((g, i) => [g.name, i]));
+  const T = atlas.segments.map(g => {
+    const r = weightedRigid(g.rest, g.idx, null, skin);
+    return { q: r.q, R: r.R, c: r.cs, cp: r.cd };
+  });
+  const chain = atlas.chain, n = chain.length, cf = [];
+  if (n) {
+    const q = [], c = [], sp = [];
+    for (const name of chain) {
+      const s = atlas.byName.get(name), wf = s.bone_w.map(([sg, w]) => [T[sg], w]);
+      q.push(blendQuat(wf)); c.push(s.centroid);
+      const p = [0, 0, 0];
+      for (const [f, w] of wf) { const m = mapPoint(f, s.centroid); for (let k = 0; k < 3; k++) p[k] += w * m[k]; }
+      sp.push(p);
+    }
+    const cp = [sp[0].slice()];
+    for (let i = 1; i < n; i++) {
+      const d = q[i][0] * q[i - 1][0] + q[i][1] * q[i - 1][1] + q[i][2] * q[i - 1][2] + q[i][3] * q[i - 1][3];
+      const sg = d >= 0 ? 1 : -1, qm = q[i - 1].map((v, k) => v + sg * q[i][k]), nn = Math.hypot(...qm);
+      const R = quatToR(qm.map(v => v / nn)), dv = [c[i][0] - c[i - 1][0], c[i][1] - c[i - 1][1], c[i][2] - c[i - 1][2]];
+      cp.push([0, 1, 2].map(k => cp[i - 1][k] + R[k * 3] * dv[0] + R[k * 3 + 1] * dv[1] + R[k * 3 + 2] * dv[2]));
+    }
+    // low-frequency skin anchoring: final = FK + gaussian-smooth(skin - FK), sigma = 3 vertebrae
+    const ker = []; let ks = 0;
+    for (let k = -6; k <= 6; k++) { const v = Math.exp(-k * k / 18); ker.push(v); ks += v; }
+    for (let i = 0; i < n; i++) {
+      const out = [0, 0, 0];
+      for (let k = -6; k <= 6; k++) {
+        const j = Math.min(n - 1, Math.max(0, i + k)), w = ker[k + 6] / ks;
+        for (let m = 0; m < 3; m++) out[m] += w * (sp[j][m] - cp[j][m]);
+      }
+      cf.push({ q: q[i], R: quatToR(q[i]), c: c[i], cp: [cp[i][0] + out[0], cp[i][1] + out[1], cp[i][2] + out[2]] });
+    }
+  }
+  const F = jointFrames(atlas, T, cf, SEG, breath, depth);
+  const soft = [T[SEG.pelvis], ...cf, T[SEG.head], T[SEG.uparm_l], T[SEG.uparm_r], T[SEG.thigh_l], T[SEG.thigh_r]];
+  return { T, cf, soft, F };
+}
+
+// Body frames {q,R,c,cp} (x' = R (x - c) + cp) for every joint-driven bone. Mirrors _joint_frames in runtime.py.
+function jointFrames(atlas, T, cf, SEG, breath, depth) {
+  const chain = atlas.chain, J = Object.fromEntries(atlas.joints.map(j => [j.name, j])), F = {};
+  for (const j of atlas.joints) {                              // ribs: costovertebral joint + respiratory rotation
+    if (j.type !== "costovertebral" || !chain.includes(j.parent)) continue;
+    const fv = cf[chain.indexOf(j.parent)], ang = j.resp_deg * depth * breath * DEG * j.resp_sign;
+    F[j.child] = mkFrame(mul3(fv.R, rodrigues(j.axis, ang)), j.center, mapPoint(fv, j.center));
+  }
+  const st = atlas.byName.get("sternum");
+  if (st && st.attach_ribs) {
+    const wf = st.attach_ribs.filter(([r]) => F[r]).map(([r, w]) => [F[r], w]);
+    if (wf.length) F.sternum = blendFrame(st.centroid, wf);
+  }
+  const S = F.sternum, Rthup = T[SEG.thorax_up].R;
+  for (const k of ["l", "r"]) {
+    const Rarm = T[SEG["uparm_" + k]].R, Rthigh = T[SEG["thigh_" + k]].R;
+    const sc = J["sc_" + k], ac = J["ac_" + k], gh = J["gh_" + k], hip = J["hip_" + k];
+    if (S && sc && ac) {
+      const pJ = mapPoint(S, sc.center);
+      // clavicle: aim its lateral end (AC joint) at where the shoulder cap went, about the SC joint
+      const cap = mapPoint(T[SEG["shoulder_" + k]], ac.center), tgt = [cap[0] - pJ[0], cap[1] - pJ[1], cap[2] - pJ[2]];
+      const rest = [ac.center[0] - sc.center[0], ac.center[1] - sc.center[1], ac.center[2] - sc.center[2]];
+      const a = [0, 1, 2].map(i => S.R[i * 3] * rest[0] + S.R[i * 3 + 1] * rest[1] + S.R[i * 3 + 2] * rest[2]);
+      const Rcl = mul3(aim(a, tgt, sc.limit_deg), S.R);
+      F[sc.child] = mkFrame(Rcl, sc.center, pJ);
+      // scapula: pinned at the AC joint; rotates with a third of the arm's elevation (scapulohumeral rhythm)
+      const pJac = mapPoint(F[sc.child], ac.center);
+      const rv = matToRotvec(mul3(tr3(Rthup), Rarm));
+      const Rsc = mul3(S.R, limitRotation(rodrigues(rv, Math.hypot(...rv) / 3), ac.limit_deg));
+      F[ac.child] = mkFrame(Rsc, ac.center, pJac);
+      if (gh) {                                                // humerus: ball pinned in the glenoid
+        const Rh = mul3(Rsc, limitRotation(mul3(tr3(Rsc), Rarm), gh.limit_deg));
+        F[gh.child] = mkFrame(Rh, gh.center, mapPoint(F[ac.child], gh.center));
+      }
+    }
+    if (hip) {                                                 // femur: ball pinned in the acetabulum
+      const Tp = T[SEG.pelvis];
+      F[hip.child] = mkFrame(mul3(Tp.R, limitRotation(mul3(tr3(Tp.R), Rthigh), hip.limit_deg)), hip.center, mapPoint(Tp, hip.center));
+    }
+  }
+  const ao = J.ao;
+  if (ao && chain.includes(ao.parent)) {                       // skull on C1
+    const c1 = cf[chain.indexOf(ao.parent)], Rh = T[SEG.head].R;
+    F.skull = mkFrame(mul3(c1.R, limitRotation(mul3(tr3(c1.R), Rh), ao.limit_deg)), ao.center, mapPoint(c1, ao.center));
+  }
+  return F;
+}
+
+// Transform one structure's vertices into P (positions) and, if N/rn are given, normals.
+// f = +1 keeps the raw MHR frame; f = -1 writes the display frame (x, -y, -z).
+export function transformStructure(s, fr, P, N, rn, f = 1) {
+  const p = s.pos, { T, cf, soft, F } = fr;
+  if (s.bind === "soft") {
+    for (let v = 0; v < p.length; v += 3) {
+      let ox = 0, oy = 0, oz = 0, nx = 0, ny = 0, nz = 0;
+      for (let k = 0; k < 3; k++) {
+        const w = s.infW[v + k]; if (w <= 0) continue;
+        const fr_ = soft[s.infIdx[v + k]], R = fr_.R;
+        const x = p[v] - fr_.c[0], y = p[v + 1] - fr_.c[1], z = p[v + 2] - fr_.c[2];
+        ox += w * (R[0] * x + R[1] * y + R[2] * z + fr_.cp[0]);
+        oy += w * (R[3] * x + R[4] * y + R[5] * z + fr_.cp[1]);
+        oz += w * (R[6] * x + R[7] * y + R[8] * z + fr_.cp[2]);
+        if (N) {
+          nx += w * (R[0] * rn[v] + R[1] * rn[v + 1] + R[2] * rn[v + 2]);
+          ny += w * (R[3] * rn[v] + R[4] * rn[v + 1] + R[5] * rn[v + 2]);
+          nz += w * (R[6] * rn[v] + R[7] * rn[v + 1] + R[8] * rn[v + 2]);
+        }
+      }
+      P[v] = ox; P[v + 1] = f * oy; P[v + 2] = f * oz;
+      if (N) { N[v] = nx; N[v + 1] = f * ny; N[v + 2] = f * nz; }
+    }
+    return;
+  }
+  let R, c, cp;
+  switch (s.bind) {
+    case "joint": { const fr_ = F[s.name]; R = fr_.R; c = fr_.c; cp = fr_.cp; break; }
+    case "frame": { const fr_ = F[s.frame]; R = fr_.R; c = fr_.c; cp = fr_.cp; break; }
+    case "attach_ribs": { const t = rigidFromFrames(s.attach_ribs.filter(([r]) => F[r]).map(([r, w]) => [F[r], w]), s.centroid); R = t.R; c = s.centroid; cp = t.cp; break; }
+    case "vertebra": { const t = rigidFromFrames([[cf[s.chain_index], 1]], s.centroid); R = t.R; c = s.centroid; cp = t.cp; break; }
+    case "attach": { const t = rigidFromFrames(s.attach.map(([i, w]) => [cf[i], w]), s.centroid); R = t.R; c = s.centroid; cp = t.cp; break; }
+    default: { const t = rigidFromFrames(s.bone_w.map(([sg, w]) => [T[sg], w]), s.centroid); R = t.R; c = s.centroid; cp = t.cp; }
+  }
+  for (let v = 0; v < p.length; v += 3) {
+    const x = p[v] - c[0], y = p[v + 1] - c[1], z = p[v + 2] - c[2];
+    P[v] = R[0] * x + R[1] * y + R[2] * z + cp[0];
+    P[v + 1] = f * (R[3] * x + R[4] * y + R[5] * z + cp[1]);
+    P[v + 2] = f * (R[6] * x + R[7] * y + R[8] * z + cp[2]);
+    if (N) {
+      N[v] = R[0] * rn[v] + R[1] * rn[v + 1] + R[2] * rn[v + 2];
+      N[v + 1] = f * (R[3] * rn[v] + R[4] * rn[v + 1] + R[5] * rn[v + 2]);
+      N[v + 2] = f * (R[6] * rn[v] + R[7] * rn[v + 1] + R[8] * rn[v + 2]);
+    }
+  }
+}
 
 export class AnatomyLayer {
   // flipYZ: write display positions as (x, -y, -z) (mobile page). Leave false to keep the raw MHR
@@ -174,89 +372,17 @@ export class AnatomyLayer {
   setEnabled(on) { this.group.visible = on; }
   _applyVisibility() { for (const { s, mesh } of this.entries) mesh.visible = this.visibleGroups.has(s.group); }
 
-  // Segment frames, spine-chain frames and the soft-tissue frame list for one live skin mesh.
-  _frames(skin) {
-    const A = this.atlas, SEG = Object.fromEntries(A.segments.map((g, i) => [g.name, i]));
-    const T = A.segments.map(g => {
-      const r = weightedRigid(g.rest, g.idx, null, skin);
-      return { q: r.q, R: r.R, c: r.cs, cp: r.cd };
-    });
-    const chain = A.chain, n = chain.length, cf = [];
-    if (n) {
-      const q = [], c = [], sp = [];
-      for (const name of chain) {
-        const s = this.byName.get(name).s, wf = s.bone_w.map(([sg, w]) => [T[sg], w]);
-        q.push(blendQuat(wf)); c.push(s.centroid);
-        const p = [0, 0, 0];
-        for (const [f, w] of wf) { const m = mapPoint(f, s.centroid); for (let k = 0; k < 3; k++) p[k] += w * m[k]; }
-        sp.push(p);
-      }
-      const cp = [sp[0].slice()];
-      for (let i = 1; i < n; i++) {
-        const d = q[i][0] * q[i - 1][0] + q[i][1] * q[i - 1][1] + q[i][2] * q[i - 1][2] + q[i][3] * q[i - 1][3];
-        const sg = d >= 0 ? 1 : -1, qm = q[i - 1].map((v, k) => v + sg * q[i][k]), nn = Math.hypot(...qm);
-        const R = quatToR(qm.map(v => v / nn)), dv = [c[i][0] - c[i - 1][0], c[i][1] - c[i - 1][1], c[i][2] - c[i - 1][2]];
-        cp.push([0, 1, 2].map(k => cp[i - 1][k] + R[k * 3] * dv[0] + R[k * 3 + 1] * dv[1] + R[k * 3 + 2] * dv[2]));
-      }
-      // low-frequency skin anchoring: final = FK + gaussian-smooth(skin - FK), sigma = 3 vertebrae
-      const ker = []; let ks = 0;
-      for (let k = -6; k <= 6; k++) { const v = Math.exp(-k * k / 18); ker.push(v); ks += v; }
-      for (let i = 0; i < n; i++) {
-        const out = [0, 0, 0];
-        for (let k = -6; k <= 6; k++) {
-          const j = Math.min(n - 1, Math.max(0, i + k)), w = ker[k + 6] / ks;
-          for (let m = 0; m < 3; m++) out[m] += w * (sp[j][m] - cp[j][m]);
-        }
-        cf.push({ q: q[i], R: quatToR(q[i]), c: c[i], cp: [cp[i][0] + out[0], cp[i][1] + out[1], cp[i][2] + out[2]] });
-      }
-    }
-    const soft = [T[SEG.pelvis], ...cf, T[SEG.head], T[SEG.uparm_l], T[SEG.uparm_r], T[SEG.thigh_l], T[SEG.thigh_r]];
-    return { T, cf, soft };
-  }
-
   // skin: Float32Array(V*3) live MHR vertices in the raw frame (metres), same layout as the mesh.
-  update(skin) {
+  // breath: 0..1 respiratory state (ribs, sternum and the structures they carry), depth: 1 = quiet breathing.
+  update(skin, breath = 0, depth = 1) {
     if (!this.group.visible || !skin) return;
-    const { T, cf, soft } = this._frames(skin);
-    const f = this.flipYZ ? -1 : 1;
+    const fr = computeFrames(this.atlas, skin, breath, depth), f = this.flipYZ ? -1 : 1;
     for (const e of this.entries) {
       if (!e.mesh.visible) continue;
-      const { s } = e, P = e.mesh.geometry.attributes.position.array, N = e.mesh.geometry.attributes.normal.array;
-      const p = s.pos, rn = e.restN;
-      if (s.bind === "soft") {
-        for (let v = 0; v < p.length; v += 3) {
-          let ox = 0, oy = 0, oz = 0, nx = 0, ny = 0, nz = 0;
-          for (let k = 0; k < 3; k++) {
-            const w = s.infW[v + k]; if (w <= 0) continue;
-            const fr = soft[s.infIdx[v + k]], R = fr.R;
-            const x = p[v] - fr.c[0], y = p[v + 1] - fr.c[1], z = p[v + 2] - fr.c[2];
-            ox += w * (R[0] * x + R[1] * y + R[2] * z + fr.cp[0]);
-            oy += w * (R[3] * x + R[4] * y + R[5] * z + fr.cp[1]);
-            oz += w * (R[6] * x + R[7] * y + R[8] * z + fr.cp[2]);
-            nx += w * (R[0] * rn[v] + R[1] * rn[v + 1] + R[2] * rn[v + 2]);
-            ny += w * (R[3] * rn[v] + R[4] * rn[v + 1] + R[5] * rn[v + 2]);
-            nz += w * (R[6] * rn[v] + R[7] * rn[v + 1] + R[8] * rn[v + 2]);
-          }
-          P[v] = ox; P[v + 1] = f * oy; P[v + 2] = f * oz; N[v] = nx; N[v + 1] = f * ny; N[v + 2] = f * nz;
-        }
-      } else {
-        let wf;
-        if (s.bind === "vertebra") wf = [[cf[s.chain_index], 1]];
-        else if (s.bind === "attach") wf = s.attach.map(([i, w]) => [cf[i], w]);
-        else wf = s.bone_w.map(([sg, w]) => [T[sg], w]);
-        const { R, cp } = rigidFromFrames(wf, s.centroid), c = s.centroid;
-        for (let v = 0; v < p.length; v += 3) {
-          const x = p[v] - c[0], y = p[v + 1] - c[1], z = p[v + 2] - c[2];
-          P[v] = R[0] * x + R[1] * y + R[2] * z + cp[0];
-          P[v + 1] = f * (R[3] * x + R[4] * y + R[5] * z + cp[1]);
-          P[v + 2] = f * (R[6] * x + R[7] * y + R[8] * z + cp[2]);
-          N[v] = R[0] * rn[v] + R[1] * rn[v + 1] + R[2] * rn[v + 2];
-          N[v + 1] = f * (R[3] * rn[v] + R[4] * rn[v + 1] + R[5] * rn[v + 2]);
-          N[v + 2] = f * (R[6] * rn[v] + R[7] * rn[v + 1] + R[8] * rn[v + 2]);
-        }
-      }
-      e.mesh.geometry.attributes.position.needsUpdate = true;
-      e.mesh.geometry.attributes.normal.needsUpdate = true;
+      const g = e.mesh.geometry;
+      transformStructure(e.s, fr, g.attributes.position.array, g.attributes.normal.array, e.restN, f);
+      g.attributes.position.needsUpdate = true;
+      g.attributes.normal.needsUpdate = true;
     }
   }
 }

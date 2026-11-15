@@ -443,6 +443,37 @@ What the model does **not** do:
 - The rig only sees MHR skin motion. A deep motion that does not show on the skin (a rib cage expanding with breath, a
   pelvis tilting under soft tissue) is invisible to it.
 
+### Joint connection rules
+
+Bones that articulate are assembled as groups (head+neck, thorax, lumbar, pelvis), each placed with ONE rigid transform, so they
+keep the CT subject's own joint geometry (a glenohumeral ball sits in its socket at rest). The joint table in `atlas.json`
+holds, for every joint, a centre shared by a parent and a child bone. At runtime the child rotates about that centre and the
+centre is pinned to the parent's image of it, so no motion can pull a ball out of its socket. Rotations are clamped to a
+range of motion (isotropic cones, not anatomical envelopes: they only stop skin noise producing impossible poses).
+
+| Joint | Parent -> child | Driven by |
+|---|---|---|
+| glenohumeral (ball) | scapula -> humerus | upper-arm skin rotation |
+| acromioclavicular | clavicle -> scapula | a third of the arm's elevation (scapulohumeral rhythm) |
+| sternoclavicular | sternum -> clavicle | clavicle aims its lateral end at the shoulder cap (shrug, protraction) |
+| hip (ball) | hip bone -> femur | thigh skin rotation |
+| atlanto-occipital | C1 -> skull | head skin rotation; the brain is rigid with the skull |
+| costovertebral (x24) | vertebra -> rib | respiratory rotation about each rib's neck axis (`breath`, `depth`) |
+
+Measured on real MHR poses (`tests/validate_joints.py`, gap between child and parent surfaces near the joint, mm):
+
+| Joint | Gap at rest | Change under shoulder shrug | Before the joint rules |
+|---|---|---|---|
+| glenohumeral L / R | 1.3 / 1.8 | -0.4 / +0.2 | 28-37 mm gap at rest, ~30 mm more under shrug |
+| hip L / R | 0.9 / 1.1 | 0.0 / 0.0 | |
+| skull on C1 | 0.6 | 0.0 | |
+| sternoclavicular L / R | 2.9 / 2.6 | +2.7 / +3.4 | |
+| acromioclavicular L / R | 5.1 / 5.4 | -3.2 / -3.7 | |
+
+Breathing (`atlas.pose(skin, breath, depth)`; `breath` 0 = end-expiration .. 1 = end-inspiration): ribs rotate about their
+neck axes (default amplitudes in `anatomy/rig.py: RESP_DEG` are uncalibrated placeholders), the sternum and cartilages ride on
+the ribs, and the clavicles follow the sternum. The soft-tissue (lung/diaphragm) response is not implemented yet.
+
 ### Limits that must stay visible
 
 - **Not patient-specific, not for clinical use.** Internal positions are an atlas guess scaled to
@@ -463,7 +494,7 @@ What the model does **not** do:
 
 ```bash
 pip install numpy scipy pytest scikit-image nibabel trimesh fast-simplification rtree
-pytest tests/                                  # 18 tests: depth, rig invariants on the shipped atlas, JS-vs-numpy parity (needs node)
+pytest tests/                                  # 28 tests: depth, rig invariants on the shipped atlas, JS-vs-numpy parity (needs node)
 PYTHONPATH=. python tests/validate_rig.py atlas/atlas - mhr-body.onnx mhr_rest.npz   # real-MHR-pose comparison (needs the onnx file)
 ```
 
