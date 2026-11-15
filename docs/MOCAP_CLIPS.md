@@ -14,3 +14,22 @@ Ways to get a real clip:
 Pieces: `tools/mhr_clip.py` (loader; smoothing; global translation/rotation and per-person scale neutralised because the patient lies in the CT frame and the atlas is the
 mean-shape MHR), `experiments/render_clip.py` (AP + lateral bone radiographs, coronal + sagittal real-HU reformats for the best model), `clips/make_synthetic_clip.py`
 (24-frame reach-and-turn with neck flexion and an arm raise, to exercise the path). Memory: `warped_volume` now works in slabs, one render worker is safe.
+
+## Reusing the multi-view capture from the linac / SGRT project (found in the repos, not in a chat)
+
+Prior chats were not readable from here (only three code sessions are visible; none was the linac digital twin). Reviewing the repositories instead:
+- `davidthomas411/multi-view-breathing-mesh`: six calibrated GoPro views of a supine volunteer, SAM 3D Body in every camera, a markerless multi-view MHR fit
+  (`mv/mv_fit.py`: one MHR body optimised so its vertices project onto every camera's SAM 3D Body vertices; median 41 mm to Vicon markers vs 114 mm for a typical
+  single camera), Sapiens2 keypoints, ~1 mm skin tracking. It already uses SAM 3D Body weights, so access exists on that machine (Windows, RTX 4060, 8 GB).
+  The study data and videos are not in the repository, so they are not available here.
+- `tju-thomas-lab/treatment-room-simulation` (DepthCam Sim): the linac room, camera presets and Blender scene; a place to put the rig-driven patient later.
+
+What is reusable for this rig: the multi-view fit's per-frame MHR body is exactly what the clip format needs, but `mv_fit.py` currently saves only world-frame vertices (`X`),
+not parameters. Two small edits to `mv_fit.py` (not applied; the repository was cloned read-only):
+1. after `out = dict(frames=[], X=[], loss=[], resid=[], dropped=[])` add `out["body"] = []`;
+2. in the frame loop, next to `out["X"].append(...)`, add `out["body"].append(body.detach().cpu().numpy().reshape(-1))`, and in both `np.savez(...)` calls add
+   `body=np.array(out["body"]), global_rot=p["global_rot"].cpu().numpy(), hand=p["hand"].cpu().numpy(), scale=p["scale"].cpu().numpy(), shape=p["shape"].cpu().numpy(), expr=p["expr"].cpu().numpy()`.
+Then, in that project's SAM3D env from its `mv/` folder: `python <this repo>/tools/mv_fit_to_clip.py tmp/mv_fit/mv_fit.npz clip.npz --video-fps 60`, and
+`python experiments/render_clip.py clip.npz OUTDIR` here. `mv_fit_to_clip.py` is untested against real data.
+Caveats: global translation/rotation and the per-person scale are discarded (the patient lies in the CT frame; the atlas is mean-shape); the fit's frame stride is 6, so a 60 fps video
+gives about 10 fps motion.
