@@ -145,8 +145,14 @@ class CTWarper:
         shape = tuple(len(a) for a in axes)
         # bone landmark tree for the rigid override
         if bones:
-            bl = np.vstack([v[3] for v in bones.values()])
-            own = np.concatenate([np.full(len(v[3]), k_) for k_, v in bones.items()])
+            if getattr(self, "_bone_pts", None) is None:      # bone voxel centres (stride 2), per bone label, in the CT frame (mm)
+                sub = np.zeros(self.bone_id.shape, bool); sub[::2, ::2, ::2] = True
+                ii = np.argwhere(sub & (self.bone_id > 0))
+                lab_ = self.bone_id[tuple(ii.T)]
+                self._bone_pts = {int(k_): self.vox_to_mm(ii[lab_ == k_].astype(float)) for k_ in np.unique(lab_)}
+            pts = [(k_, self._bone_pts[k_]) for k_ in bones if k_ in self._bone_pts]
+            bl = np.vstack([(bones[k_][0] @ P.T).T + bones[k_][1] for k_, P in pts])
+            own = np.concatenate([np.full(len(P), k_) for k_, P in pts])
             bt = cKDTree(bl)
         else:                                       # skin-only mode: no skeleton, nothing rigid
             own, bt = None, None
@@ -162,18 +168,36 @@ class CTWarper:
         if fld["bone_tree"] is None:
             return src
         near = self.sample(self.bone_near.astype(np.uint8), src, order=0, cval=0) > 0
-        idx = np.flatnonzero(near)
+        done = np.zeros(len(g), bool)
+        # Rigid override: candidates are output voxels within override_mm of a POSED bone voxel (a dense tree, so thin shells
+        # such as the skull are covered; the smooth field's source is approximate after a large rotation). Each takes the exact
+        # rigid-inverse source if that source lies in the bone's (dilated) mask.
+        if getattr(self, "_bid_near", None) is None:
+            lab = self.bone_id
+            dist, ind = ndi.distance_transform_edt(lab == 0, return_indices=True)
+            self._bid_near = np.where(dist <= 3.0, lab[tuple(ind)], 0).astype(lab.dtype)
+            del dist, ind
+        d, j = fld["bone_tree"].query(g, k=1, workers=-1, distance_upper_bound=override_mm)
+        idx = np.flatnonzero(np.isfinite(d))
         if len(idx):
-            d, j = fld["bone_tree"].query(g[idx], k=1, workers=-1)
-            owner = fld["bone_owner"][j]
+            owner = fld["bone_owner"][j[idx]]
             for k_ in np.unique(owner):
-                sel = idx[(owner == k_) & (d < override_mm)]
-                if not len(sel):
-                    continue
-                Rb, tb, _, _ = fld["bones"][k_]
+                sel = idx[owner == k_]
+                Rb, tb = fld["bones"][k_][:2]
                 xb = (g[sel] - tb) @ Rb                      # exact rigid inverse: x = Rb^T (y - tb)
-                ok = self.sample(self.bone_id, xb, order=0, cval=0) == k_
+                ok = self.sample(self._bid_near, xb, order=0, cval=0) == k_
                 src[sel[ok]] = xb[ok]
+                done[sel[ok]] = True
+        # the smooth field is only approximate for large rotations: any voxel it maps onto source bone that is NOT the exact
+        # rigid image of a posed bone would draw a second, ghost copy of that bone (e.g. extra skulls in a forward bend).
+        # Bones come only from the rigid override; everywhere else sample the nearest soft tissue instead.
+        ghost = near & ~done
+        if ghost.any():
+            if getattr(self, "_soft_idx", None) is None:
+                self._soft_idx = ndi.distance_transform_edt(self.bone_near, return_indices=True)[1]
+            vi = np.clip(np.rint(self.mm_to_vox(src[ghost])).astype(int), 0, np.array(self.bone_near.shape) - 1)
+            nv = self._soft_idx[:, vi[:, 0], vi[:, 1], vi[:, 2]].T.astype(float)
+            src[ghost] = self.vox_to_mm(nv)
         return src
 
     # ---------------------------------------------------------------- sampling and rendering
