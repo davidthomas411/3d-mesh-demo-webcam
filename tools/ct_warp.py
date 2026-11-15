@@ -18,6 +18,7 @@ from anatomy import rig
 from anatomy.runtime import Atlas
 
 SKIP_LANDMARKS = ("humerus_", "femur_")       # arms/legs are cropped; their CT pose differs from the atlas T-pose
+RIGID_SOFT = ("brain",)                      # soft structures that move as one rigid body with a bone (the skull)
 
 
 class CTWarper:
@@ -51,7 +52,8 @@ class CTWarper:
                     if ab.is_bone(n) and not n.startswith(SKIP_LANDMARKS)]
         self.bone = np.isin(self.label, bone_ids)
         self.bone = ndi.binary_dilation(self.bone, iterations=1)
-        bid = np.where(np.isin(self.label, bone_ids), self.label, 0).astype(np.uint8)
+        rigid_ids = bone_ids + [k for k, n in self.label_names.items() if n in RIGID_SOFT]   # brain rides rigidly with the skull
+        bid = np.where(np.isin(self.label, rigid_ids), self.label, 0).astype(np.uint8)
         self.bone_id = ndi.grey_dilation(bid, size=3)                       # bone identity per voxel (for exact rigid motion)
         self.bone_near = ndi.binary_dilation(self.bone, iterations=3)       # candidates for the rigid override
         # ---- remove couch and arms
@@ -116,7 +118,7 @@ class CTWarper:
                 continue
             xs = self.v_ct[n][::2]
             p = posed[n][::2]
-            if ab.is_bone(n):
+            if ab.is_bone(n) or n in RIGID_SOFT:
                 s, R, t = self.T[n]
                 ys = ((p - t) @ R) / s                      # posed vertex expressed in the bone's own CT frame (exact, rigid)
                 _, Rb, tb = ab.umeyama(xs, ys, with_scale=False)   # rigid motion of the bone in the CT frame: y = Rb x + tb
@@ -220,8 +222,8 @@ class CTWarper:
         region: (min_xyz, max_xyz) in mm to crop the output grid."""
         lo = self.vox_to_mm(np.array([0, 0, 0.0])); hi = self.vox_to_mm(np.array(self.hu.shape, float) - 1)
         mn, mx = np.minimum(lo, hi), np.maximum(lo, hi)
-        if region is not None:
-            mn, mx = np.maximum(mn, region[0]), np.minimum(mx, region[1])
+        if region is not None:                 # explicit region wins, even beyond the CT box: a bent-forward head leaves the scanned volume
+            mn, mx = np.asarray(region[0], float), np.asarray(region[1], float)
         axes = [np.arange(mn[a], mx[a] + step, step) for a in range(3)]
         G = np.stack(np.meshgrid(*axes, indexing="ij"), -1).reshape(-1, 3)
         src = self.source_positions(fld, G)
