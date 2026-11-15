@@ -130,3 +130,40 @@ def test_js_runtime_matches_numpy_with_joints_and_breathing(atlas, tmp_path):
     here = os.path.dirname(__file__)
     r = subprocess.run(["node", os.path.join(here, "js", "parity_pose.mjs"), ATLAS, str(case)], capture_output=True, text=True)
     assert r.returncode == 0, r.stdout + r.stderr
+
+
+def _head_in_socket(atlas, posed, side):
+    from anatomy.atlas_build import joint_head_center
+    by = {s["name"]: s["pos"] for s in atlas.structures}
+    hc = lambda X: joint_head_center(X * 1000.0, -1)[0] / 1000.0
+    d0 = cKDTree(by[f"scapula_{side}"]).query(hc(by[f"humerus_{side}"]))[0]
+    d1 = cKDTree(posed[f"scapula_{side}"]).query(hc(posed[f"humerus_{side}"]))[0]
+    return 1000 * (d1 - d0)
+
+
+def test_without_joint_rules_the_shrug_drives_the_ball_into_the_scapula(atlas):
+    """Regression for the project's stage before joint rules: same shrug, with and without the joint model."""
+    skin = skin_with(atlas, {"shoulder_l": ([0, 0, 0], [0, -0.05, 0]), "uparm_l": ([0, 0, 0], [0, -0.05, 0])})
+    legacy = abs(_head_in_socket(atlas, atlas.pose(skin, joints=False), "left"))
+    joint = abs(_head_in_socket(atlas, atlas.pose(skin), "left"))
+    assert legacy > 5.0 and joint < 2.5, (legacy, joint)
+
+
+def test_physiologic_spine_split_follows_in_vivo_per_level_data(atlas):
+    from anatomy.runtime import _AXIAL
+    twist = np.radians(20.0)
+    skin = skin_with(atlas, {"thorax_up": ([0, twist, 0], [0, 0, 0]), "thorax_low": ([0, twist, 0], [0, 0, 0])})
+    by = {s["name"]: s for s in atlas.structures}
+    names = [n for n in atlas.meta["chain"] if n.replace("vertebrae_", "") in _AXIAL]       # L5 .. T1
+
+    def profile(posed):
+        psi = np.array([np.degrees(Rot.from_matrix(kabsch(by[n]["pos"], posed[n])[0]).as_rotvec()[1]) for n in names])
+        return psi, np.diff(psi)
+    psi, inc = profile(atlas.pose(skin, spine="physio"))
+    ref = np.array([_AXIAL[n.replace("vertebrae_", "")] for n in names[1:]])
+    assert np.corrcoef(np.abs(inc), ref)[0, 1] > 0.98                         # matches the measured per-level profile
+    assert abs(abs(psi[-1] - psi[0]) - 20.0) < 2.0                            # T1 still carries the whole measured trunk rotation
+    lumbar_share = abs(psi[names.index("vertebrae_L1")] - psi[0]) / abs(psi[-1] - psi[0])
+    assert 0.2 < lumbar_share < 0.35                                          # lumbar share ~28% (in-vivo CT), not the skin-block split
+    psi0, inc0 = profile(atlas.pose(skin))                                    # default mode keeps the skin-driven split
+    assert abs(np.corrcoef(np.abs(inc0), ref)[0, 1]) < 0.95

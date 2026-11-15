@@ -107,11 +107,11 @@ class CTWarper:
         return mask & tab.reshape(shp)
 
     # ---------------------------------------------------------------- the motion field
-    def landmarks(self, posed, skin_posed):
+    def landmarks(self, posed, skin_posed, structures=True):
         """-> X (source, CT frame mm), Y (posed, CT frame mm), and per-bone data for the exact rigid override."""
         s_w, R_w, _ = self.W
         X, Y, bones = [], [], {}
-        for n in self.names:
+        for n in (self.names if structures else []):
             if n.startswith(SKIP_LANDMARKS):
                 continue
             xs = self.v_ct[n][::2]
@@ -130,9 +130,9 @@ class CTWarper:
         X.append(self.skin_ct); Y.append(self.skin_ct + du)
         return np.vstack(X), np.vstack(Y), bones
 
-    def field(self, posed, skin_posed, grid_mm=6.0, k=32, sigma_mm=10.0):
+    def field(self, posed, skin_posed, grid_mm=6.0, k=32, sigma_mm=10.0, structures=True):
         """Coarse backward displacement field u_hat(g) for output (posed) positions g, plus the exact bone motions."""
-        X, Y, bones = self.landmarks(posed, skin_posed)
+        X, Y, bones = self.landmarks(posed, skin_posed, structures)
         U = Y - X
         tree = cKDTree(Y)
         lo = self.vox_to_mm(np.array([0, 0, 0.0])); hi = self.vox_to_mm(np.array(self.hu.shape, float) - 1)
@@ -144,10 +144,14 @@ class CTWarper:
         uh = (w[..., None] * U[i]).sum(1) / w.sum(1, keepdims=True)
         shape = tuple(len(a) for a in axes)
         # bone landmark tree for the rigid override
-        bl = np.vstack([v[3] for v in bones.values()])
-        own = np.concatenate([np.full(len(v[3]), k_) for k_, v in bones.items()])
+        if bones:
+            bl = np.vstack([v[3] for v in bones.values()])
+            own = np.concatenate([np.full(len(v[3]), k_) for k_, v in bones.items()])
+            bt = cKDTree(bl)
+        else:                                       # skin-only mode: no skeleton, nothing rigid
+            own, bt = None, None
         return {"origin": mn, "grid": grid_mm, "u": uh.reshape(shape + (3,)), "shape": shape,
-                "bones": bones, "bone_tree": cKDTree(bl), "bone_owner": own}
+                "bones": bones, "bone_tree": bt, "bone_owner": own}
 
     def source_positions(self, fld, g, override_mm=8.0):
         """CT positions to sample for output positions g (n,3 mm): smooth field everywhere, and inside a posed bone
@@ -155,6 +159,8 @@ class CTWarper:
         c = ((g - fld["origin"]) / fld["grid"]).T
         u = np.stack([ndi.map_coordinates(fld["u"][..., a], c, order=1, mode="nearest") for a in range(3)], 1)
         src = g - u
+        if fld["bone_tree"] is None:
+            return src
         near = self.sample(self.bone_near.astype(np.uint8), src, order=0, cval=0) > 0
         idx = np.flatnonzero(near)
         if len(idx):

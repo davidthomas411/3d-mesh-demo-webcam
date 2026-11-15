@@ -24,6 +24,38 @@ import json
 import numpy as np
 
 
+# ---------------------------------------------------------------------------------------------
+# Physiologic distribution of trunk motion along the vertebral chain (spine="physio").
+# AXIAL ROTATION per level, degrees to one side, relative to the inferior vertebra:
+#   thoracic T1-T2 .. T12-L1: Fujimori et al. 2012, Spine, in vivo 3D CT of 13 volunteers in maximum trunk rotation (measured);
+#   lumbar: Ochia 2006 (CT, 0.6-2.2 deg per level, largest L1-L2..L3-L4) and Pearcy 1984 (about 2 deg per level, L3-4/L4-5 slightly more):
+#   the individual lumbar values below are chosen inside those ranges (ASSUMED), summing to ~8 deg (Narimani 2018: 7.5-9.2 deg).
+# LATERAL BENDING / FLEXION shares are weaker: regional totals from Narimani 2018 (lumbar 17.4 / 55.4 deg, thoracic 25.5 / 19.9 deg),
+#   lumbar lateral bending split 10:10:10:6:3 from Pearcy 1984, thoracic weighted toward the lower levels (Pan 2018 review: lower thoracic
+#   contributes more in flexion and lateral bending), everything else uniform: ASSUMPTIONS, not measurements.
+_AXIAL = {"L5": .8, "L4": 1.6, "L3": 2.0, "L2": 2.0, "L1": 1.8, "T12": .5, "T11": 1.3, "T10": 2.6, "T9": 2.7, "T8": 2.5,
+          "T7": 2.3, "T6": 1.9, "T5": 1.8, "T4": 1.6, "T3": 1.4, "T2": 1.6, "T1": 1.2}
+_TW = {f"T{k}": (0.8 if k <= 4 else 1.0 if k <= 8 else 1.3) for k in range(1, 13)}
+_LAT = {**{n: 17.35 * w / 39.0 for n, w in zip(("L5", "L4", "L3", "L2", "L1"), (3, 6, 10, 10, 10))},
+        **{n: 25.5 * w / sum(_TW.values()) for n, w in _TW.items()}}
+_FLX = {**{n: 55.4 / 5 for n in ("L5", "L4", "L3", "L2", "L1")}, **{n: 19.9 * w / sum(_TW.values()) for n, w in _TW.items()}}
+
+
+def physio_cumulative(chain):
+    """name -> (Fx, Fy, Fz): cumulative fraction of the total pelvis-to-T1 rotation reached at each vertebra, per axis
+    (x flexion/extension, y axial, z lateral bending in the pelvis frame), over the lumbar+thoracic vertebrae present."""
+    names = [n for n in chain if n.replace("vertebrae_", "") in _AXIAL]
+    tabs = [_FLX, _AXIAL, _LAT]
+    tot = [sum(t[n.replace("vertebrae_", "")] for n in names) for t in tabs]
+    run, out = [0.0, 0.0, 0.0], {}
+    for n in names:
+        k = n.replace("vertebrae_", "")
+        for a, t in enumerate(tabs):
+            run[a] += t[k]
+        out[n] = tuple(run[a] / tot[a] for a in range(3))
+    return out
+
+
 class Atlas:
     def __init__(self, prefix):
         self.meta = json.load(open(prefix + ".json"))
@@ -60,7 +92,7 @@ class Atlas:
             out.append((rot_to_quat(R), R, cs, cd))
         return out
 
-    def frames(self, skin, breath=0.0, depth=1.0):
+    def frames(self, skin, breath=0.0, depth=1.0, joints=True, spine="skin"):
         """-> (segment_frames, chain_frames, soft_frames). A frame is (q, R, c_rest, c_live)."""
         from . import rig
         T = self.segment_transforms(skin)
@@ -74,6 +106,14 @@ class Atlas:
                 ref = T[ws[0][0]][0]
                 qq = sum(w * (T[sg][0] if T[sg][0] @ ref >= 0 else -T[sg][0]) for sg, w in ws)
                 q.append(qq / np.linalg.norm(qq)); c.append(np.asarray(by[n]["centroid"]))
+            if spine == "physio":                       # distribute the measured pelvis->thorax rotation by in-vivo per-level data
+                from scipy.spatial.transform import Rotation as Rot
+                Rp, Rt = T[rig.SEG["pelvis"]][1], T[rig.SEG["thorax_up"]][1]
+                rv = Rot.from_matrix(Rp.T @ Rt).as_rotvec()
+                for i, nm in enumerate(chain):
+                    fr = physio_cumulative(chain).get(nm)
+                    if fr is not None:
+                        q[i] = rot_to_quat(Rp @ Rot.from_rotvec(np.array(fr) * rv).as_matrix())
             # forward kinematics gives the local spacing/rotation; the skin-driven (segment-blended)
             # positions give the low-frequency placement. final = FK + smooth(skin - FK).
             sp = [sum(w * _apply(T[sg], c[i]) for sg, w in by[chain[i]]["bone_w"]) for i in range(len(chain))]
@@ -88,8 +128,36 @@ class Atlas:
             cp = np.array(cp) + ds
             cf = [(q[i], quat_to_rot(q[i]), c[i], cp[i]) for i in range(len(chain))]
         sf = [T[rig.SEG["pelvis"]]] + cf + [T[rig.SEG["head"]]] + [T[rig.SEG[n]] for n in ("uparm_l", "uparm_r", "thigh_l", "thigh_r")]
-        F = self._joint_frames(T, cf, chain, by, breath, depth)
+        F = self._joint_frames(T, cf, chain, by, breath, depth) if joints else self._legacy_frames(T, cf, chain)
         return T, cf, sf, F
+
+    def _legacy_frames(self, T, cf, chain):
+        """The model stage BEFORE joint rules: ribs rigid on their vertebra, sternum/clavicle/scapula attached to the
+        vertebrae they sit near, humerus/femur/skull following their segment. No pins, no limits, no breathing."""
+        import re
+        from . import rig
+        idx = {n: i for i, n in enumerate(chain)}
+        F = {}
+        for s_ in self.structures:
+            n = s_["name"]
+            if s_["bind"] != "joint":
+                continue
+            m = re.match(r"rib_(?:left|right)_(\d+)$", n)
+            if m and f"vertebrae_T{m.group(1)}" in idx:
+                F[n] = cf[idx[f"vertebrae_T{m.group(1)}"]]
+                continue
+            att = rig.attach_for(n, chain)
+            if att:
+                F[n] = _blend_frame(np.asarray(s_["centroid"]), [(cf[i], w) for i, w in att])
+                continue
+            side = "l" if n.endswith("_left") else "r"
+            if n.startswith("humerus_"):
+                F[n] = T[rig.SEG[f"uparm_{side}"]]
+            elif n.startswith("femur_"):
+                F[n] = T[rig.SEG[f"thigh_{side}"]]
+            elif n == "skull":
+                F[n] = T[rig.SEG["head"]]
+        return F
 
     def _joint_frames(self, T, cf, chain, by, breath, depth):
         """Body frames (q, R, J, pJ): x' = R (x - J) + pJ, for every joint-driven bone."""
@@ -144,10 +212,12 @@ class Atlas:
             F["skull"] = mk(c1[1] @ rig.limit_rotation(c1[1].T @ Rh, J["ao"]["limit_deg"]), Jao, _apply(c1, Jao))
         return F
 
-    def pose(self, skin, breath=0.0, depth=1.0):
+    def pose(self, skin, breath=0.0, depth=1.0, joints=True, spine="skin"):
         """skin: (V,3) live MHR vertices in the rest frame/units (metres). breath: 0 (end-expiration) .. 1
-        (end-inspiration), depth: 1 = quiet breathing. -> {name: (n,3)}."""
-        T, cf, sf, F = self.frames(skin, breath, depth)
+        (end-inspiration), depth: 1 = quiet breathing. joints=False reproduces the model stage before joint rules;
+        spine="physio" distributes trunk rotation by in-vivo per-level data (numpy only; the browser port is pending).
+        -> {name: (n,3)}."""
+        T, cf, sf, F = self.frames(skin, breath, depth, joints, spine)
         out = {}
         for s in self.structures:
             b = s["bind"]
