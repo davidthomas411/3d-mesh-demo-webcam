@@ -33,7 +33,7 @@ def load_glb(path):
 
 def accessor(js, binc, i):
     a = js["accessors"][i]; bv = js["bufferViews"][a["bufferView"]]
-    nc = {"SCALAR": 1, "VEC3": 3, "VEC4": 4}[a["type"]]
+    nc = {"SCALAR": 1, "VEC3": 3, "VEC4": 4, "MAT4": 16}[a["type"]]
     arr = np.frombuffer(binc, np.float32, a["count"] * nc, bv.get("byteOffset", 0) + a.get("byteOffset", 0))
     return arr.reshape(a["count"], nc) if nc > 1 else arr
 

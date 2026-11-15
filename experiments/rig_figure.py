@@ -25,7 +25,7 @@ def group_of(n):
 def view(P, which):
     P = np.asarray(P)
     if which == "front":
-        return np.stack([-P[:, 0], -P[:, 1]], 1), P[:, 2]                  # person-left on the right of the image; y is down so negate
+        return np.stack([P[:, 0], -P[:, 1]], 1), P[:, 2]                   # person-left on the right of the image (viewer facing the person); y is down so negate
     return np.stack([P[:, 2], -P[:, 1]], 1), -P[:, 0]                      # side: face to the left
 
 

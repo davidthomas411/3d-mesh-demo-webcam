@@ -53,3 +53,7 @@ pelvis motion is not transferred). Rendered through the rig and CT; the skull an
 under large head rotation (the smooth soft-tissue field is stretched across the head-neck shear zone); not fixed.
 
 Skull hole: the couch/arm removal mask was cutting 2945 skull voxels (1.4%) at the occiput, a hole in the skull at every pose; the mask now never removes skeleton or brain voxels.
+
+Original motion next to the rig: `tools/rocketbox_original_panel.py AVATAR_ENGINE.glb CLIP_FRAMES_DIR OUT_DIR` skins the Rocketbox avatar (`engine/<clip>/<clip>.glb`) with its own animation and draws the Bip01
+skeleton over it in front and side views, pasted left of the rig/CT frames (same frame times, same axes). The first front/side figures (`docs/rig_*.png`) and the first version of this panel drew the
+front view mirrored (person-left on the image left); fixed so a viewer facing the person sees person-left on the right, matching the radiograph panels.
