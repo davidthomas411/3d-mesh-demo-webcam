@@ -47,3 +47,9 @@ Output: `clips/rocketbox_shrug.npz`; render with `experiments/render_clip.py`.
 
 CT-warp fixes this needed: the brain now takes exactly the skull's rigid motion in the CT frame (separate fits differed by ~3 deg / 15 mm and left a lattice-shaped hole pattern
 in the skull), and competing bone owners at a joint are tried in distance order.
+
+Look-around clip (`f-idle-look-around-01`): retargeted to `clips/rocketbox_look_around.npz` (46 frames at 10 fps, mean direction error 0.9 deg; the pelvis line is the worst direction at 5.8 deg because
+pelvis motion is not transferred). Rendered through the rig and CT; the skull and brain stay intact through a head turn of well over 90 degrees. Remaining defect: the face and jaw soft tissue tears
+under large head rotation (the smooth soft-tissue field is stretched across the head-neck shear zone); not fixed.
+
+Skull hole: the couch/arm removal mask was cutting 2945 skull voxels (1.4%) at the occiput, a hole in the skull at every pose; the mask now never removes skeleton or brain voxels.
