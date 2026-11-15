@@ -181,9 +181,8 @@ def panel(version, posed, skin, cor_z, centre):
     P, shape = W.plane(2, cor_z, 0, 1, centre, 260.0, (y1 - y0) / 2, 2.0)  # coronal reformat that follows the patient (through T9)
     src = W.source_positions(fld, P)
     hu = W.sample(W.hu_c, src).reshape(shape).astype(np.float32)
-    bn = W.sample(W.bone.astype(np.float32), src, cval=0).reshape(shape) > 0.4
     g = rr.unsharp(rr.window(hu, 40 - 175, 40 + 175), 1.4, 0.6)
-    rgb = np.stack([g] * 3, -1); rgb[bn] = (44, 44, 52)
+    rgb = np.stack([g] * 3, -1)                                             # real HU, bone not masked
     cor = Image.fromarray(rgb).resize((330, int(rgb.shape[0] * 330 / rgb.shape[1])), Image.LANCZOS)
     return ap, cor
 
@@ -204,7 +203,7 @@ def job(args):
     canvas = Image.new("RGB", (330 * 5 + gap * 4, max(hs) + head + foot), (0, 0, 0))
     d = ImageDraw.Draw(canvas)
     d.text((10, 8), "Anatomical-realism benchmark: the same real CT, the same motion, five stages of the model", fill=(240, 240, 240), font=rr.font(22))
-    d.text((10, 36), f"motion: {name}   |   top: bone-only AP radiograph   bottom: coronal soft-tissue reformat through T9 (bone masked)", fill=(170, 200, 230), font=rr.font(14))
+    d.text((10, 36), f"motion: {name}   |   top: bone-only AP radiograph   bottom: coronal soft-tissue reformat through T9 (real HU, W350/L40)", fill=(170, 200, 230), font=rr.font(14))
     for i, ((v, title, cap), (ap, cor)) in enumerate(zip(VERSIONS, cols)):
         x = i * (330 + gap)
         d.text((x + 4, 60), f"{v}  {title}", fill=(255, 220, 120), font=rr.font(16))

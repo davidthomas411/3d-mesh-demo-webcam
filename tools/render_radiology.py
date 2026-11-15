@@ -1,7 +1,7 @@
 """Radiology-style animations from the rig-deformed real CT.
 
 Three products per frame:  skeleton (bone-only AP+lateral radiograph), soft tissue (coronal/sagittal/axial
-reformats, soft-tissue window, bone masked, organ contours), and a conventional radiograph (AP+lateral, all tissue).
+reformats, soft-tissue window, organ contours), and a conventional radiograph (AP+lateral, all tissue).
 
 usage: PYTHONPATH=. python tools/render_radiology.py SUBJECT CORR_NPZ ATLAS ONNX REST_NPZ OUTDIR [--preview a,b,c] [--workers N]
 """
@@ -136,7 +136,7 @@ def render_frame(f):
             annotate(im, [label], ann)
             panels.append(im)
         out[tag] = panels
-    # ---- reformats at native 1.5 mm (soft tissue window, bone masked, organ contours)
+    # ---- reformats at native 1.5 mm (soft tissue window, real HU (bone shown), organ contours)
     centre = np.array([c[0], (y0 + y1) / 2, c[2]])
     specs = [("COR", 2, CFG["cor_z"], 0, 1, hx, (y1 - y0) / 2),
              ("SAG", 0, CFG["sag_x"], 2, 1, 130.0, (y1 - y0) / 2),
@@ -151,7 +151,6 @@ def render_frame(f):
         u8 = window(hu, 40 - 175, 40 + 175)
         u8 = unsharp(ndi.gaussian_filter(u8.astype(np.float32), 0.5).astype(np.uint8), 1.5, 0.6)
         rgb = to_rgb(u8)
-        rgb[bn] = (38, 38, 44)                                # bone masked (not removed from the physics, hidden for this domain)
         for nm, col in ORGAN_COL.items():
             k = CFG["label_ids"].get(nm)
             if k is None:
@@ -197,7 +196,7 @@ def job(f):
     f, name, out = render_frame(f)
     d = CFG["outdir"]
     compose(out["sk"], "SKELETON domain", f"{name}   |   bone-only radiograph (AP, lateral)   |   frame {f}", NOTE).save(f"{d}/sk_{f:03d}.png")
-    compose(out["st"], "SOFT-TISSUE domain", f"{name}   |   soft-tissue window W350/L40, bone masked, organ outlines   |   frame {f}", NOTE).save(f"{d}/st_{f:03d}.png")
+    compose(out["st"], "SOFT-TISSUE domain", f"{name}   |   soft-tissue window W350/L40, real HU, organ outlines   |   frame {f}", NOTE).save(f"{d}/st_{f:03d}.png")
     compose(out["rx"], "RADIOGRAPH (all tissue)", f"{name}   |   AP and lateral projection of the deformed CT   |   frame {f}", NOTE).save(f"{d}/rx_{f:03d}.png")
     return f
 
