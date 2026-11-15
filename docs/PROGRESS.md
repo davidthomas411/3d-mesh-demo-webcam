@@ -7,6 +7,12 @@ branch (the mobile repo carries the shipped atlas and `anatomy.js`). Evidence an
 Goal: joint coordinates (angles/translations inside limits) are the unknowns solved against camera or image data, bones are connected by construction,
 plus a penetration-resolving step; `experiments/joint_audit.py` is its regression test. Design and status: `docs/KINEMATIC_TREE.md`.
 
+## Motion-capture clip pipeline (synthetic clip only so far)
+- Loader, per-frame renderer (AP + lateral radiograph, coronal + sagittal real HU) and a video-to-clip script for SAM 3D Body; see `docs/MOCAP_CLIPS.md`.
+- No real SAM 3D Body clip yet: checkpoints are gated (401) and no public MHR sequences were found; the video-to-clip script is untested against the real model.
+- Render memory fixed (slabbed `warped_volume`); AP region widened so a head bent forward is not clipped; brain rigid with the skull in the CT warp; side-view renderer
+  (`experiments/render_side.py`). Neck bones stay connected through the forward bend (C7/T1 gap 1.1-1.3 mm); face/jaw soft tissue still tears at the peak.
+
 ## Scapulothoracic contact (atlas v8)
 - Arm-elevation check found the scapula floating off the rib cage when the arm is raised forward (gap 11 mm at rest -> 27 mm at 90 deg flexion).
 - Added a contact step: the scapula is swung about its acromioclavicular pin until the mean gap of its rib-facing patch to a thorax ellipsoid is back to
