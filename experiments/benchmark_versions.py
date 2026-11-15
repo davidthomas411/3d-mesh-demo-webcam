@@ -173,7 +173,7 @@ def panel(version, posed, skin, cor_z, centre):
     c, (y0, y1) = CFG["c"], CFG["y"]
     fld = W.field(posed, skin, structures=(version != "V0")) if posed is not None else W.field({}, skin, structures=False)
     region = (np.array([c[0] - 260, y0, c[2] - 330.0]), np.array([c[0] + 260, y1, c[2] + 220.0]))
-    vol, bone, axes, st = W.warped_volume(fld, step=3.0, region=region)
+    vol, bone, axes, st = W.warped_volume(fld, step=2.0, region=region, soft_bone=True)
     L = rr.radiograph(vol, bone, 2, st)                                    # bone-only AP radiograph
     u8 = rr.window(L.T, 0.0, 20.0, 0.75)
     u8 = rr.unsharp(u8, 2.2, 1.0)

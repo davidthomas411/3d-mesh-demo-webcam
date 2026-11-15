@@ -191,7 +191,7 @@ class CTWarper:
         P[..., ver_axis] = V + center[ver_axis]
         return P.reshape(-1, 3), H.shape
 
-    def warped_volume(self, fld, step=2.0, region=None):
+    def warped_volume(self, fld, step=2.0, region=None, soft_bone=False):
         """Warped CT (HU) and warped bone mask on a regular output grid, for projections.
         region: (min_xyz, max_xyz) in mm to crop the output grid."""
         lo = self.vox_to_mm(np.array([0, 0, 0.0])); hi = self.vox_to_mm(np.array(self.hu.shape, float) - 1)
@@ -203,6 +203,8 @@ class CTWarper:
         src = self.source_positions(fld, G)
         shape = tuple(len(a) for a in axes)
         hu = self.sample(self.hu_c, src).astype(np.float32).reshape(shape)
-        bone = self.sample(self.bone.astype(np.float32), src, cval=0).reshape(shape) > 0.4
+        bone = self.sample(self.bone.astype(np.float32), src, cval=0).reshape(shape)
+        if not soft_bone:
+            bone = bone > 0.4                  # binary mask: thin cortex aliases (moire) when step is coarser than the CT voxel
         return hu, bone, axes, step
 
