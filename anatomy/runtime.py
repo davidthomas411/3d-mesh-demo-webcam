@@ -153,6 +153,8 @@ class Atlas:
             b = s["bind"]
             if b == "joint":
                 out[s["name"]] = _apply(F[s["name"]], s["pos"])
+            elif b == "frame":                               # rigid with another body's frame (brain with the skull)
+                out[s["name"]] = _apply(F[s["frame"]], s["pos"])
             elif b == "attach_ribs":
                 out[s["name"]] = _rigid(s["pos"], np.asarray(s["centroid"]), [(F[r], w) for r, w in s["attach_ribs"] if r in F])
             elif b == "bone":

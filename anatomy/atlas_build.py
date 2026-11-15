@@ -487,6 +487,8 @@ def write_rigged_atlas(structs, mhr_npz, out_prefix, extra_meta=None, verbose=Tr
         jn = joint_of_child.get(name)
         if jn is not None:
             e["bind"] = "joint"; e["joint"] = jn
+        elif name == "brain" and "skull" in joint_of_child:      # intracranial contents move with the skull, rigidly
+            e["bind"] = "frame"; e["frame"] = "skull"
         elif name in ("sternum", "costal_cartilages"):
             ks = range(2, 8) if name == "sternum" else range(1, 11)
             rs = [f"rib_{sd}_{k}" for sd in ("left", "right") for k in ks if f"rib_{sd}_{k}" in joint_of_child]
