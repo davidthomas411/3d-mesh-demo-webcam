@@ -1,3 +1,4 @@
+import argparse
 import json
 import threading
 import time
@@ -9,6 +10,10 @@ from flask import Flask, Response, jsonify, request, send_from_directory
 from flask_sock import Sock
 
 from mocap.core.setup_estimator import build_default_estimator
+
+# Optional Femto Bolt / depth fusion (see depth/). Off unless --depth is given.
+depth_source = None
+depth_fusion = None
 
 app = Flask(__name__)
 sock = Sock(app)
@@ -55,6 +60,7 @@ def inference_worker():
     global focal_length_history
     global cached_cam_intrinsics
     global runtime_config
+    global depth_fusion
 
     print("Loading persistent Fast SAM 3D Body estimator...", flush=True)
 
@@ -68,6 +74,9 @@ def inference_worker():
     )
 
     faces = np.asarray(estimator.faces, dtype=np.int32)
+    if depth_source is not None:
+        from depth.fusion import DepthFusion
+        depth_fusion = DepthFusion(faces, **depth_fusion_args)
     estimator_ready = True
 
     print(
@@ -197,9 +206,27 @@ def inference_worker():
                     f"Unexpected vertex shape: {vertices.shape}"
                 )
 
+            depth_info = None
+            if depth_source is not None and depth_fusion is not None:
+                try:
+                    from depth.fusion import mhr_to_camera_mm
+                    depth_frame, depth_ts_us = depth_source.read()
+                    if depth_frame is not None:
+                        cam_t_np = to_numpy(outputs[0]["pred_cam_t"]).reshape(-1)
+                        v_mm = mhr_to_camera_mm(vertices, cam_t_np)
+                        fused_mm, depth_info = depth_fusion.process(v_mm, depth_frame)
+                        depth_info["device_ts_us"] = depth_ts_us
+                        if depth_info.get("ok"):
+                            # report the metric camera translation: centroid shift in metres
+                            shift = (fused_mm.mean(0) - v_mm.mean(0)) / 1000.0
+                            depth_info["cam_t_shift_m"] = (shift * np.array([1.0, -1.0, -1.0])).tolist()
+                except Exception as exc:  # depth must never take the RGB pipeline down
+                    depth_info = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+
             with state_lock:
                 mesh_id += 1
                 latest_mesh = {
+                    "depth": depth_info,
                     "mesh_id": mesh_id,
                     "source_frame_id": current_frame_id,
                     "no_person": False,
@@ -232,6 +259,18 @@ def inference_worker():
 @app.get("/")
 def index():
     return send_from_directory(".", "webcam.html")
+
+
+@app.get("/anatomy/anatomy.js")
+def anatomy_js():
+    return send_from_directory("anatomy", "anatomy.js", mimetype="text/javascript")
+
+
+@app.get("/atlas/<name>")
+def atlas_file(name):
+    if name not in ("atlas.json", "atlas.bin"):
+        return Response("Not found", status=404)
+    return send_from_directory("atlas", name)
 
 
 @app.post("/frame")
@@ -519,6 +558,7 @@ def stream_socket(ws):
                 "intrinsics_mode": runtime_config["intrinsics_mode"],
                 "calibrated": cached_cam_intrinsics is not None,
                 "calibration_samples": len(focal_length_history),
+                "depth": current.get("depth"),
             }))
 
             ws.send(
@@ -532,7 +572,25 @@ def stream_socket(ws):
                 "error": f"{type(exc).__name__}: {exc}"
             }))
 
+def _setup_depth(spec):
+    """--depth femto | recorded:<file.npz>"""
+    global depth_source, depth_fusion
+    from depth.source import FemtoBoltSource, RecordedSource
+    from depth.fusion import DepthFusion
+    depth_source = FemtoBoltSource() if spec == "femto" else RecordedSource(spec.split(":", 1)[1])
+    depth_fusion_args["K"] = depth_source.K
+
+
+depth_fusion_args = {}
+
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--depth", default=None, help="femto | recorded:<file.npz>")
+    parser.add_argument("--cloth-mm", type=float, default=0.0, help="gown/blanket thickness for depth ICP")
+    cli = parser.parse_args()
+    if cli.depth:
+        _setup_depth(cli.depth)
+        depth_fusion_args["cloth_mm"] = cli.cloth_mm
     worker = threading.Thread(target=inference_worker, daemon=True)
     worker.start()
 

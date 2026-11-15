@@ -456,6 +456,9 @@
     import { OrbitControls } from
       "https://esm.sh/three@0.180.0/examples/jsm/controls/OrbitControls.js";
 
+    import { loadAtlas, AnatomyLayer, DISCLAIMER } from
+      "/anatomy/anatomy.js";
+
     const button = document.getElementById("start");
     const stopButton = document.getElementById("stop");
     const video = document.getElementById("video");
@@ -537,6 +540,83 @@
     let camera;
     let controls;
     let bodyMesh;
+
+    /*
+     * Atlas anatomy (TotalSegmentator-class structures) driven by the live
+     * mesh. Illustrative only: see DISCLAIMER shown in the panel.
+     */
+    let anatomyLayer = null;
+
+    async function initAnatomy() {
+      try {
+        const atlas = await loadAtlas(
+          "/atlas/atlas.json",
+          "/atlas/atlas.bin"
+        );
+        anatomyLayer = new AnatomyLayer(THREE, atlas, { flipYZ: false });
+        bodyMesh.add(anatomyLayer.group);
+        buildAnatomyPanel(atlas);
+      } catch (error) {
+        console.warn("Anatomy atlas unavailable:", error);
+      }
+    }
+
+    function anatomyUpdate(vertexValues) {
+      if (anatomyLayer && anatomyLayer.group.visible) {
+        anatomyLayer.update(vertexValues);
+      }
+    }
+
+    function buildAnatomyPanel(atlas) {
+      const panel = document.createElement("div");
+      panel.id = "anatomyPanel";
+      panel.innerHTML =
+        '<div class="panelTitle">Anatomy (atlas)</div>' +
+        '<label class="anaRow"><input id="anaEnable" type="checkbox">' +
+        '<span>Show ' + atlas.structures.length +
+        ' TotalSegmentator structures</span></label>' +
+        '<label class="anaRow">Anatomy opacity ' +
+        '<input id="anaOpacity" type="range" min="0.2" max="1" step="0.05" value="0.9"></label>' +
+        '<label class="anaRow">Skin opacity ' +
+        '<input id="anaSkin" type="range" min="0.05" max="1" step="0.05" value="0.25"></label>' +
+        '<div id="anaGroups"></div>' +
+        '<div class="anaNote">' + DISCLAIMER + " Source: " +
+        atlas.meta.source.dataset + ", subject " +
+        atlas.meta.source.subject + ".</div>";
+      const anchor =
+        document.getElementById("referencePanel") || runtimePanel;
+      anchor.insertAdjacentElement("afterend", panel);
+
+      const groups = panel.querySelector("#anaGroups");
+      for (const g of anatomyLayer.groups()) {
+        const label = document.createElement("label");
+        label.className = "anaChip";
+        const box = document.createElement("input");
+        box.type = "checkbox";
+        box.checked = anatomyLayer.visibleGroups.has(g.name);
+        box.addEventListener("change", () =>
+          anatomyLayer.setGroupVisible(g.name, box.checked));
+        label.append(box, " " + g.name.replace("_", " ") + " (" + g.count + ")");
+        groups.append(label);
+      }
+
+      const skinMaterial = bodyMesh.material;
+      const applySkin = () => {
+        const on = panel.querySelector("#anaEnable").checked;
+        const a = Number(panel.querySelector("#anaSkin").value);
+        skinMaterial.transparent = on && a < 1;
+        skinMaterial.opacity = on ? a : 1;
+        skinMaterial.depthWrite = !(on && a < 1);
+        skinMaterial.needsUpdate = true;
+      };
+      panel.querySelector("#anaEnable").addEventListener("change", (e) => {
+        anatomyLayer.setEnabled(e.target.checked);
+        applySkin();
+      });
+      panel.querySelector("#anaOpacity").addEventListener("input", (e) =>
+        anatomyLayer.setOpacity(Number(e.target.value)));
+      panel.querySelector("#anaSkin").addEventListener("input", applySkin);
+    }
     let referenceMesh = null;
     let topology;
     let lastMeshId = 0;
@@ -739,6 +819,7 @@
       bodyMesh.rotation.z = Math.PI;
       bodyMesh.rotation.y = Math.PI;
       scene.add(bodyMesh);
+      initAnatomy();
     }
 
     function buildAnatomicalRegions(vertexValues) {
@@ -2188,6 +2269,7 @@
         controls.update();
       }
 
+      anatomyUpdate(vertexValues);
       updateLiveMeshAlignmentColor(vertexValues);
     }
 
@@ -4235,4 +4317,14 @@
       line-height: 1.34;
     }
   }
+
+  #anatomyPanel {
+    margin-top: 10px; padding: 10px; border: 1px solid #333; border-radius: 6px;
+    background: rgba(20,20,20,0.85); color: #ddd; font-size: 12px; max-width: 280px;
+  }
+  #anatomyPanel .panelTitle { font-weight: 600; margin-bottom: 6px; }
+  #anatomyPanel .anaRow { display: flex; gap: 6px; align-items: center; margin: 4px 0; }
+  #anatomyPanel .anaRow input[type=range] { flex: 1; }
+  #anatomyPanel .anaChip { display: inline-block; margin: 2px 8px 2px 0; }
+  #anatomyPanel .anaNote { margin-top: 8px; color: #e0b050; line-height: 1.35; }
 </style>

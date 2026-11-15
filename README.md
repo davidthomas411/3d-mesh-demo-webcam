@@ -318,6 +318,105 @@ These values are deployment observations, not guaranteed benchmarks.
 - Body-only mode avoids the two additional hand crops used by full mode.
 - The independent mesh can use a fixed center without temporal smoothing.
 
+## Femto Bolt depth fusion (experimental)
+
+The RGB-only mesh has an ambiguous overall scale/depth (`pred_cam_t`). An Orbbec Femto Bolt
+supplies metric depth, so the server can fix that ambiguity and refine the pose of the mesh.
+
+```text
+Femto Bolt RGB + depth (same device: factory extrinsics, hardware sync)
+  -> SAM 3D Body on the Bolt's RGB            (pose + shape, slow path)
+  -> depth anchor: one robust scale about the camera origin   (< 1 ms)
+  -> projective point-to-plane ICP, 2-4 iterations            (a few ms, numpy)
+  -> metric mesh + fit RMS + valid-depth fraction in the WebSocket JSON ("depth")
+```
+
+Why this design (from an architecture review):
+
+- **Scale about the camera origin** leaves every pixel of the 2-D overlay unchanged, so the
+  anchor fixes metric depth without fighting the RGB model. The scale is EMA-filtered because a
+  body does not change size.
+- **Projective ICP** (KinectFusion-style, no KD-tree) uses the depth image for correspondences,
+  Huber weights, front-facing visible vertices only, and an optional `cloth_mm` correction for
+  gowns/blankets. A hinge-style "one-sided" loss was rejected: it cannot see motion toward the camera.
+- **Do not** snap vertices to the cloud (bakes ToF noise into the mesh), stream the cloud to the
+  browser, or rely on Azure-Kinect body-tracking joints (redundant, weak supine/under a gown).
+- For radiation-oncology style 6DOF, depth-to-reference-surface registration (`roi_icp_cloud`) is
+  the measurement to report; SAM 3D vertex jitter is centimetre-level.
+
+Files: `depth/synth.py` (software depth renderer, the test oracle), `depth/anchor.py`,
+`depth/icp.py`, `depth/preprocess.py` (flying pixels, erosion, couch-plane removal),
+`depth/fusion.py`, `depth/source.py` (`FemtoBoltSource`, `RecordedSource`, `SyntheticSource`).
+
+```bash
+python webcam_server.py --depth femto --cloth-mm 0          # live Femto Bolt
+python webcam_server.py --depth recorded:session.npz        # npz: depth (T,H,W) uint16 mm, K (3,3), ts_us (T,)
+```
+
+Verified (synthetic, `pytest tests/test_depth.py`): scale recovery, 6DOF recovery to a few mm with
+noise, flying pixels and a couch plane, gown-offset compensation, end-to-end fusion.
+
+**NOT verified, no hardware was available:**
+
+- `FemtoBoltSource` (pyorbbecsdk names follow the v1.x examples; check your version).
+  Use NFOV unbinned mode; the 1 MP wide mode has a lower frame rate. Check the mode/fps table.
+- The SAM 3D Body to camera-frame convention in `depth.fusion.mhr_to_camera_mm(flip_yz=True)`
+  mirrors the browser's `(t0, -t1, -t2)` placement. Confirm that fused overlay and depth agree.
+- Time sync: fit depth frame *k* to RGB frame *k* using device timestamps; never "latest" depth.
+- ToF failure modes to expect: flying pixels at silhouettes, multipath under the arms and in the
+  couch concavity, invalid pixels on black hair/clothing, warm-up drift of a few mm over tens of minutes.
+
+## Anatomy atlas (TotalSegmentator structures on the MHR mesh)
+
+`atlas/atlas.json` + `atlas/atlas.bin` hold **114 TotalSegmentator v2 structures** (about 140k
+triangles, 1.8 MB) already expressed in the MHR rest frame and bound to the MHR skin mesh. Switch it on in the
+**Anatomy (atlas)** panel (webcam page) or **Anatomy** section (mobile page).
+
+How it is built (`python -m anatomy.atlas_build <subject_dir> mhr_rest.npz atlas/atlas`):
+
+1. Ground-truth 117-class masks of one subject of the public TotalSegmentator dataset
+   (v2.0.1, Zenodo 10047292, subject `s1159`, head to upper thigh). Your own CT segmented with
+   TotalSegmentator works the same way.
+2. Masks to meshes: marching cubes, Taubin smoothing, quadric decimation (budget by volume).
+3. CT skin (threshold + opening, couch removed) registered to the MHR rest mesh: femoral/humeral
+   head landmarks (RANSAC sphere fit) similarity, then three rounds of thin-plate-spline warps
+   on torso + head skin. The same volumetric warp carries every interior structure.
+4. Each structure is bound to the MHR skin vertices nearest to it.
+
+Runtime (`anatomy/anatomy.js`, numpy reference in `anatomy/runtime.py`): each structure moves
+by the weighted rigid transform (Horn) of its supporting skin vertices from rest to the live
+mesh. About 9 ms for all 114 structures on a software-rendered CPU browser. Bones, vessels and
+organs follow the body locally; there is no organ physics.
+
+Measured on the build subject: skull and brain no longer protrude from the MHR head, the worst
+structures overshoot the skin by about 2 mm on average, torso skin-to-skin mean error is
+11.7 mm (p95 36.6 mm). These are fit-to-this-one-subject numbers, **not** accuracy against a
+real patient.
+
+### Limits that must stay visible
+
+- **Not patient-specific, not for clinical use.** Internal positions are an atlas guess scaled to
+  the skin. Expected localisation error is roughly 1-2 cm for bones near the skin and several cm
+  for deep soft tissue (`UNCERTAINTY_MM` in `anatomy/classes.py` is a prior, not a measurement).
+- The source CT stops at the upper thigh and has no arms: **no distal limbs**, and 3 of the 117
+  classes are empty in this subject (`kidney_cyst_*`, `prostate`). Distal anatomy would need another
+  source (for example BodyParts3D / Z-Anatomy, both CC BY-SA share-alike).
+- One atlas subject, one body habitus. The build should be repeated for several subjects, and
+  validated leave-one-out (warp subject A's atlas to subject B's skin; score Dice/ASSD per class).
+- Arms: the CT arms are not in the MHR T-pose, so the registration is driven by torso and head only.
+- TotalSegmentator **dataset** is CC BY 4.0: cite Wasserthal et al., *Radiology: Artificial
+  Intelligence* 2023. The TotalSegmentator code is Apache-2.0, but some model subtasks are
+  restricted for commercial use. MHR / SAM 3D Body / InstantHMR files are under the SAM License:
+  read it before redistributing the atlas or the MHR rest mesh.
+
+### Tests
+
+```bash
+pip install numpy scipy pytest scikit-image nibabel trimesh fast-simplification rtree
+pytest tests/                                  # synthetic suites, includes JS-vs-numpy parity (needs node)
+ATLAS_PREFIX=atlas/atlas pytest tests/test_anatomy.py   # also checks the shipped atlas
+```
+
 ## Troubleshooting
 
 ### First inference times out

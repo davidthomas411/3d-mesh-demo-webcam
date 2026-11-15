@@ -3,3 +3,4 @@ checkpoints/
 output/
 latest.jpg
 *.bak
+.pytest_cache/
