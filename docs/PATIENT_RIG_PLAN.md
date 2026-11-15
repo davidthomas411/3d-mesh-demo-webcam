@@ -10,6 +10,38 @@ time points** (planning CT, daily CBCT, mid-treatment, follow-up) by representin
 joints with patient-specific centres/axes/limits, and soft tissue that moves with them. The rig is learned **per patient** from
 that patient's own prior scans, on top of a population prior.
 
+## 1b. Decisions from the project owner (this session)
+
+- **Site:** lung first (open data, 4D-Lung); head and neck is the clinically more interesting follow-on.
+- **Data:** open-source only for training and testing, for now.
+- **First domain output:** patient positioning. **Stage 1 (funded): camera-driven body model for computer-vision SGRT**, treated as an early goal.
+- **High-level goal:** image-quality improvement through a patient prior (reconstruction from fewer projections / lower dose).
+- **Compute:** A6000 plus a second 24 GB-class GPU when needed (exact second card to be confirmed). CPU-only in this sandbox.
+
+## 1c. Roadmap
+
+| Stage | Output | Needs | Status |
+|---|---|---|---|
+| 1 | Camera -> body mesh (SAM 3D Body + Femto Bolt depth) -> rig -> 6-DOF positioning and surface-to-anatomy | depth fusion, ROI 6-DOF, rig | depth fusion + rig prototype built; joints/respiration/JS port pending |
+| 2 | Per-patient rig learned from serial scans, lung (4D-Lung) | segmentation, per-bone pose, joint model, residual | plan only |
+| 3 | Head and neck | open H&N longitudinal data (not yet located) | data search pending |
+| 4 | Reconstruction with a patient prior (sparse-view / low-dose CBCT) | simulated projections (raw projections are not in TCIA), GPU | design only |
+
+## 1d. Key experiments for the owner's priorities  [proposal]
+
+**S1: does a rig beat rigid surface registration at locating internal anatomy? (stage 1, CPU-feasible pilot).**
+From a 4D-Lung CBCT take the body surface (a stand-in for the camera surface) and the true bone/fiducial positions. Compare, per scan:
+(a) rigid-ROI surface registration (what SGRT does), versus (b) rig-based inference of bone poses and tumour/fiducial position from the surface plus the planning CT.
+Metric: residual bone/fiducial/tumour error (mm, degrees). Context for the baseline [verified]: lung SGRT vs CBCT residuals are roughly 1.5-1.9 mm SD and 0.7-0.8 deg (Guo 2023, J Appl Clin Med Phys), with
+SGRT mostly improving translations and not rotations (Gosztonyi 2026). Constraint: the CBCT is a 450 x 450 x 150 mm slab (0.88 x 0.88 x 3 mm, head-first supine), so the rig must work on partial field of view.
+
+**S2: respiration.** Drive the rig's rib/diaphragm/lung model with breathing phase and test on the 10 phases of the planning 4DCT and on the implanted fiducials.
+Prior art on this exact dataset [verified]: Huang 2022 (Med Phys) predicts internal deformation from surface motion (DIR-Lab landmarks < 2 mm; 4D-Lung tumour Dice 0.835).
+
+**S3: reconstruction with a rig-warped prior.** Simulate sparse-view/low-dose CBCT from CTs (4D-Lung ships reconstructed images only, not raw projections), then compare FDK vs prior-constrained reconstruction with the prior being
+(a) the undeformed planning CT, (b) a generic deformed prior, (c) the rig-warped prior. Prior art [verified]: adaptive PICCS using an earlier CBCT as the prior allows a claimed 10-40x dose reduction (Lee 2012);
+deforming the prior by projection-based registration improved PICCS (XCAT, 20 projections: RMSE 14% -> 10%; Zhang 2014). A rig supplies a far lower-dimensional deformation, which should make projection-based pose estimation well posed from very few views.
+
 ## 2. What exists  [verified]
 
 | Piece | Work | What it shows | Gap for us |
@@ -22,6 +54,10 @@ that patient's own prior scans, on top of a population prior.
 | Statistical respiratory motion | Ehrhardt et al. 2010 (4D mean motion model, 17 pts, TRE 3.3 +/- 1.6 mm); Liu et al. 2010 | Population motion priors adapted to a patient's lung shape | Lung only |
 | Biomechanical lung registration | Al-Mayah 2009; Li 2013; Han 2017; Jafari 2021 | Patient-specific FE models reach about 1-2 mm; hybrid model + residual wins; sliding must be explicit | One organ, FE meshes built per patient |
 | Supine/prone registration | Roth 2011 (DOI 10.1118/1.3577603), Hampshire 2013 (DOI 10.1016/j.media.2013.04.006) | Colon correspondence across posture change: 5.7-7.7 mm (fold-level) | Colon surface only |
+| Surface to internal anatomy | Huang et al. 2022, *Med Phys* (surface motion -> deformation PCs; XCAT, DIR-Lab, 4D-Lung) | Internal deformation predicted from body surface; DIR-Lab landmarks < 2 mm; 4D-Lung tumour Dice 0.835 | Breathing only; no skeleton/joint structure; no positioning output |
+| Surface to synthetic anatomy | Douglass et al. 2023, *Phys Eng Sci Med* (pix2pix, optical scan -> cranial MRI) | Much gross cranial anatomy is predictable from external shape; limited where population variation is wide | Image-to-image, not a drivable rig; no ground truth for a real patient |
+| Prior-image reconstruction | Lee et al. 2012 (APICCS), Zhang et al. 2014 (deformed prior, DPIR), *Phys Med Biol* / *Med Phys* | Earlier images as priors cut dose 10-40x; deforming the prior before PICCS helps | Generic deformation, not skeleton-aware; estimated per scan |
+| SGRT clinical accuracy (lung) | Guo 2023; Shim 2026; Gosztonyi 2026 | SGRT residual vs CBCT about 1.5-1.9 mm SD / 0.7-0.8 deg; improves translation more than rotation | Baseline to beat |
 | QA / uncertainty | AAPM TG-132 (Brock 2017); Meyer 2025; Smolders 2023 | No standard registration-uncertainty formalism; ensembles propagate into dose | Cross-cutting requirement |
 
 **I did not find** (limited search: PubMed + 3 Consensus hits per query) a system that learns a patient's *joint model* (centres, axes,
@@ -32,7 +68,7 @@ registration. The closest are Walter 2025 (hand-built articulated model) and Zha
 
 | Collection | Patients | Structure | Size | Licence | Use |
 |---|---|---|---|---|---|
-| **4D-Lung** | 20 | 82 4DCT + 507 4DCBCT (Hugo 2017, DOI 10.1002/mp.12059); 10 breathing phases; weekly 4DCT in 13 pts; daily 4DCBCT; implanted fiducials; external surrogate | 183 GB | CC BY 3.0 | **Primary**: breathing + day-to-day + weeks; fiducials are ground-truth landmarks |
+| **4D-Lung** | 20 | 82 4DCT + 507 4DCBCT (Hugo 2017, DOI 10.1002/mp.12059); 10 breathing phases; weekly 4DCT in 13 pts; daily 4DCBCT; implanted fiducials; external surrogate. Catalogue: 5,070 CBCT phase volumes (Varian Trilogy, 50 slices, 450 x 450 x 150 mm, ~26 MB each) + 820 planning/weekly 4DCT phase volumes (~110 slices); ~27 imaging dates per patient. Images only (no raw projections) | 183 GB (~4 MB/s transfer, about 1 min per patient-day) | CC BY 3.0 | **Primary**: breathing + day-to-day + weeks; fiducials are ground-truth landmarks |
 | **CT COLONOGRAPHY** | 825 | supine + prone CT per patient (same session) | 497 GB | CC BY 3.0 | Posture/gravity change at scale: bones, ribcage, spine shape change |
 | **Pelvic-Reference-Data** | 58 | 2 CTs per patient, median 11 days apart (max 40) | 7.2 GB | CC BY 3.0 | Small first pilot; organ filling variation |
 | RIDER Lung CT | 32 | test-retest and repeat studies (some years apart) | 45 GB | CC BY 4.0 | Repositioning noise floor |
@@ -85,13 +121,14 @@ Each stage has a pass/fail criterion and a baseline (uniGradICON / ANTs / VoxelM
 - Anatomical variants (rib count, transitional vertebrae) mean the rig graph cannot be fixed.
 - Non-diffeomorphic change (tumour response, surgery) breaks any pure-motion model.
 - Ground truth for accumulated dose does not exist; fiducials and landmarks are the best proxies.
-- Compute: only CPU here. Training needs GPUs.
+- Compute: only CPU here. Training needs the A6000-class GPUs. Raw CBCT projections are not public here, so reconstruction work uses simulated projections.
+- Partial field of view: the CBCT slab is 15 cm craniocaudal; the rig must work with a handful of vertebrae and ribs.
+- Head and neck: the public TCIA listing did not show longitudinal H&N CT/CBCT collections under the names searched; locate one (e.g. via IDC) before committing.
 - Licences: most are CC BY (attribution); MHR/SAM licences apply to the avatar side only, and not at all if the avatar is dropped.
 
-## 7. Context needed from the project owner
+## 7. Open questions
 
-1. Clinical focus first: thorax/lung (4D-Lung), head and neck, pelvis, or spine?
-2. Which imaging do we have locally (planning CT, daily CBCT, MRI), and is institutional data usable (approvals)?
-3. The target output: dose accumulation, contour propagation, response tracking, or patient positioning?
-4. Compute available (GPU class, storage) and who maintains the data pipeline.
-5. Is the camera-driven body model (the original repo goal) still a goal, or is it now only a demo for the rig?
+1. Confirm the second GPU (24 GB class) and available storage for ~200 GB of DICOM.
+2. Head and neck: is there any open longitudinal H&N CT/CBCT you already know of? Otherwise this stays a later, data-limited stage.
+3. For SGRT: which camera/surface system (AlignRT-like, Femto Bolt, other) and which positioning tolerances (mm/deg) define success?
+4. Does stage 1 need a real-time requirement (frame rate/latency) that constrains how heavy the rig can be?
