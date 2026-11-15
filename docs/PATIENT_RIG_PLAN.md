@@ -132,3 +132,29 @@ Each stage has a pass/fail criterion and a baseline (uniGradICON / ANTs / VoxelM
 2. Head and neck: is there any open longitudinal H&N CT/CBCT you already know of? Otherwise this stays a later, data-limited stage.
 3. For SGRT: which camera/surface system (AlignRT-like, Femto Bolt, other) and which positioning tolerances (mm/deg) define success?
 4. Does stage 1 need a real-time requirement (frame rate/latency) that constrains how heavy the rig can be?
+
+## 8. Performance: measured (4-core Xeon CPU, no GPU) and what real time would take
+
+Measured in this sandbox (single process, quiet machine):
+
+| Stage | Time | Note |
+|---|---|---|
+| MHR body model (ONNX, CPU) | 0.02 s | |
+| Rig: pose all 114 structures (numpy) | 0.04 s | not a bottleneck |
+| Depth anchor | 8 ms | |
+| Projective ICP (4 iterations, 18k points, numpy) | 129 ms | |
+| Software z-buffer (pure-Python triangle loop, 37k triangles) | 0.65 s, called twice per frame | the real problem in `DepthFusion`: 1.30 s per frame in total |
+| CT warp: displacement field (KD-tree, 32 neighbours) | 5.1 s | CPU nearest-neighbour search |
+| CT warp: source positions (field upsample + bone override, 15 M voxels) | 5.4 s | single-thread SciPy |
+| CT warp: resample CT and bone mask (15 M voxels) | 3.4 s | |
+| Projections (AP + lateral) | 0.16 s | |
+| Whole radiograph/reformat frame | 15.9 s | one-off setup 68 s; 140 frames took about 30 min with 3 workers on 4 cores |
+
+Cited, not measured here: Fast SAM 3D Body about 75-100 ms body-only and 140-170 ms end to end on an RTX A6000 (this repo's README).
+
+Not measured (estimates for a GPU port; verify before relying on them): the warp, resample and projection steps are embarrassingly parallel and
+should fit in tens of milliseconds on a 24 GB-class GPU (the CT is ~116 MB); the displacement field would have to move from per-frame
+nearest-neighbour search to precomputed skinning weights, which changes the model and needs re-validation; the z-buffer and ICP would move to a GPU renderer/torch.
+
+Real-time design for stage 1: the mesh model sets the pace (about 6-13 Hz); between mesh updates a depth-only fast path (anchor + ICP against the
+reference surface) can run at camera rate. The CT-warp radiograph is a visualisation and a prior-image generator, not part of the positioning control loop.
