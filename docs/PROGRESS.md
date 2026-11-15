@@ -7,6 +7,22 @@ branch (the mobile repo carries the shipped atlas and `anatomy.js`). Evidence an
 Goal: joint coordinates (angles/translations inside limits) are the unknowns solved against camera or image data, bones are connected by construction,
 plus a penetration-resolving step; `experiments/joint_audit.py` is its regression test. Design and status: `docs/KINEMATIC_TREE.md`.
 
+## Mushy CT soft tissue: diagnosis and first fix
+- Bones render fine; the CT reformats tore (face), smeared (torso) and left black gaps beside bones. Measured instead of guessed:
+  1. The soft-tissue warp interpolates landmarks from three sources (skin, bones, organs), and they CONTRADICT each other. Skin within 20 mm of a bone, moved with that bone's rigid motion,
+     lands a median 12.6 mm from the posed MHR skin at a near-rest frame and 43 mm at a 100 degree head turn (93 mm on the skull, 40 mm on ribs, 43 mm on the spine). Cause: the rig's bones
+     and the MHR skin pivot differently (skull about the atlanto-occipital joint vs skin about MHR's neck; the skin-derived chain vs rigid ribs), so the interpolation must average
+     opposite motions. Comparing displacement vectors is the wrong test for rotating bodies; the position test above is the valid one.
+  2. A held-out test (build the field from half the skin points, reconstruct the other half) gave median 6.1 mm, p90 29.6 mm, p99 53.5 mm on skin that is only 3.5 mm apart: the field cannot
+     even reproduce a smooth surface.
+  3. Not the cause: translation-only interpolation (a moving-least-squares rigid field, `method="mls"`, scored the same), organ landmarks (dropping them barely helped), and the frame in which each
+     bone's motion is expressed (a global-registration version is in, `bone_ct_positions`, but changed little).
+- Fix 1: skin landmarks on bone now follow that bone (`skin_targets`, weight exp(-d^2/2*25 mm^2)), so the soft tissue between bone and skin interpolates between landmark sets that agree where they meet.
+  Held-out skin error: median 4.1 mm (was 6.1), p90 18.6 (29.6), p99 36.9 (53.5); mid-thorax 5.9 mm (12.1). Face and jaw no longer shred at a 100 degree head turn; see
+  `docs/soft_tissue_warp_before_after.png` (before left, after right; look-around frame 17 above, shrug frame 10 below).
+- Still wrong: p90 skin error ~19 mm remains (other contradictions: ribs 40 mm, sternum 31 mm vs skin even near rest); the fix hides the head conflict by following the bone, it does not make
+  the rig pivot where the MHR skin does. Fixing the pivot (AO joint and the chain anchoring) is the real repair. The two Rocketbox videos were rendered before this fix.
+
 ## Real open mocap through the rig (Rocketbox shrug) and the multi-view capture reuse path
 - Microsoft Rocketbox motions (MIT, ungated) retargeted to MHR by direction fitting (0.3 deg mean error) and rendered through skeleton + CT; see `docs/MOCAP_CLIPS.md`.
 - Brain now rigid with the skull using the skull's own transform in the CT warp (fixed a lattice artefact in the skull).

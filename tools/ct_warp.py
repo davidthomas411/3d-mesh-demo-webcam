@@ -113,24 +113,56 @@ class CTWarper:
         return mask & tab.reshape(shp)
 
     # ---------------------------------------------------------------- the motion field
-    def landmarks(self, posed, skin_posed, structures=True):
+    def bone_ct_positions(self, name, posed_vertices):
+        """Posed positions (CT frame, mm) of a bone's CT vertices: the bone makes the SAME rotation and centroid translation as its atlas counterpart, expressed
+        in the one global CT<->avatar registration W. (The earlier version mapped the posed atlas vertices back through the bone's own CT->atlas similarity;
+        the atlas build rotates articulated groups by 10-30 degrees away from W, so that rotated every bone's motion axis relative to the skin and the soft
+        tissue and made them contradict each other by tens of mm.) At rest this returns the CT vertices unchanged."""
+        s_w, R_w, t_w = self.W
+        r = self.by[name]["pos"]; p = posed_vertices
+        _, Q, _ = ab.umeyama(r, p, with_scale=False)                       # p = Q r + tau (rigid)
+        x = self.v_ct[name]
+        q = (x @ R_w.T) * s_w + t_w                                         # the CT bone in the avatar frame under W
+        cq = q.mean(0)
+        ya = (q - cq) @ Q.T + cq + (p.mean(0) - r.mean(0))
+        return ((ya - t_w) @ R_w) / s_w
+
+    def skin_targets(self, skin_posed, bones, attach_mm=25.0):
+        """Posed CT-frame positions of every CT skin landmark: the posed MHR skin, blended toward the rigid motion of the nearest bone where the skin lies on bone.
+        Skin on bone (scalp, face, sternum, spine) must move WITH that bone. The posed MHR skin and the rig's bones disagree about this by 10-90 mm (a 100 degree
+        head turn: the skull pivots about the atlanto-occipital joint, the skin about MHR's neck), and a soft-tissue warp interpolating between contradicting
+        landmarks tears the face and smears everything between."""
+        s_w, R_w, _ = self.W
+        Ys = self.skin_ct + (skin_posed[self.skin_nn] - self.mhr_rest[self.skin_nn]) @ R_w / s_w
+        if bones and attach_mm:
+            bx = np.vstack([b[2] for b in bones.values()]); bk = np.concatenate([[k_] * len(b[2]) for k_, b in bones.items()])
+            dist, ii = cKDTree(bx).query(self.skin_ct); owner = bk[ii]
+            Yb = np.empty_like(Ys)
+            for k_ in np.unique(owner):
+                m = owner == k_; Rb, tb = bones[k_][:2]; Yb[m] = self.skin_ct[m] @ Rb.T + tb
+            a = np.exp(-0.5 * (dist / attach_mm) ** 2)[:, None]
+            Ys = a * Yb + (1 - a) * Ys
+        return Ys
+
+    def landmarks(self, posed, skin_posed, structures=True, offset=0, skin_half=False, soft=True, attach_mm=25.0):
         """-> X (source, CT frame mm), Y (posed, CT frame mm), and per-bone data for the exact rigid override."""
         s_w, R_w, _ = self.W
         X, Y, bones = [], [], {}
         for n in (self.names if structures else []):
             if n.startswith(SKIP_LANDMARKS):
                 continue
-            xs = self.v_ct[n][::2]
-            p = posed[n][::2]
+            if not soft and not (ab.is_bone(n) or n in RIGID_SOFT):
+                continue                                    # bones + skin only (no organ/vessel/muscle landmarks)
+            xs = self.v_ct[n][offset::2]
+            p = posed[n][offset::2]
             if n in RIGID_SOFT:
                 continue                                    # given the carrier bone's own rigid motion below (not an independent fit)
             if ab.is_bone(n):
-                s, R, t = self.T[n]
-                ys = ((p - t) @ R) / s                      # posed vertex expressed in the bone's own CT frame (exact, rigid)
+                ys = self.bone_ct_positions(n, posed[n])[offset::2]
                 _, Rb, tb = ab.umeyama(xs, ys, with_scale=False)   # rigid motion of the bone in the CT frame: y = Rb x + tb
                 bones[self.label_id[n]] = (Rb, tb, xs, ys)
             else:
-                rest = self.by[n]["pos"][::2]
+                rest = self.by[n]["pos"][offset::2]
                 ys = xs + ((p - rest) @ R_w) / s_w          # skinned motion, rotated into the CT frame
             X.append(xs); Y.append(ys)
         for n, carrier in RIGID_WITH.items():                # brain: exactly the skull's rigid motion in the CT frame (separate fits differ by ~3 deg / 15 mm)
@@ -141,21 +173,50 @@ class CTWarper:
                 X.append(xs); Y.append(xs @ Rb.T + tb)
         # the outer body follows the posed MHR skin
         du = (skin_posed[self.skin_nn] - self.mhr_rest[self.skin_nn]) @ R_w / s_w
-        X.append(self.skin_ct); Y.append(self.skin_ct + du)
+        Ys = self.skin_targets(skin_posed, bones, attach_mm)
+        sk = slice(0, None, 2) if skin_half else slice(None)      # skin_half: build the field from half the skin points (held-out test)
+        X.append(self.skin_ct[sk]); Y.append(Ys[sk])
         return np.vstack(X), np.vstack(Y), bones
 
-    def field(self, posed, skin_posed, grid_mm=6.0, k=32, sigma_mm=10.0, structures=True):
+    @staticmethod
+    def _mls_u(G, X, Y, idx, w, chunk=60000):
+        """Moving-least-squares RIGID backward map: at each grid node the weighted Kabsch fit of the neighbouring posed landmarks Y onto their
+        sources X gives a local rotation and translation, src(g) = R (g - ybar) + xbar; returns u = g - src. A weighted mean of displacement vectors
+        (the old scheme) is only right where tissue translates; where it rotates (head turn, shoulder, bend) it tears."""
+        u = np.empty_like(G)
+        for a in range(0, len(G), chunk):
+            sl = slice(a, a + chunk); ii = idx[sl]; ww = w[sl] / w[sl].sum(1, keepdims=True)
+            Yi, Xi = Y[ii], X[ii]
+            yb = (ww[..., None] * Yi).sum(1); xb = (ww[..., None] * Xi).sum(1)
+            Hm = np.einsum("nk,nki,nkj->nij", ww, Yi - yb[:, None], Xi - xb[:, None])
+            U, S, Vt = np.linalg.svd(Hm)
+            R = np.einsum("nji,nkj->nik", Vt, U)                                   # V U^T  (rows: R maps Y-frame vectors to X-frame)
+            dets = np.linalg.det(R)
+            Vt2 = Vt.copy(); Vt2[:, 2, :] *= np.where(dets < 0, -1.0, 1.0)[:, None]
+            R = np.einsum("nji,nkj->nik", Vt2, U)
+            weak = S[:, 1] < 1e-3 * np.maximum(S[:, 0], 1e-12)                      # collinear support: rotation undefined, fall back to translation
+            R[weak] = np.eye(3)
+            g = G[sl]; src = np.einsum("nij,nj->ni", R, g - yb) + xb
+            u[sl] = g - src
+        return u
+
+    def field(self, posed, skin_posed, grid_mm=6.0, k=32, sigma_mm=10.0, structures=True, method="shepard", skin_half=False, soft=True, attach_mm=25.0):
         """Coarse backward displacement field u_hat(g) for output (posed) positions g, plus the exact bone motions."""
-        X, Y, bones = self.landmarks(posed, skin_posed, structures)
+        X, Y, bones = self.landmarks(posed, skin_posed, structures, skin_half=skin_half, soft=soft, attach_mm=attach_mm)
         U = Y - X
         tree = cKDTree(Y)
         lo = self.vox_to_mm(np.array([0, 0, 0.0])); hi = self.vox_to_mm(np.array(self.hu.shape, float) - 1)
         mn, mx = np.minimum(lo, hi), np.maximum(lo, hi)
         axes = [np.arange(mn[a], mx[a] + grid_mm, grid_mm) for a in range(3)]
         G = np.stack(np.meshgrid(*axes, indexing="ij"), -1).reshape(-1, 3)
+        if method == "mls":
+            k, sigma_mm = max(k, 48), max(sigma_mm, 15.0)
         d, i = tree.query(G, k=k, workers=-1)
         w = np.exp(-(d ** 2 - d[:, :1] ** 2) / (2 * sigma_mm ** 2))        # Gaussian, relative to the nearest landmark
-        uh = (w[..., None] * U[i]).sum(1) / w.sum(1, keepdims=True)
+        if method == "mls":
+            uh = self._mls_u(G, X, Y, i, w)
+        else:
+            uh = (w[..., None] * U[i]).sum(1) / w.sum(1, keepdims=True)    # weighted mean displacement: translation only, wrong where tissue rotates
         shape = tuple(len(a) for a in axes)
         # bone landmark tree for the rigid override
         if bones:
