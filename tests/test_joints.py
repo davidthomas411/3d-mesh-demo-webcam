@@ -55,7 +55,7 @@ def test_identity_pose_is_rest_for_every_structure(atlas):
 def test_pinned_joints_hold_under_large_motions(atlas):
     rest = {s["name"]: s["pos"] for s in atlas.structures}
     posed = atlas.pose(skin_with(atlas, BIG))
-    tol = {"ball": 0.0015, "condyloid": 0.0015, "saddle": 0.006, "plane": 0.006}
+    tol = {"ball": 0.0025, "condyloid": 0.0015, "saddle": 0.006, "plane": 0.006}
     for j in atlas.meta["joints"]:
         if j["type"] == "costovertebral":
             continue

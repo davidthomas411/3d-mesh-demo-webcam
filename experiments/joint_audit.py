@@ -58,8 +58,9 @@ if __name__ == "__main__":
     for i, a in enumerate(bones):
         for b in bones[i + 1:]:
             d, ia = trees[b].query(R[a]);
-            if d.min() < NEAR_MM:
-                idx = np.flatnonzero(d < NEAR_MM + 15.0)              # contact patch of a (stays the same vertices as the model moves)
+            consecutive = {a, b} <= set(atlas.meta["chain"]) and abs(atlas.meta["chain"].index(a) - atlas.meta["chain"].index(b)) == 1
+            if d.min() < NEAR_MM or consecutive or {a, b} == {"skull", "vertebrae_C1"}:   # adjacent vertebrae and skull|C1 always count
+                idx = np.flatnonzero(d < max(NEAR_MM, d.min() + 3.0) + 15.0)              # contact patch of a (stays the same vertices as the model moves)
                 pairs.append((a, b, idx, np.flatnonzero(trees[a].query(R[b])[0] < NEAR_MM + 15.0)))
     print("touching bone pairs at rest:", len(pairs), flush=True)
     def mk(P, n):

@@ -227,6 +227,9 @@ if __name__ == "__main__":
         plan = []
         for ph, n in zip((0, 2, 4), per):                                  # twist, shoulder shrug, forward bend
             plan += [(len(plan) + i, ph, i / n) for i in range(n)]
+        if "--only" in a:                                                  # render just these frame indices (cheap comparisons)
+            keep = {int(x) for x in a[a.index("--only") + 1].split(",")}
+            plan = [p_ for p_ in plan if p_[0] in keep]
         setup()
         with Pool(workers) as pool:
             for done in pool.imap_unordered(job, plan):
