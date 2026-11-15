@@ -59,6 +59,9 @@ class CTWarper:
         self.bone_near = ndi.binary_dilation(self.bone, iterations=3)       # candidates for the rigid override
         # ---- remove couch and arms
         self.keep = self._body_mask() & self._lateral_mask(margin_mm)
+        # the couch/arm mask must never cut the skeleton or the brain it rides with (it removed 2945 skull voxels, 1.4%, at the occiput:
+        # a visible hole in the skull whatever the pose)
+        self.keep |= ndi.binary_dilation(np.isin(self.label, rigid_ids), iterations=2)
         self.hu_c = np.where(self.keep, self.hu, -1000).astype(np.int16)
         self.bone &= self.keep
         # CT skin landmarks that lie in the kept region (arms and couch excluded)
