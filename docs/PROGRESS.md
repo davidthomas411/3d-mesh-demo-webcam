@@ -7,7 +7,11 @@ branch (the mobile repo carries the shipped atlas and `anatomy.js`). Evidence an
 Goal: joint coordinates (angles/translations inside limits) are the unknowns solved against camera or image data, bones are connected by construction,
 plus a penetration-resolving step; `experiments/joint_audit.py` is its regression test. Design and status: `docs/KINEMATIC_TREE.md`.
 
-## Motion-capture clip pipeline (synthetic clip only so far)
+## Real open mocap through the rig (Rocketbox shrug) and the multi-view capture reuse path
+- Microsoft Rocketbox motions (MIT, ungated) retargeted to MHR by direction fitting (0.3 deg mean error) and rendered through skeleton + CT; see `docs/MOCAP_CLIPS.md`.
+- Brain now rigid with the skull using the skull's own transform in the CT warp (fixed a lattice artefact in the skull).
+
+## Motion-capture clip pipeline (synthetic clip first)
 - Loader, per-frame renderer (AP + lateral radiograph, coronal + sagittal real HU) and a video-to-clip script for SAM 3D Body; see `docs/MOCAP_CLIPS.md`.
 - No real SAM 3D Body clip yet: checkpoints are gated (401) and no public MHR sequences were found; the video-to-clip script is untested against the real model.
 - Render memory fixed (slabbed `warped_volume`); AP region widened so a head bent forward is not clipped; brain rigid with the skull in the CT warp; side-view renderer

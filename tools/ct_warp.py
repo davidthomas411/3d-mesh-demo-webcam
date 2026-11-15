@@ -18,7 +18,8 @@ from anatomy import rig
 from anatomy.runtime import Atlas
 
 SKIP_LANDMARKS = ("humerus_", "femur_")       # arms/legs are cropped; their CT pose differs from the atlas T-pose
-RIGID_SOFT = ("brain",)                      # soft structures that move as one rigid body with a bone (the skull)
+RIGID_WITH = {"brain": "skull"}              # soft structures that move as one rigid body with a bone (brain with the skull)
+RIGID_SOFT = tuple(RIGID_WITH)
 
 
 class CTWarper:
@@ -118,7 +119,9 @@ class CTWarper:
                 continue
             xs = self.v_ct[n][::2]
             p = posed[n][::2]
-            if ab.is_bone(n) or n in RIGID_SOFT:
+            if n in RIGID_SOFT:
+                continue                                    # given the carrier bone's own rigid motion below (not an independent fit)
+            if ab.is_bone(n):
                 s, R, t = self.T[n]
                 ys = ((p - t) @ R) / s                      # posed vertex expressed in the bone's own CT frame (exact, rigid)
                 _, Rb, tb = ab.umeyama(xs, ys, with_scale=False)   # rigid motion of the bone in the CT frame: y = Rb x + tb
@@ -127,6 +130,12 @@ class CTWarper:
                 rest = self.by[n]["pos"][::2]
                 ys = xs + ((p - rest) @ R_w) / s_w          # skinned motion, rotated into the CT frame
             X.append(xs); Y.append(ys)
+        for n, carrier in RIGID_WITH.items():                # brain: exactly the skull's rigid motion in the CT frame (separate fits differ by ~3 deg / 15 mm)
+            if n in self.names and self.label_id[carrier] in bones:
+                Rb, tb = bones[self.label_id[carrier]][:2]
+                xs = self.v_ct[n][::2]
+                bones[self.label_id[n]] = (Rb, tb, xs, xs @ Rb.T + tb)
+                X.append(xs); Y.append(xs @ Rb.T + tb)
         # the outer body follows the posed MHR skin
         du = (skin_posed[self.skin_nn] - self.mhr_rest[self.skin_nn]) @ R_w / s_w
         X.append(self.skin_ct); Y.append(self.skin_ct + du)
@@ -179,20 +188,27 @@ class CTWarper:
             dist, ind = ndi.distance_transform_edt(lab == 0, return_indices=True)
             self._bid_near = np.where(dist <= 3.0, lab[tuple(ind)], 0).astype(lab.dtype)
             del dist, ind
-        d, j = fld["bone_tree"].query(g, k=1, workers=-1, distance_upper_bound=override_mm)
-        idx = np.flatnonzero(np.isfinite(d))
-        if len(idx):
-            owner = fld["bone_owner"][j[idx]]
+        # nearest posed points of several different bones may compete near a joint (skull base / C1); try the owners in order of distance
+        d, j = fld["bone_tree"].query(g, k=4, workers=-1, distance_upper_bound=override_mm)
+        same = {}
+        for k_, (Rb_, tb_, _, _) in fld["bones"].items():     # bones sharing one rigid motion (skull and brain) are one body
+            same[k_] = [j_ for j_, (R2, t2, _, _) in fld["bones"].items() if np.abs(R2 - Rb_).max() < 1e-6 and np.abs(t2 - tb_).max() < 1e-6]
+        for r in range(4):
+            cand = np.flatnonzero(np.isfinite(d[:, r]) & ~done)
+            if not len(cand):
+                break
+            owner = fld["bone_owner"][j[cand, r]]
             for k_ in np.unique(owner):
-                sel = idx[owner == k_]
+                sel = cand[owner == k_]
                 Rb, tb = fld["bones"][k_][:2]
                 xb = (g[sel] - tb) @ Rb                      # exact rigid inverse: x = Rb^T (y - tb)
-                ok = self.sample(self._bid_near, xb, order=0, cval=0) == k_
+                ok = np.isin(self.sample(self._bid_near, xb, order=0, cval=0), same[k_])
                 src[sel[ok]] = xb[ok]
                 done[sel[ok]] = True
         # the smooth field is only approximate for large rotations: any voxel it maps onto source bone that is NOT the exact
         # rigid image of a posed bone would draw a second, ghost copy of that bone (e.g. extra skulls in a forward bend).
         # Bones come only from the rigid override; everywhere else sample the nearest soft tissue instead.
+        self._dbg = {"near": near.copy(), "done": done.copy()}
         ghost = near & ~done
         if ghost.any():
             if getattr(self, "_soft_idx", None) is None:

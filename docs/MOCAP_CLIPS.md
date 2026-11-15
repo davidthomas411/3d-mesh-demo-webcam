@@ -1,6 +1,6 @@
 # Driving the skeleton and CT with a motion-capture clip
 
-Status: the pipeline runs end to end, but only on a SYNTHETIC test clip. No real SAM 3D Body clip has been run yet.
+Status: the pipeline runs end to end on real open motion capture (Microsoft Rocketbox, below) and on a SYNTHETIC test clip. No SAM 3D Body clip has been run yet.
 
 Why no real clip: the SAM 3D Body checkpoints (`facebook/sam-3d-body-dinov3`, `facebook/sam-3d-body-vith`) are gated on Hugging Face (anonymous download returns 401;
 manual access request). No public per-frame MHR parameter sequences from SAM 3D Body were found. Unofficial re-uploads of the weights exist but were not used:
@@ -33,3 +33,17 @@ Then, in that project's SAM3D env from its `mv/` folder: `python <this repo>/too
 `python experiments/render_clip.py clip.npz OUTDIR` here. `mv_fit_to_clip.py` is untested against real data.
 Caveats: global translation/rotation and the per-person scale are discarded (the patient lies in the CT frame; the atlas is mean-shape); the fit's frame stride is 6, so a 60 fps video
 gives about 10 fps motion.
+
+## Open-source mocap that works now: Microsoft Rocketbox motions (MIT)
+
+`huggingface.co/datasets/codepawl/rocketbox-motions-glb` (ungated, MIT, 326 clips, 30 fps, 121-joint Bip01 skeleton, `skeleton/<clip>/<clip>.glb` is the bare skeleton).
+`tools/rocketbox_to_clip.py CLIP.glb OUT.npz --mhr-onnx mhr-body.onnx` retargets by fitting the 62 non-hand MHR body parameters so 15 bone/body-axis directions
+(trunk, hip line, shoulder line, clavicles, upper arms, forearms, thighs, shins, head-up, eye line) match the Biped's forward kinematics (scale-free). Mean direction error
+0.3 deg on `f-gestic-shrug-01`; parameters max 0.57 rad, smooth. Limits: pelvis motion, root translation, fingers and face are not transferred; spine twist/bend is only
+constrained through shoulder, hip and neck keypoints. Clips with a shrug, look-around, stretch-arms and breathing exist (`f-gestic-shrug-01`, `f-idle-look-around-01`,
+`f-idle-stretch-arms-01`, `f-idle-breathe-01`); no bending or walking clips were found in the list. scipy's `least_squares` stalled at poor minima here (float32 ONNX,
+forward differences); the tool uses its own Levenberg-Marquardt with central differences.
+Output: `clips/rocketbox_shrug.npz`; render with `experiments/render_clip.py`.
+
+CT-warp fixes this needed: the brain now takes exactly the skull's rigid motion in the CT frame (separate fits differed by ~3 deg / 15 mm and left a lattice-shaped hole pattern
+in the skull), and competing bone owners at a joint are tried in distance order.
