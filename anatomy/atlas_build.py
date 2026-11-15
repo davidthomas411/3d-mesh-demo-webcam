@@ -198,6 +198,18 @@ def register_to_mhr(skin_v_mm, masks, affine, mhr_v, mhr_joints, rounds=(8.0, 3.
     return warp, lm
 
 
+# ---------------------------------------------------------------- rigid bone placement
+def is_bone(name):
+    from . import rig
+    return rig.classify(name)[0] != "soft"
+
+
+def rigid_place(src, dst):
+    """Best rigid motion (no scale, no shear) taking src onto dst in the least-squares sense."""
+    _, R, t = umeyama(src, dst, with_scale=False)
+    return src @ R.T + t
+
+
 # ---------------------------------------------------------------- meshes
 def mask_to_mesh(entry, affine, tri_budget, smooth_iters=10):
     """Marching cubes -> Taubin smooth -> quadric decimation. Vertices in mm, MHR axes."""
@@ -240,6 +252,59 @@ def _skin_depth(mesh, pts, chunk=3000):
     return np.concatenate([a for a, _ in d_all]), np.vstack([n for _, n in d_all])
 
 
+def fit_bone_inside(verts, mesh, margin, allow_scale=False, iters=40, tol=0.01, damp=0.6):
+    """Rigid placement of ONE bone so (almost) all of it lies >= margin below the skin: repeatedly push
+    violating vertices inward and re-fit a rigid motion to the push. If it still cannot fit and
+    allow_scale, shrink uniformly in 3% steps (down to ~0.85): an avatar head is not the CT subject's."""
+    v = verts.copy()
+    for _ in range(8):
+        for _ in range(iters):
+            depth, inward = _skin_depth(mesh, v)
+            viol = depth < margin
+            if viol.mean() < tol:
+                return v
+            disp = np.zeros_like(v)
+            disp[viol] = inward[viol] * (margin - depth[viol])[:, None]
+            v = rigid_place(v, v + damp * disp)
+        if not allow_scale:
+            return v
+        c = v.mean(0)
+        v = c + (v - c) * 0.97
+    return v
+
+
+def seat_bone(verts, mesh, margin_mm=6.0, scale_weight=1500.0, shift_weight=0.05, rot_weight=0.5,
+              max_shift_mm=60.0, max_rot_deg=20.0, n_sample=500, verbose=False):
+    """Seat one bone inside the skin by optimisation: rigid motion + ONE uniform scale s minimising
+    mean(penetration^2) [mm^2] + scale_weight * ln(s)^2. The scale prior makes it shrink only as much
+    as the avatar's smaller head/limb actually demands (no fixed shrink schedule)."""
+    from scipy.optimize import minimize
+    from scipy.spatial.transform import Rotation
+    rng = np.random.default_rng(0)
+    pick = rng.choice(len(verts), min(n_sample, len(verts)), replace=False)
+    c = verts.mean(0)
+    base = verts - c
+
+    def place(x, idx=slice(None)):
+        return np.exp(x[6]) * (base[idx] @ Rotation.from_rotvec(x[3:6]).as_matrix().T) + c + x[:3]
+
+    def energy(x):
+        depth, _ = _skin_depth(mesh, place(x, pick))
+        pen = np.clip(margin_mm - depth * 1000.0, 0, None)
+        # priors keep the bone where the registration put it: without them any placement deep inside
+        # the torso also has zero penetration and the optimiser happily moves the skull to the belly
+        return float(np.mean(pen ** 2) + scale_weight * x[6] ** 2
+                     + shift_weight * np.sum((x[:3] * 1000.0) ** 2) + rot_weight * np.sum(np.degrees(x[3:6]) ** 2))
+
+    # coordinate scales: translation in metres (~cm), rotation/log-scale in ~0.05
+    bounds = [(-max_shift_mm / 1000.0, max_shift_mm / 1000.0)] * 3 + [(np.radians(-max_rot_deg), np.radians(max_rot_deg))] * 3 + [(np.log(0.85), 0.0)]
+    res = minimize(energy, np.zeros(7), method="Powell", bounds=bounds, options={"xtol": 1e-4, "ftol": 1e-5, "maxiter": 30})
+    out = place(res.x)
+    if verbose:
+        print(f"    seat_bone: scale {np.exp(res.x[6]):.3f}, shift {np.round(res.x[:3] * 1000, 1)} mm, rot {np.round(np.degrees(res.x[3:6]), 1)} deg, E={res.fun:.2f}")
+    return out, float(np.exp(res.x[6]))
+
+
 def enforce_containment(structs, mhr_v, mhr_f, rounds=4, n_ctrl=500, verbose=True):
     """Supine CT vs standing MHR: the skin-only warp leaves bones almost touching the back. Push
     anything shallower than MIN_DEPTH (per class group) inward with a smooth volumetric field, so
@@ -267,8 +332,21 @@ def enforce_containment(structs, mhr_v, mhr_f, rounds=4, n_ctrl=500, verbose=Tru
         disp = np.vstack([inward[pick] * (margin[pick] - depth[pick])[:, None], np.zeros((len(anchors), 3))])
         f = RBFInterpolator(ctrl, disp, kernel="thin_plate_spline", smoothing=2e-3, degree=1)
         step = f(P)
-        for k, s in enumerate(structs):
-            s["verts"] = s["verts"] + step[off[k]:off[k + 1]]
+        for k, st in enumerate(structs):
+            sl = slice(off[k], off[k + 1])
+            moved = st["verts"] + step[sl]
+            st["verts"] = rigid_place(st["verts"], moved) if is_bone(st["name"]) else moved
+    # independent bones get their own rigid fit (the shared field cannot seat a skull in a smaller head)
+    for st in structs:
+        g = group_of(st["name"])
+        if g == "skull":
+            st["verts"], sc = seat_bone(st["verts"], mesh, margin_mm=6.0, verbose=verbose)
+            st["scale"] = sc
+        elif g in ("shoulder", "pelvis_leg"):
+            st["verts"] = fit_bone_inside(st["verts"], mesh, 0.004)
+    if verbose:
+        P = np.vstack([st["verts"] for st in structs]); depth, _ = _skin_depth(mesh, P)
+        print(f"  after bone fits: {100 * (depth < 0).mean():.1f}% of vertices outside the skin")
 
 
 # ---------------------------------------------------------------- rigged atlas writer (v2)
@@ -285,6 +363,12 @@ def load_meshes(prefix):
                     "faces": np.frombuffer(blob, it, e["n_tris"] * 3, e["idx"]).reshape(-1, 3).astype(np.int32),
                     "volume_ml": e.get("volume_ml", 0.0)})
     return out, meta
+
+
+def load_meshes_npz(path):
+    z = np.load(path, allow_pickle=False)
+    names = [str(n) for n in z["names"]]
+    return [{"name": n, "verts": z[f"v_{n}"], "faces": z[f"f_{n}"], "volume_ml": float(z[f"m_{n}"])} for n in names]
 
 
 def write_rigged_atlas(structs, mhr_npz, out_prefix, extra_meta=None, verbose=True, enforce=True):
@@ -368,7 +452,12 @@ def build(subject_dir, mhr_npz, out_prefix, total_tris=140000, verbose=True):
         if mesh is None:
             continue
         v_mm, f = mesh
-        structs.append({"name": name, "verts": warp(v_mm), "faces": f, "volume_ml": float(vol[name] * 1.5 ** 3 / 1000)})
+        placed = warp(v_mm)
+        if is_bone(name):
+            # bones are rigid: take only the PLACEMENT from the warp (rigid fit, scale fixed to the global
+            # similarity), never its shape change. Warping bones is what squared the skull.
+            placed = rigid_place(v_mm * warp.s, placed)
+        structs.append({"name": name, "verts": placed, "faces": f, "volume_ml": float(vol[name] * 1.5 ** 3 / 1000)})
     np.savez_compressed(out_prefix + "_meshes.npz", names=[s["name"] for s in structs],
                         **{f"v_{s['name']}": s["verts"] for s in structs}, **{f"f_{s['name']}": s["faces"] for s in structs},
                         **{f"m_{s['name']}": np.array(s["volume_ml"]) for s in structs})
@@ -386,7 +475,9 @@ if __name__ == "__main__":
     ap.add_argument("--tris", type=int, default=140000)
     ap.add_argument("--rebind", help="re-run only the rig/binding stage on an existing atlas prefix (v1 or v2)")
     a = ap.parse_args()
-    if a.rebind:
+    if a.rebind and a.rebind.endswith(".npz"):
+        write_rigged_atlas(load_meshes_npz(a.rebind), a.mhr_npz, a.out_prefix, {"source": {"dataset": "TotalSegmentator dataset v2.0.1 (Wasserthal et al.), CC-BY 4.0", "subject": "s1159"}})
+    elif a.rebind:
         structs, old = load_meshes(a.rebind)
         write_rigged_atlas(structs, a.mhr_npz, a.out_prefix, {"source": old.get("source"), "landmarks_mm": old.get("landmarks_mm")})
     else:

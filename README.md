@@ -380,14 +380,22 @@ How it is built (`python -m anatomy.atlas_build <subject_dir> mhr_rest.npz atlas
 2. Masks to meshes: marching cubes, Taubin smoothing, quadric decimation (budget by volume).
 3. CT skin (threshold + opening, couch removed) registered to the MHR rest mesh: femoral/humeral
    head landmarks (RANSAC sphere fit) similarity, then three rounds of thin-plate-spline warps
-   on torso + head skin. The same volumetric warp carries every interior structure.
+   on torso + head skin. The warp moves **soft tissue only**. Bones are never warped: each bone takes just its
+   *placement* from the warp (a rigid fit, scale fixed to the global similarity), so its shape stays true.
+   (Warping bones inflated an L3 vertebra to 130 x 122 mm and squashed the skull to 97 mm deep; they are now
+   89 x 70 mm and 196 x 148 x 130 mm.)
 4. Limb bones are pose-normalised (the CT has the arms down, MHR is a T-pose): humeri and femora are
    swung about their joint centre onto the MHR limb axis.
 5. **Containment**: the CT is supine and MHR is standing, so a skin-only warp leaves the spine and
    ribs touching the back (12.7% of vertices outside the skin, median rib/vertebra depth 6.5 mm).
    A smooth volumetric field then pushes every structure to a class-dependent minimum depth below
-   the skin (0.0% outside afterwards; ribs >= 10 mm, spine >= 22 mm where possible).
-6. The rig (`anatomy/rig.py`) is bound: nine rigid segments, a vertebra chain, rib and girdle
+   the skin (0.0% outside afterwards for soft tissue; ribs >= 10 mm, spine >= 22 mm where possible; bones receive the field as a rigid shift only).
+6. **Seating** (`seat_bone`): a bone cannot be bent into a smaller avatar, so the skull is seated by a small
+   optimisation: rigid motion plus one uniform scale, minimising penetration of the skin below a 6 mm scalp margin,
+   with priors on shift, rotation and scale (without them any placement deep in the torso also has zero
+   penetration; the optimiser really did move the skull into the belly in testing). The skull ends 3.5% smaller and ~2 cm
+   forward; shoulder girdle and pelvis get the same treatment without scaling.
+7. The rig (`anatomy/rig.py`) is bound: nine rigid segments, a vertebra chain, rib and girdle
    attachments, and soft-tissue skinning weights.
 
 ### Biomechanics (how the anatomy moves)
@@ -414,13 +422,13 @@ per-structure fit is rebuilt on the same geometry for a fair comparison):
 
 | pose | points pushed outside the skin | change in vertebra/rib spacing (max) | adjacent-vertebra rotation (max) |
 |---|---|---|---|
-| spine bend / twist / mix | 0.0 - 0.4% (old: 0.0 - 0.1%) | 1.7 - 2.8 mm (old: 5 - 8.5 mm) | 8 - 10 deg (old: 8 - 10 deg) |
-| neck and head | 0.0% | 1.6 mm (old: 6.0 mm) | 10.4 deg (old: 22.4 deg) |
-| right arm raised | 5.7% (old: 5.2%) | 1.8 mm (old: **36.8 mm**) | 2.8 deg (old: **18.9 deg**) |
+| spine bend / twist / mix | 0.1 - 0.3% (old: 0.0 - 0.2%) | 1.9 - 2.6 mm (old: 4.8 - 10.0 mm) | 8 - 10 deg (old: 8 - 19 deg) |
+| neck and head | 0.1% | 2.0 mm (old: 8.1 mm) | 10.8 deg (old: 10.8 deg) |
+| right arm raised | 5.2% (old: 5.0%) | 1.6 mm (old: **36.8 mm**) | 3.0 deg (old: **26.5 deg**) |
 | whole-body rotation | 0.0% | 0.0 mm | 0.0 deg |
 
 The old fit stayed inside the skin only because each structure chased its own skin patch; it did not keep a
-coherent skeleton (vertebra spacing off by up to 37 mm, neighbouring vertebrae rotating 19 deg apart under a raised arm).
+coherent skeleton (vertebra spacing off by up to 37 mm, neighbouring vertebrae rotating 26 deg apart under a raised arm).
 `pytest tests/` checks the rig on controlled segment motions: bones are exactly rigid (< 0.1 mm), a spine twist
 distributes monotonically from pelvis to head, vertebra spacing is preserved to 4 mm, ribs keep their vertebra
 exactly, and a whole-body rigid motion moves every structure, soft tissue included.
@@ -430,7 +438,7 @@ What the model does **not** do:
 - No organ physics: no sliding, no breathing, no gravity, no contact. Soft tissue is skinned, not simulated.
 - The thorax is rigid per segment. Real ribs flex a little, and the scapula slides over the ribcage.
 - The arms: only the humerus (pose-normalised) and the proximal femur are in the atlas, so wrist/elbow/knee motion is not modelled.
-- With the arm raised high, MHR's own neck skin collapses inward and cervical vertebrae C4-C6 end up outside the skin (5.7% of
+- With the arm raised high, MHR's own neck skin collapses inward and cervical vertebrae C4-C6 end up outside the skin (5.2% of
   points). The old fit shows the same artefact: it comes from the MHR surface, not the rig.
 - The rig only sees MHR skin motion. A deep motion that does not show on the skin (a rib cage expanding with breath, a
   pelvis tilting under soft tissue) is invisible to it.

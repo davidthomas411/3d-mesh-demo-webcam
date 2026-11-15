@@ -165,10 +165,17 @@ def test_enforce_containment_pushes_structures_inside_the_skin():
     sph = trimesh.creation.icosphere(subdivisions=3, radius=0.2)
     rng = np.random.default_rng(0)
     p = rng.normal(size=(2000, 3)); p = p / np.linalg.norm(p, axis=1, keepdims=True) * rng.uniform(0.0, 0.215, (2000, 1))
-    st = [{"name": "rib_left_5", "verts": p.copy(), "faces": np.zeros((0, 3), int)}]     # 'ribcage': needs >= 10 mm depth
-    enforce_containment(st, np.asarray(sph.vertices), np.asarray(sph.faces), verbose=False)
-    r = np.linalg.norm(st[0]["verts"], axis=1)
+    soft = [{"name": "liver", "verts": p.copy(), "faces": np.zeros((0, 3), int)}]       # soft tissue: smooth field
+    enforce_containment(soft, np.asarray(sph.vertices), np.asarray(sph.faces), verbose=False)
+    r = np.linalg.norm(soft[0]["verts"], axis=1)
     assert (r < 0.2).mean() > 0.97 and r.max() < 0.205              # was 10% outside; now (almost) all inside
+    # a BONE is never deformed by containment: it only moves rigidly, so a blob spanning the whole
+    # sphere cannot be forced inside, but its shape must be exactly preserved
+    bone = [{"name": "rib_left_5", "verts": p.copy(), "faces": np.zeros((0, 3), int)}]
+    enforce_containment(bone, np.asarray(sph.vertices), np.asarray(sph.faces), verbose=False)
+    d0 = np.linalg.norm(p[:60, None] - p[None, :60], axis=-1)
+    d1 = np.linalg.norm(bone[0]["verts"][:60, None] - bone[0]["verts"][None, :60], axis=-1)
+    assert np.abs(d0 - d1).max() < 1e-6
 
 
 def test_js_matches_numpy(tmp_path):
@@ -186,3 +193,45 @@ def test_js_matches_numpy(tmp_path):
     p = tmp_path / "case.json"; p.write_text(json.dumps(case))
     r = subprocess.run(["node", "tests/js/parity.mjs", str(p)], capture_output=True, text=True)
     assert r.returncode == 0, r.stdout + r.stderr
+
+
+def test_rigid_place_never_changes_bone_shape():
+    from anatomy.atlas_build import rigid_place
+    rng = np.random.default_rng(1)
+    src = rng.normal(size=(300, 3)) * [0.05, 0.03, 0.02]
+    R = Rot.from_rotvec([0.4, -0.2, 0.7]).as_matrix()
+    warped = src @ R.T + [0.1, 0.2, 0.3] + rng.normal(size=(300, 3)) * 0.01 + src * 0.4   # a distorting warp
+    placed = rigid_place(src, warped)
+    d0 = np.linalg.norm(src[:50, None] - src[None, :50], axis=-1)
+    d1 = np.linalg.norm(placed[:50, None] - placed[None, :50], axis=-1)
+    assert np.abs(d0 - d1).max() < 1e-9            # shape is untouched: only the placement comes from the warp
+
+
+def test_seat_bone_fixes_overhang_without_wandering():
+    import trimesh
+    from anatomy.atlas_build import seat_bone, _skin_depth
+    head = trimesh.creation.icosphere(subdivisions=3, radius=0.10)            # avatar head, 10 cm radius
+    rng = np.random.default_rng(0)
+    u = rng.normal(size=(1500, 3)); u /= np.linalg.norm(u, axis=1, keepdims=True)
+    skull = u * 0.095 + np.array([0.0, 0.0, 0.03])                           # slightly too big and 3 cm off-centre
+    placed, scale = seat_bone(skull, head, margin_mm=6.0)
+    depth, _ = _skin_depth(head, placed)
+    assert (depth > -0.002).mean() > 0.98                                    # inside, or within 2 mm (soft margin vs priors)
+    assert (depth > 0).mean() > 0.90
+    assert 0.85 <= scale <= 1.0
+    assert np.linalg.norm(placed.mean(0) - skull.mean(0)) < 0.06             # priors: stayed near where it was registered
+    # regression: without priors the optimiser could move a skull to a different organ (zero penetration anywhere inside)
+    far = skull + np.array([0.0, 0.0, 0.5])
+    p2, _ = seat_bone(far, head, margin_mm=6.0)
+    assert np.linalg.norm(p2.mean(0) - far.mean(0)) < 0.07                   # it does not teleport
+
+
+@needs_atlas
+def test_shipped_atlas_bones_have_realistic_sizes_and_skull_is_seated():
+    from anatomy.runtime import Atlas
+    a = Atlas(ATLAS); by = {s["name"]: s["pos"] for s in a.structures}
+    ext = lambda p: (lambda q: (q.max(0) - q.min(0)) * 1000)((p - p.mean(0)) @ np.linalg.svd(p - p.mean(0), full_matrices=False)[2].T)
+    e = ext(by["vertebrae_L3"])
+    assert e.max() < 110 and e.min() > 30              # was 130 x 122 mm when bones were warped; real L3 is ~90 x 70 x 45
+    es = ext(by["skull"])
+    assert 150 < es.max() < 230 and es.min() > 100     # was 97 mm deep (squashed) when bones were warped
