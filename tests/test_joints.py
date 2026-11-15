@@ -181,3 +181,15 @@ def test_costal_cartilage_stays_joined_to_ribs_and_sternum_under_large_motion(at
         g0 = cKDTree(by[n]).query(by["costal_cartilages"])[0].min()
         g1 = cKDTree(posed[n]).query(posed["costal_cartilages"])[0].min()
         assert g1 <= g0 + 0.004, (n, g0, g1)
+
+
+def test_scapula_keeps_contact_with_the_rib_cage_when_the_arm_is_raised_forward(atlas):
+    """Scapulothoracic glide: the scapula stays near the thorax instead of floating off it (it floated 16 mm away without the contact step)."""
+    by = {s["name"]: s["pos"] for s in atlas.structures}
+    ribs = np.vstack([by[n] for n in by if n.startswith("rib_left_") and 2 <= int(n.split("_")[-1]) <= 9])
+    g0 = cKDTree(ribs).query(by["scapula_left"])[0].min()
+    for deg in (30, 90, 150):
+        P = atlas.pose(skin_with(atlas, {"uparm_l": (np.array([1.0, 0, 0]) * np.radians(deg), [0, 0, 0])}))
+        rib_p = np.vstack([P[n] for n in P if n.startswith("rib_left_") and 2 <= int(n.split("_")[-1]) <= 9])
+        g = cKDTree(rib_p).query(P["scapula_left"])[0].min()
+        assert abs(g - g0) < 0.006, (deg, g0, g)

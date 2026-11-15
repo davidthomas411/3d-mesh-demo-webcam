@@ -7,6 +7,15 @@ branch (the mobile repo carries the shipped atlas and `anatomy.js`). Evidence an
 Goal: joint coordinates (angles/translations inside limits) are the unknowns solved against camera or image data, bones are connected by construction,
 plus a penetration-resolving step; `experiments/joint_audit.py` is its regression test. Design and status: `docs/KINEMATIC_TREE.md`.
 
+## Scapulothoracic contact (atlas v8)
+- Arm-elevation check found the scapula floating off the rib cage when the arm is raised forward (gap 11 mm at rest -> 27 mm at 90 deg flexion).
+- Added a contact step: the scapula is swung about its acromioclavicular pin until the mean gap of its rib-facing patch to a thorax ellipsoid is back to
+  the rest value, with a term that stops it going deeper than the rest closest point. Numpy (`_glide`) and JS (`glide`) with parity test; atlas stores the patch,
+  ellipsoid and rest gaps in the AC joint entries.
+- Result: forward flexion gap 12-15 mm (was up to 27 mm). Arm abduction still penetrates the ribs by 2-3 mm at the extremes (the ellipsoid proxy is coarse); not solved.
+- Spine range-of-motion audit (`experiments/spine_limits_audit.py`): every per-level rotation in the benchmark motions is far inside assumed limits (max 3.6 deg flexion,
+  2.7 deg axial per level), so no level is over limit; the limits are assumed from the classic tables and not verified here.
+
 ## 11a8e36 Broken neck: atlas v7 (spine re-joined at group boundaries)
 - Cause: each bone group was placed rigidly on its own to fit the skin, leaving the spine disconnected at the boundaries *at rest* (T1/C7 9.2 mm, L1/T12 23.2 mm).
   The change-from-rest audit could not see this.

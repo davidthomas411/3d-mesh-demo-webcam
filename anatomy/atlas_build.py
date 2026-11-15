@@ -393,6 +393,39 @@ def load_meshes_npz(path):
     return [{"name": n, "verts": z[f"v_{n}"], "faces": z[f"f_{n}"], "volume_ml": float(z[f"m_{n}"])} for n in names]
 
 
+
+from .runtime import ellipsoid_gap
+
+
+def thorax_ellipsoid(by):
+    """Axis-aligned ellipsoid fitted to the rib cage (ribs 2-9): centre and radii in the MHR rest frame (m). It is only the gliding
+    surface proxy for the scapula; the rest-pose gap absorbs its bias, so what matters is how the gap CHANGES."""
+    P = np.vstack([by[n]["verts"] for n in by if n.startswith("rib_") and 2 <= int(n.split("_")[-1]) <= 9])
+    c0 = 0.5 * (P.min(0) + P.max(0))
+    X = (P - c0)
+    A = np.hstack([X ** 2, X])                                   # sum a_i x_i^2 + b_i x_i = 1
+    coef = np.linalg.lstsq(A, np.ones(len(P)), rcond=None)[0]
+    a, b = coef[:3], coef[3:]
+    c = c0 - b / (2 * a)
+    k = 1 + (b ** 2 / (4 * a)).sum()
+    return c, np.sqrt(k / a)
+
+
+def scapulothoracic_patch(by, side, near_m=0.03):
+    """Scapula vertices that face the rib cage at rest (contact patch) and their rest gap to the thorax ellipsoid: the scapula glides on the
+    thorax, so at runtime it is swung about its acromioclavicular pin until that gap is restored."""
+    c, r = thorax_ellipsoid(by)
+    sc = by[f"scapula_{side}"]["verts"]
+    ribs = np.vstack([by[n]["verts"] for n in by if n.startswith(f"rib_{side}_") and 2 <= int(n.split("_")[-1]) <= 9])
+    from scipy.spatial import cKDTree
+    idx = np.flatnonzero(cKDTree(ribs).query(sc)[0] < near_m)
+    if len(idx) < 10:
+        idx = np.argsort(cKDTree(ribs).query(sc)[0])[:40]
+    d, _ = ellipsoid_gap(sc[idx], c, r)
+    return {"patch": idx.astype(int).tolist(), "gap0": round(float(d.mean()), 5), "gapmin0": round(float(d.min()), 5),
+            "ellipsoid": {"center": c.round(5).tolist(), "radii": r.round(5).tolist()}}
+
+
 def build_joints(by, mhr_j):
     """Joint table from the FINAL placed geometry: every joint is a centre shared by a parent and a child bone.
     At runtime the child is rotated about that centre and the centre is pinned to the parent's image of it,
@@ -413,7 +446,8 @@ def build_joints(by, mhr_j):
             v = by[clav]["verts"]; ax = np.abs(v[:, 0])
             add(f"sc_{k}", "saddle", "sternum", clav, v[np.argsort(ax)[:15]].mean(0), rig.JOINT_LIMIT_DEG["sternoclavicular"])
             if scap in by:
-                add(f"ac_{k}", "plane", clav, scap, v[np.argsort(-ax)[:15]].mean(0), rig.JOINT_LIMIT_DEG["acromioclavicular"])
+                add(f"ac_{k}", "plane", clav, scap, v[np.argsort(-ax)[:15]].mean(0), rig.JOINT_LIMIT_DEG["acromioclavicular"],
+                    **scapulothoracic_patch(by, side))
         if fem in by and f"hip_{side}" in by:
             add(f"hip_{k}", "ball", f"hip_{side}", fem, head_fn(by[fem]["verts"]), rig.JOINT_LIMIT_DEG["hip"])
     if "skull" in by and "vertebrae_C1" in by:

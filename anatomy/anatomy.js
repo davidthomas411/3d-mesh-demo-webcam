@@ -210,6 +210,36 @@ function aim(a, b, maxDeg) {                  // shortest-arc rotation taking a 
   if (sn < 1e-9) return Float64Array.of(1, 0, 0, 0, 1, 0, 0, 0, 1);
   return rodrigues(v, Math.min(Math.atan2(sn, c), maxDeg * DEG));
 }
+// Scapulothoracic contact (mirrors _glide in anatomy/runtime.py): swing the scapula about its acromioclavicular pin until the mean gap of its
+// contact patch to the thorax ellipsoid is back to the rest value. Fixed iteration count.
+function glide(ac, R0, pJac, S, pos) {
+  if (!ac.patch) return R0;
+  const c = ac.ellipsoid.center, r = ac.ellipsoid.radii, J = ac.center, SR = S.R;
+  let R = R0;
+  for (let it = 0; it < 6; it++) {
+    const my = [0, 0, 0], nb = [0, 0, 0]; let dsum = 0, dmin = Infinity;
+    for (const i of ac.patch) {
+      const p = [pos[3 * i] - J[0], pos[3 * i + 1] - J[1], pos[3 * i + 2] - J[2]];
+      const y = [0, 1, 2].map(k => R[k * 3] * p[0] + R[k * 3 + 1] * p[1] + R[k * 3 + 2] * p[2] + pJac[k]);
+      const t = [y[0] - S.cp[0], y[1] - S.cp[1], y[2] - S.cp[2]];
+      const x = [0, 1, 2].map(k => S.c[k] + SR[k] * t[0] + SR[3 + k] * t[1] + SR[6 + k] * t[2]);       // S.c + R^T (y - S.cp)
+      const dx = [x[0] - c[0], x[1] - c[1], x[2] - c[2]];
+      const f = Math.hypot(dx[0] / r[0], dx[1] / r[1], dx[2] / r[2]);
+      const dd = Math.hypot(...dx) * (1 - 1 / Math.max(f, 1e-9)); dsum += dd; if (dd < dmin) dmin = dd;
+      const g = [dx[0] / (r[0] * r[0]), dx[1] / (r[1] * r[1]), dx[2] / (r[2] * r[2])], gn = Math.max(Math.hypot(...g), 1e-12);
+      for (let k = 0; k < 3; k++) { nb[k] += (SR[k * 3] * g[0] + SR[k * 3 + 1] * g[1] + SR[k * 3 + 2] * g[2]) / gn; my[k] += y[k]; }
+    }
+    const n = ac.patch.length, nn = Math.max(Math.hypot(...nb), 1e-12), delta = (dsum / n - ac.gap0) - Math.max(ac.gapmin0 - dmin, 0);
+    const lever = [my[0] / n - pJac[0], my[1] / n - pJac[1], my[2] / n - pJac[2]], l2 = Math.max(lever[0] ** 2 + lever[1] ** 2 + lever[2] ** 2, 1e-9);
+    const u = nb.map(v => -delta * v / nn);
+    let w = [lever[1] * u[2] - lever[2] * u[1], lever[2] * u[0] - lever[0] * u[2], lever[0] * u[1] - lever[1] * u[0]].map(v => v / l2);
+    const a = Math.hypot(...w); if (a > 0.15) w = w.map(v => v * 0.15 / a);
+    const ang = 0.8 * Math.hypot(...w);
+    if (ang > 1e-12) R = mul3(rodrigues(w, ang), R);
+  }
+  return R;
+}
+
 const mkFrame = (R, J, pJ) => ({ q: matToQuat(R), R, c: J, cp: pJ });
 
 // ---------------------------------------------------------------------------------------------
@@ -283,7 +313,7 @@ function jointFrames(atlas, T, cf, SEG, breath, depth) {
       // scapula: pinned at the AC joint; rotates with a third of the arm's elevation (scapulohumeral rhythm)
       const pJac = mapPoint(F[sc.child], ac.center);
       const rv = matToRotvec(mul3(tr3(Rthup), Rarm));
-      const Rsc = mul3(S.R, limitRotation(rodrigues(rv, Math.hypot(...rv) / 3), ac.limit_deg));
+      const Rsc = glide(ac, mul3(S.R, limitRotation(rodrigues(rv, Math.hypot(...rv) / 3), ac.limit_deg)), pJac, S, atlas.byName.get(ac.child).pos);
       F[ac.child] = mkFrame(Rsc, ac.center, pJac);
       if (gh) {                                                // humerus: ball pinned in the glenoid
         const Rh = mul3(Rsc, limitRotation(mul3(tr3(Rsc), Rarm), gh.limit_deg));

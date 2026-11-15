@@ -159,7 +159,7 @@ class Atlas:
                 F[n] = T[rig.SEG["head"]]
         return F
 
-    def _joint_frames(self, T, cf, chain, by, breath, depth):
+    def _joint_frames(self, T, cf, chain, by, breath, depth, glide=True):
         """Body frames (q, R, J, pJ): x' = R (x - J) + pJ, for every joint-driven bone."""
         from . import rig
         from scipy.spatial.transform import Rotation as Rot
@@ -195,6 +195,7 @@ class Atlas:
                 rv = Rot.from_matrix(Rthup.T @ Rarm).as_rotvec()
                 Rrel = rig.limit_rotation(Rot.from_rotvec(rv / 3.0).as_matrix(), ac["limit_deg"])
                 Rsc = S[1] @ Rrel
+                Rsc = _glide(ac, Rsc, Jac, pJac, S, by[ac["child"]]["pos"]) if glide else Rsc
                 F[ac["child"]] = mk(Rsc, Jac, pJac)
                 gh = J.get(f"gh_{k}")
                 if gh:                                          # humerus: ball pinned in the glenoid
@@ -256,6 +257,38 @@ class Atlas:
             else:
                 out[s["name"]] = _pose_soft(s, sf)
         return out
+
+
+def ellipsoid_gap(x, c, r):
+    """Approximate signed distance (m) of points x to an axis-aligned ellipsoid (positive outside) and its outward unit normal."""
+    q = (x - c) / r
+    f = np.sqrt((q ** 2).sum(1))
+    d = np.linalg.norm(x - c, axis=1) * (1 - 1 / np.maximum(f, 1e-9))
+    n = (x - c) / r ** 2
+    return d, n / np.maximum(np.linalg.norm(n, axis=1, keepdims=True), 1e-12)
+
+
+def _glide(ac, Rsc, Jac, pJac, S, scap_pos, iters=6):
+    """Scapulothoracic contact: the scapula glides on the rib cage. Swing it about its acromioclavicular pin until the mean gap of its
+    contact patch to the thorax ellipsoid is back to the rest value (fixed iteration count, mirrored in anatomy.js)."""
+    from scipy.spatial.transform import Rotation as Rot
+    if "patch" not in ac:
+        return Rsc
+    P = scap_pos[ac["patch"]]; c = np.asarray(ac["ellipsoid"]["center"]); r = np.asarray(ac["ellipsoid"]["radii"])
+    for _ in range(iters):
+        y = (P - Jac) @ Rsc.T + pJac                                  # posed contact patch
+        x = S[2] + (y - S[3]) @ S[1]                                  # into the sternum's rest frame: c + R^T (y - cp)
+        d, n = ellipsoid_gap(x, c, r)
+        nb = (n @ S[1].T).mean(0); nb = nb / max(np.linalg.norm(nb), 1e-12)
+        lever = y.mean(0) - pJac
+        # mean gap back to rest, and no deeper into the thorax than the rest-pose closest point (penetration term)
+        shift = (d.mean() - ac["gap0"]) - max(ac["gapmin0"] - d.min(), 0.0)
+        w = np.cross(lever, -shift * nb) / max(lever @ lever, 1e-9)
+        a = np.linalg.norm(w)
+        if a > 0.15:
+            w = w * (0.15 / a)
+        Rsc = Rot.from_rotvec(0.8 * w).as_matrix() @ Rsc
+    return Rsc
 
 
 def _blend_frame(centroid, wf):
