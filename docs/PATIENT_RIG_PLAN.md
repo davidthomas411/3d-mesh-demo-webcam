@@ -158,3 +158,21 @@ nearest-neighbour search to precomputed skinning weights, which changes the mode
 
 Real-time design for stage 1: the mesh model sets the pace (about 6-13 Hz); between mesh updates a depth-only fast path (anchor + ICP against the
 reference surface) can run at camera rate. The CT-warp radiograph is a visualisation and a prior-image generator, not part of the positioning control loop.
+
+## Pilot P1: does a population consensus help a patient-specific respiratory model? (leave-one-patient-out)
+
+Data: TCIA 4D-Lung planning 4DCT, end-inhale (0%) vs end-exhale (50%), 8 patients, one date each. TotalSegmentator (v2 `--fast`, CPU).
+Quantity: centroid displacement of ribs 1-9, sternum, lungs, liver, heart etc. (exhale to inhale), in each patient's own vertebra-aligned frame.
+Script: `experiments/population_fetch.py`, `experiments/population_consensus.py`. Mean 3D error over held-out structures (mm):
+
+| Predictor of the held-out patient's breathing displacements | Error (mm) |
+|---|---|
+| No motion | 3.76 |
+| Population mean of the other 7 patients (k = 0 observed) | **2.86** |
+| Population pattern scaled to the patient from k = 1 / 2 / 4 observed structures | 3.29 / 3.10 / 2.91 |
+
+Reading: the consensus removes about a quarter of the error with no patient data. Fitting a single amplitude from a few structures was
+**worse** than the plain prior, because one noisy centroid sets the scale; it approaches the prior only at k = 4. So the update step needs a
+shrinkage (Bayesian) estimate and more informative observations, not a plain least-squares scale. Limits: 8 patients, centroids only (not
+voxel fields), partial-FOV truncation, segmentation error of a few mm comparable to the signal, one date per patient. This is a pilot, not
+evidence the full method works.
