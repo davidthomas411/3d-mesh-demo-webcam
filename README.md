@@ -381,17 +381,59 @@ How it is built (`python -m anatomy.atlas_build <subject_dir> mhr_rest.npz atlas
 3. CT skin (threshold + opening, couch removed) registered to the MHR rest mesh: femoral/humeral
    head landmarks (RANSAC sphere fit) similarity, then three rounds of thin-plate-spline warps
    on torso + head skin. The same volumetric warp carries every interior structure.
-4. Each structure is bound to the MHR skin vertices nearest to it.
+4. Limb bones are pose-normalised (the CT has the arms down, MHR is a T-pose): humeri and femora are
+   swung about their joint centre onto the MHR limb axis.
+5. **Containment**: the CT is supine and MHR is standing, so a skin-only warp leaves the spine and
+   ribs touching the back (12.7% of vertices outside the skin, median rib/vertebra depth 6.5 mm).
+   A smooth volumetric field then pushes every structure to a class-dependent minimum depth below
+   the skin (0.0% outside afterwards; ribs >= 10 mm, spine >= 22 mm where possible).
+6. The rig (`anatomy/rig.py`) is bound: nine rigid segments, a vertebra chain, rib and girdle
+   attachments, and soft-tissue skinning weights.
 
-Runtime (`anatomy/anatomy.js`, numpy reference in `anatomy/runtime.py`): each structure moves
-by the weighted rigid transform (Horn) of its supporting skin vertices from rest to the live
-mesh. About 9 ms for all 114 structures on a software-rendered CPU browser. Bones, vessels and
-organs follow the body locally; there is no organ physics.
+### Biomechanics (how the anatomy moves)
 
-Measured on the build subject: skull and brain no longer protrude from the MHR head, the worst
-structures overshoot the skin by about 2 mm on average, torso skin-to-skin mean error is
-11.7 mm (p95 36.6 mm). These are fit-to-this-one-subject numbers, **not** accuracy against a
-real patient.
+An earlier version fitted every structure rigidly to its own patch of skin. Neighbouring ribs,
+vertebrae and organs then disagreed and the anatomy looked sheared. It is now a kinematic model
+(`anatomy/runtime.py` is the reference, `anatomy/anatomy.js` the port; the two agree to float32 rounding):
+
+- **Segments are rigid.** pelvis, lumbar, lower thorax, upper thorax, head, two upper arms, two thighs. Each gets a
+  rest-to-live rigid transform (Horn / Kabsch) from a fixed patch of MHR skin vertices. The thorax patches are
+  narrow so that armpit skin does not leak arm motion into the trunk.
+- **Every bone is rigid.** Hip bones, sacrum, skull and limb bones follow their segment.
+- **The spine is a kinematic chain.** Each vertebra's rotation is a quaternion blend of the segments at its height, so
+  bending and axial twist are distributed over the vertebrae (swing, twist and bend all fall out of the
+  rotation blend). Positions come from forward kinematics, so vertebra spacing is preserved. A smoothed skin-driven
+  offset (sigma = 3 vertebrae) keeps the chain placed under the skin.
+- **Ribs, sternum, cartilages, clavicles and scapulae ride on the vertebrae they articulate with** (rib k on T-k:
+  the costovertebral joint stays exactly rigid).
+- **Soft tissue** (organs, vessels, muscles, airway, brain) is skinned between the chain frames bracketing its
+  height, so it deforms continuously; gluteal and psoas muscles blend onto the thigh below the hip.
+
+**Validation** (`tests/validate_rig.py`, real MHR articulations from `mhr-body.onnx`, ~2500 sample points; the old
+per-structure fit is rebuilt on the same geometry for a fair comparison):
+
+| pose | points pushed outside the skin | change in vertebra/rib spacing (max) | adjacent-vertebra rotation (max) |
+|---|---|---|---|
+| spine bend / twist / mix | 0.0 - 0.4% (old: 0.0 - 0.1%) | 1.7 - 2.8 mm (old: 5 - 8.5 mm) | 8 - 10 deg (old: 8 - 10 deg) |
+| neck and head | 0.0% | 1.6 mm (old: 6.0 mm) | 10.4 deg (old: 22.4 deg) |
+| right arm raised | 5.7% (old: 5.2%) | 1.8 mm (old: **36.8 mm**) | 2.8 deg (old: **18.9 deg**) |
+| whole-body rotation | 0.0% | 0.0 mm | 0.0 deg |
+
+The old fit stayed inside the skin only because each structure chased its own skin patch; it did not keep a
+coherent skeleton (vertebra spacing off by up to 37 mm, neighbouring vertebrae rotating 19 deg apart under a raised arm).
+`pytest tests/` checks the rig on controlled segment motions: bones are exactly rigid (< 0.1 mm), a spine twist
+distributes monotonically from pelvis to head, vertebra spacing is preserved to 4 mm, ribs keep their vertebra
+exactly, and a whole-body rigid motion moves every structure, soft tissue included.
+
+What the model does **not** do:
+
+- No organ physics: no sliding, no breathing, no gravity, no contact. Soft tissue is skinned, not simulated.
+- The thorax is rigid per segment. Real ribs flex a little, and the scapula slides over the ribcage.
+- The arms: only the humerus (pose-normalised) and the proximal femur are in the atlas, so wrist/elbow/knee motion is not modelled.
+- With the arm raised high, MHR's own neck skin collapses inward and cervical vertebrae C4-C6 end up outside the skin (5.7% of
+  points). The old fit shows the same artefact: it comes from the MHR surface, not the rig.
+- The rig only sees MHR skin motion. A deep motion that does not show on the skin (a rib cage expanding with breath, a
+  pelvis tilting under soft tissue) is invisible to it.
 
 ### Limits that must stay visible
 
@@ -413,8 +455,8 @@ real patient.
 
 ```bash
 pip install numpy scipy pytest scikit-image nibabel trimesh fast-simplification rtree
-pytest tests/                                  # synthetic suites, includes JS-vs-numpy parity (needs node)
-ATLAS_PREFIX=atlas/atlas pytest tests/test_anatomy.py   # also checks the shipped atlas
+pytest tests/                                  # 18 tests: depth, rig invariants on the shipped atlas, JS-vs-numpy parity (needs node)
+PYTHONPATH=. python tests/validate_rig.py atlas/atlas - mhr-body.onnx mhr_rest.npz   # real-MHR-pose comparison (needs the onnx file)
 ```
 
 ## Troubleshooting

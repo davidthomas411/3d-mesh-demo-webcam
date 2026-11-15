@@ -3,7 +3,7 @@ import os
 import numpy as np
 import pytest
 
-from anatomy.atlas_build import umeyama, joint_head_center, bind_structure
+from anatomy.atlas_build import umeyama, joint_head_center, enforce_containment
 from anatomy.runtime import weighted_kabsch
 from anatomy.classes import group_of
 from scipy.spatial import cKDTree
@@ -39,19 +39,6 @@ def test_weighted_kabsch_exact_and_robust_to_weights():
     assert np.allclose(Rk, R, atol=1e-9) and np.allclose(cd - Rk @ cs, [1, 2, 3], atol=1e-9)
 
 
-def test_binding_follows_rigid_motion():
-    rng = np.random.default_rng(3)
-    skin = rng.normal(size=(3000, 3)) * 0.2
-    skin = skin / np.linalg.norm(skin, axis=1, keepdims=True) * 0.2        # sphere shell
-    organ = rng.normal(size=(400, 3)) * 0.04 + np.array([0.0, 0.0, 0.05])  # interior blob
-    ids, w = bind_structure(organ, skin, cKDTree(skin))
-    R = Rot.from_rotvec([0.0, 0.4, 0.1]).as_matrix(); t = np.array([0.1, 0.0, -0.2])
-    posed = skin @ R.T + t
-    Rk, cs, cd = weighted_kabsch(skin[ids.astype(int)], posed[ids.astype(int)], w.astype(float))
-    moved = (organ - cs) @ Rk.T + cd
-    assert np.abs(moved - (organ @ R.T + t)).max() < 0.02          # < 2 cm for a 0.4 rad rotation
-
-
 def test_group_table_covers_ts_names():
     for n, g in [("vertebrae_L3", "spine"), ("rib_left_7", "ribcage"), ("aorta", "artery"),
                  ("portal_vein_and_splenic_vein", "vein"), ("lung_lower_lobe_left", "lung"),
@@ -60,36 +47,128 @@ def test_group_table_covers_ts_names():
         assert group_of(n) == g, (n, group_of(n))
 
 
-ATLAS = os.environ.get("ATLAS_PREFIX")
-needs_atlas = pytest.mark.skipif(not ATLAS, reason="set ATLAS_PREFIX to a built atlas to run")
+ATLAS = os.environ.get("ATLAS_PREFIX", os.path.join(os.path.dirname(__file__), "..", "atlas", "atlas"))
+needs_atlas = pytest.mark.skipif(not os.path.exists(ATLAS + ".json"), reason="no built atlas found")
 
 
 @needs_atlas
-def test_built_atlas_is_total_segmentator_scale_and_inside_body():
+def test_built_atlas_is_total_segmentator_scale():
     from anatomy.runtime import Atlas
     a = Atlas(ATLAS)
     names = a.names()
-    assert len(names) >= 100                                  # TotalSegmentator-scale coverage
-    assert {"liver", "aorta", "spleen", "stomach", "heart_myocardium"} & set(names)
-    pos = np.vstack([s["pos"] for s in a.structures])
-    assert 1.2 < pos[:, 1].min() * -1 < 1.8                   # head within MHR height (y down)
+    assert len(names) >= 100
+    assert {"liver", "aorta", "spleen", "stomach", "heart", "skull"} <= set(names)
+    assert a.meta["version"] == 2 and len(a.meta["chain"]) >= 20
     assert max(len(s["faces"]) for s in a.structures) < 40000
 
 
+def _synthetic_pose(a, motions):
+    """Skin = rest everywhere except the support vertices of the named segments, which get a known
+    rigid motion {segment: (rotvec, translation)}. Exact segment motions, so the rig is tested alone."""
+    skin = np.zeros((a.meta["n_skin_vertices"], 3))
+    for sg in a.segments:
+        skin[sg["idx"]] = sg["rest"]
+    for sg in a.segments:
+        if sg["name"] in motions:
+            rv, t = motions[sg["name"]]
+            c = sg["rest"].mean(0)
+            skin[sg["idx"]] = (sg["rest"] - c) @ Rot.from_rotvec(rv).as_matrix().T + c + t
+    return skin
+
+
 @needs_atlas
-def test_atlas_posing_identity_and_translation():
+def test_identity_and_global_rigid_motion_move_everything_exactly():
     from anatomy.runtime import Atlas
-    import json
     a = Atlas(ATLAS)
-    rest = np.zeros((a.meta["n_skin_vertices"], 3))
-    for s in a.structures:                                    # fill support vertices at rest
-        rest[s["s_idx"]] = s["s_rest"]
-    ident = a.pose(rest)
-    for s in a.structures[:20]:
-        assert np.abs(ident[s["name"]] - s["pos"]).max() < 1e-4
-    shifted = a.pose(rest + np.array([0.0, 0.0, -0.5]))
-    s0 = a.structures[0]
-    assert np.allclose(shifted[s0["name"]] - s0["pos"], [0, 0, -0.5], atol=1e-4)
+    ident = a.pose(_synthetic_pose(a, {}))
+    assert max(np.abs(ident[s["name"]] - s["pos"]).max() for s in a.structures) < 1e-4
+    R = Rot.from_rotvec([0.2, -0.4, 0.3]).as_matrix(); t = np.array([0.3, 0.1, -0.5])
+    skin = _synthetic_pose(a, {})
+    for sg in a.segments:
+        skin[sg["idx"]] = sg["rest"] @ R.T + t
+    moved = a.pose(skin)
+    # everything (bones AND soft tissue) must follow a whole-body rigid motion
+    assert max(np.abs(moved[s["name"]] - (s["pos"] @ R.T + t)).max() for s in a.structures) < 2e-3
+
+
+@needs_atlas
+def test_bones_stay_rigid_under_articulation():
+    from anatomy.runtime import Atlas
+    a = Atlas(ATLAS)
+    skin = _synthetic_pose(a, {"head": ([0.3, 0.2, 0.4], [0.02, 0.01, 0]),
+                               "thorax_up": ([0.0, 0.25, 0.1], [0, 0, 0.01]),
+                               "thorax_low": ([0.0, 0.12, 0.05], [0, 0, 0]),
+                               "uparm_l": ([0.0, 0.0, 0.8], [0, 0.02, 0]),
+                               "thigh_r": ([0.5, 0, 0], [0, 0, 0.01])})
+    posed = a.pose(skin)
+    worst = 0.0
+    for s in a.structures:
+        if s["bind"] == "soft":
+            continue
+        p, q = s["pos"][::9], posed[s["name"]][::9]
+        dp = np.linalg.norm(p[:, None] - p[None], axis=-1); dq = np.linalg.norm(q[:, None] - q[None], axis=-1)
+        worst = max(worst, np.abs(dp - dq).max())
+    assert worst < 1e-4, worst        # bones do not deform at all (float32 storage only)
+
+
+@needs_atlas
+def test_spine_twist_distributes_monotonically_and_keeps_spacing():
+    from anatomy.runtime import Atlas, kabsch
+    a = Atlas(ATLAS)
+    twist = 0.5                                        # rad about the vertical (y) axis
+    skin = _synthetic_pose(a, {"thorax_up": ([0, twist, 0], [0, 0, 0]), "thorax_low": ([0, twist * 0.5, 0], [0, 0, 0]),
+                               "head": ([0, twist * 1.2, 0], [0, 0, 0])})
+    posed = a.pose(skin)
+    by = {s["name"]: s for s in a.structures}
+    ang = []
+    for n in a.meta["chain"]:
+        R, _, _ = kabsch(by[n]["pos"], posed[n])
+        ang.append(Rot.from_matrix(R).as_rotvec()[1])
+    ang = np.array(ang)                                # bottom (L5) -> top (C1)
+    assert ang[0] < 0.1 and ang[-1] > 0.45 * twist     # pelvis end ~fixed, head end carries the twist
+    assert np.all(np.diff(ang) > -0.02), np.round(ang, 2)       # monotone: no counter-rotation, no kinks
+    cen = lambda P, n: P[n].mean(0)
+    for u, v in zip(a.meta["chain"][:-1], a.meta["chain"][1:]):
+        d0 = np.linalg.norm(cen({u: by[u]["pos"], v: by[v]["pos"]}, u) - cen({u: by[u]["pos"], v: by[v]["pos"]}, v))
+        d1 = np.linalg.norm(cen(posed, u) - cen(posed, v))
+        assert abs(d1 - d0) < 0.004, (u, v, d0, d1)    # vertebra spacing preserved within 4 mm
+
+
+@needs_atlas
+def test_ribs_keep_their_vertebra():
+    from anatomy.runtime import Atlas
+    a = Atlas(ATLAS)
+    skin = _synthetic_pose(a, {"thorax_up": ([0.3, 0.4, 0.2], [0.01, 0, 0]), "thorax_low": ([0.1, 0.2, 0.1], [0, 0, 0])})
+    posed = a.pose(skin)
+    by = {s["name"]: s for s in a.structures}
+    for k in range(1, 13):
+        r, v = f"rib_left_{k}", f"vertebrae_T{k}"
+        if r in by and v in by:
+            d0 = np.linalg.norm(by[r]["pos"].mean(0) - by[v]["pos"].mean(0))
+            d1 = np.linalg.norm(posed[r].mean(0) - posed[v].mean(0))
+            assert abs(d1 - d0) < 1e-4, (r, d0, d1)      # costovertebral joint: exactly rigid
+
+
+def test_chain_weights_partition_of_unity_and_ordering():
+    from anatomy import rig
+    lv = {"pelvis": -0.95, "lumbar": -1.10, "thorax_low": -1.25, "thorax_up": -1.40, "C7": -1.474, "C2": -1.525, "hip_y": -0.906}
+    y = np.linspace(-1.7, -0.8, 200)
+    W = rig.chain_weights_y(y, lv)
+    assert np.allclose(W.sum(1), 1) and (W >= -1e-12).all()
+    assert W[0].argmax() == 4 and W[-1].argmax() == 0               # head at the top, pelvis at the bottom
+    assert rig.attach_for("rib_left_7", ["vertebrae_T6", "vertebrae_T7"]) == [(1, 1.0)]
+    assert rig.classify("vertebrae_S1") == ("bone", "pelvis") and rig.classify("liver")[0] == "soft"
+
+
+def test_enforce_containment_pushes_structures_inside_the_skin():
+    import trimesh
+    sph = trimesh.creation.icosphere(subdivisions=3, radius=0.2)
+    rng = np.random.default_rng(0)
+    p = rng.normal(size=(2000, 3)); p = p / np.linalg.norm(p, axis=1, keepdims=True) * rng.uniform(0.0, 0.215, (2000, 1))
+    st = [{"name": "rib_left_5", "verts": p.copy(), "faces": np.zeros((0, 3), int)}]     # 'ribcage': needs >= 10 mm depth
+    enforce_containment(st, np.asarray(sph.vertices), np.asarray(sph.faces), verbose=False)
+    r = np.linalg.norm(st[0]["verts"], axis=1)
+    assert (r < 0.2).mean() > 0.97 and r.max() < 0.205              # was 10% outside; now (almost) all inside
 
 
 def test_js_matches_numpy(tmp_path):

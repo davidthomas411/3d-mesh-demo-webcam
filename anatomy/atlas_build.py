@@ -225,73 +225,158 @@ def mask_to_mesh(entry, affine, tri_budget, smooth_iters=10):
     return np.asarray(mesh.vertices), np.asarray(mesh.faces, np.int32)
 
 
-# ---------------------------------------------------------------- binding
-def bind_structure(verts_m, skin_v, skin_tree, max_support=192, n_sample=600, k=3, seed=0):
-    """Skin support set for a structure: the skin vertices nearest to its vertices (weighted by
-    how often they are hit). At runtime the structure is moved by the weighted rigid transform
-    that carries these skin vertices from rest to the posed mesh."""
-    rng = np.random.default_rng(seed)
-    pick = rng.choice(len(verts_m), min(n_sample, len(verts_m)), replace=False)
-    _, idx = skin_tree.query(verts_m[pick], k=k)
-    ids, cnt = np.unique(idx.ravel(), return_counts=True)
-    order = np.argsort(-cnt)[:max_support]
-    ids, cnt = ids[order], cnt[order].astype(np.float32)
-    return ids.astype(np.uint16), cnt / cnt.sum()
+# ---------------------------------------------------------------- containment
+MIN_DEPTH_MM = {"skull": 4, "spine": 22, "ribcage": 10, "shoulder": 6, "pelvis_leg": 8, "muscle": 5,
+                "neuro_endo": 6, "default": 8}
+
+
+def _skin_depth(mesh, pts, chunk=3000):
+    import trimesh
+    d_all = []
+    for i in range(0, len(pts), chunk):
+        c, d, tri = trimesh.proximity.closest_point(mesh, pts[i:i + chunk])
+        inside = np.einsum("ij,ij->i", pts[i:i + chunk] - c, mesh.face_normals[tri]) < 0
+        d_all.append((np.where(inside, d, -d), -mesh.face_normals[tri]))
+    return np.concatenate([a for a, _ in d_all]), np.vstack([n for _, n in d_all])
+
+
+def enforce_containment(structs, mhr_v, mhr_f, rounds=4, n_ctrl=500, verbose=True):
+    """Supine CT vs standing MHR: the skin-only warp leaves bones almost touching the back. Push
+    anything shallower than MIN_DEPTH (per class group) inward with a smooth volumetric field, so
+    structures stay mutually coherent (the same field moves every structure)."""
+    import trimesh
+    mesh = trimesh.Trimesh(mhr_v, mhr_f, process=False)
+    rng = np.random.default_rng(0)
+    margin = np.concatenate([np.full(len(s["verts"]), MIN_DEPTH_MM.get(group_of(s["name"]), MIN_DEPTH_MM["default"]) / 1000.0)
+                             for s in structs])
+    off = np.cumsum([0] + [len(s["verts"]) for s in structs])
+    for r in range(rounds):
+        P = np.vstack([s["verts"] for s in structs])
+        depth, inward = _skin_depth(mesh, P)
+        viol = depth < margin
+        if verbose:
+            print(f"  containment round {r}: {100 * viol.mean():.1f}% of vertices shallower than their margin, "
+                  f"{100 * (depth < 0).mean():.1f}% outside the skin")
+        if viol.mean() < 0.002:
+            break
+        need = np.flatnonzero(viol)
+        pick = rng.choice(need, min(n_ctrl, len(need)), replace=False)
+        ok = np.flatnonzero(~viol)
+        anchors = rng.choice(ok, min(n_ctrl, len(ok)), replace=False)
+        ctrl = np.vstack([P[pick], P[anchors]])
+        disp = np.vstack([inward[pick] * (margin[pick] - depth[pick])[:, None], np.zeros((len(anchors), 3))])
+        f = RBFInterpolator(ctrl, disp, kernel="thin_plate_spline", smoothing=2e-3, degree=1)
+        step = f(P)
+        for k, s in enumerate(structs):
+            s["verts"] = s["verts"] + step[off[k]:off[k + 1]]
+
+
+# ---------------------------------------------------------------- rigged atlas writer (v2)
+def load_meshes(prefix):
+    """Read structure meshes (metres, MHR rest frame) from a previously written atlas (v1 or v2)."""
+    meta = json.load(open(prefix + ".json"))
+    blob = open(prefix + ".bin", "rb").read()
+    out = []
+    for e in meta["structures"]:
+        n = e["n_verts"]
+        it = np.uint16 if e["idx_type"] == "u16" else np.uint32
+        out.append({"name": e["name"],
+                    "verts": np.frombuffer(blob, np.float32, n * 3, e["pos"]).reshape(n, 3).astype(np.float64),
+                    "faces": np.frombuffer(blob, it, e["n_tris"] * 3, e["idx"]).reshape(-1, 3).astype(np.int32),
+                    "volume_ml": e.get("volume_ml", 0.0)})
+    return out, meta
+
+
+def write_rigged_atlas(structs, mhr_npz, out_prefix, extra_meta=None, verbose=True, enforce=True):
+    """structs: [{name, verts(m), faces, volume_ml}] in the MHR rest frame. Applies limb pose
+    normalisation, builds the biomechanical rig (anatomy.rig) and writes atlas.json/.bin (v2)."""
+    from . import rig
+    z = np.load(mhr_npz)
+    mhr_v, mhr_j = z["verts"].astype(np.float64), z["joints"].astype(np.float64)
+    head_fn = lambda v: (lambda c, r, f: (c / 1000.0, r))(*joint_head_center(v * 1000.0, -1))
+    for st in structs:
+        st["verts"] = rig.normalise_limb(st["name"], st["verts"], mhr_j, head_fn)
+    if enforce:
+        enforce_containment(structs, mhr_v, z["faces"], verbose=verbose)
+    cents = {st["name"]: st["verts"].mean(0) for st in structs}
+    lv = rig.spine_levels(cents, mhr_j)
+    segs = rig.build_segments(mhr_v, mhr_j, lv)
+    if verbose:
+        print("segment skin support:", {k: len(v) for k, v in segs.items()}, " spine levels", {k: round(v, 3) for k, v in lv.items()})
+    blob = bytearray()
+    def put(arr):
+        blob.extend(b"\0" * ((-len(blob)) % 4))
+        start = len(blob); blob.extend(np.ascontiguousarray(arr).tobytes())
+        return start
+    seg_meta = []
+    for name in rig.SEGMENTS:
+        ids = segs[name].astype(np.uint16)
+        seg_meta.append({"name": name, "n": int(len(ids)), "idx": put(ids), "rest": put(mhr_v[ids].astype(np.float32))})
+    chain = rig.chain_names(cents)
+    chain_y = [float(cents[n][1]) for n in chain]
+    out = []
+    for st in sorted(structs, key=lambda d: d["name"]):
+        name, v, f = st["name"], st["verts"], st["faces"]
+        g = group_of(name)
+        kind, _ = rig.classify(name)
+        e = {"name": name, "display": display_name(name), "group": g, "color": list(GROUP_COLOR[g]),
+             "uncertainty_mm": UNCERTAINTY_MM[g], "n_verts": int(len(v)), "n_tris": int(len(f)),
+             "volume_ml": float(st.get("volume_ml", 0.0)), "centroid": v.mean(0).round(5).tolist()}
+        e["pos"] = put(v.astype(np.float32))
+        e["idx_type"] = "u16" if len(v) < 65536 else "u32"
+        e["idx"] = put(f.astype(np.uint16 if len(v) < 65536 else np.uint32))
+        att = rig.attach_for(name, chain) if kind == "bone_spine" and not name.startswith("vertebrae_") else None
+        if kind == "soft":
+            idx, w = rig.soft_frame_weights(name, v, lv, chain, chain_y)
+            e["bind"] = "soft"; e["inf_idx"] = put(idx); e["inf_w"] = put(w)
+        elif kind == "bone_spine" and name.startswith("vertebrae_"):
+            e["bind"] = "vertebra"; e["chain_index"] = chain.index(name); e["bone_w"] = rig.bone_weights(name, e["centroid"], lv)
+        elif att:
+            e["bind"] = "attach"; e["attach"] = att
+        else:
+            e["bind"] = "bone"; e["bone_w"] = rig.bone_weights(name, e["centroid"], lv)
+        out.append(e)
+    meta = {"version": 2, "frame": "mhr_rest_metres_y_down_front_-z", "n_skin_vertices": int(len(mhr_v)),
+            "segments": seg_meta, "spine_levels": lv, "chain": chain,
+            "disclaimer": "Atlas-based illustrative anatomy. Not patient-specific. Not for clinical use.",
+            "rig": "rigid segments from skin; bones rigid; vertebrae blend neighbouring segments; soft tissue LBS",
+            "structures": out}
+    meta.update(extra_meta or {})
+    json.dump(meta, open(out_prefix + ".json", "w"))
+    open(out_prefix + ".bin", "wb").write(bytes(blob))
+    if verbose:
+        print(f"wrote {out_prefix}.json/.bin: {len(out)} structures ({sum(1 for e in out if e['bind']!='soft')} rigid bones), "
+              f"{sum(e['n_tris'] for e in out)} tris, {len(blob) / 1e6:.2f} MB")
+    return meta
 
 
 # ---------------------------------------------------------------- driver
 def build(subject_dir, mhr_npz, out_prefix, total_tris=140000, verbose=True):
     z = np.load(mhr_npz)
-    mhr_v, mhr_j, mhr_f = z["verts"].astype(np.float64), z["joints"].astype(np.float64), z["faces"]
+    mhr_v, mhr_j = z["verts"].astype(np.float64), z["joints"].astype(np.float64)
     ct, masks = load_subject(subject_dir)
     if verbose:
         print(f"{len(masks)} non-empty structures; CT {ct.shape} @ {ct.header.get_zooms()} mm")
     skin_v, skin_f = extract_skin(ct)
     warp, lm = register_to_mhr(skin_v, masks, ct.affine, mhr_v, mhr_j, verbose=verbose)
-    # triangle budget proportional to sqrt(volume) (surface-ish), floor 120
     vol = {n: m.sum() for n, (m, _) in masks.items()}
     wts = {n: max(v, 1) ** (2 / 3) for n, v in vol.items()}
     tot = sum(wts.values())
-    skin_tree = cKDTree(mhr_v)
-    structs, blob, off = [], bytearray(), 0
-    def put(arr):
-        nonlocal off
-        b = np.ascontiguousarray(arr).tobytes()
-        pad = (-len(blob)) % 4
-        blob.extend(b"\0" * pad)
-        start = len(blob); blob.extend(b)
-        return start, len(b)
+    structs = []
     for name in sorted(masks):
         mesh = mask_to_mesh(masks[name], ct.affine, max(120, int(total_tris * wts[name] / tot)))
         if mesh is None:
             continue
         v_mm, f = mesh
-        v = warp(v_mm).astype(np.float32)
-        ids, w = bind_structure(v, mhr_v, skin_tree)
-        g = group_of(name)
-        e = {"name": name, "display": display_name(name), "group": g, "color": list(GROUP_COLOR[g]),
-             "uncertainty_mm": UNCERTAINTY_MM[g], "n_verts": int(len(v)), "n_tris": int(len(f)),
-             "support_n": int(len(ids)), "volume_ml": float(vol[name] * 1.5 ** 3 / 1000)}
-        e["pos"] = put(v)[0]
-        e["idx"] = put(f.astype(np.uint16 if len(v) < 65536 else np.uint32))[0]
-        e["idx_type"] = "u16" if len(v) < 65536 else "u32"
-        e["support_idx"] = put(ids)[0]
-        e["support_w"] = put(w)[0]
-        e["support_rest"] = put(mhr_v[ids].astype(np.float32))[0]
-        structs.append(e)
-    meta = {"version": 1, "frame": "mhr_rest_metres_y_down_front_-z", "n_skin_vertices": int(len(mhr_v)),
-            "source": {"dataset": "TotalSegmentator dataset v2.0.1 (Wasserthal et al.), CC-BY 4.0",
-                       "subject": os.path.basename(os.path.abspath(subject_dir)),
-                       "labels": "ground-truth 117-class masks (non-empty classes only)"},
-            "disclaimer": "Atlas-based illustrative anatomy. Not patient-specific. Not for clinical use.",
-            "landmarks_mm": {k: np.asarray(v).round(1).tolist() for k, v in lm.items()},
-            "structures": structs}
-    json.dump(meta, open(out_prefix + ".json", "w"))
-    open(out_prefix + ".bin", "wb").write(bytes(blob))
-    if verbose:
-        print(f"wrote {out_prefix}.json/.bin: {len(structs)} structures, "
-              f"{sum(e['n_tris'] for e in structs)} tris, {len(blob) / 1e6:.2f} MB")
-    return meta, warp, skin_v, skin_f
+        structs.append({"name": name, "verts": warp(v_mm), "faces": f, "volume_ml": float(vol[name] * 1.5 ** 3 / 1000)})
+    np.savez_compressed(out_prefix + "_meshes.npz", names=[s["name"] for s in structs],
+                        **{f"v_{s['name']}": s["verts"] for s in structs}, **{f"f_{s['name']}": s["faces"] for s in structs},
+                        **{f"m_{s['name']}": np.array(s["volume_ml"]) for s in structs})
+    extra = {"source": {"dataset": "TotalSegmentator dataset v2.0.1 (Wasserthal et al.), CC-BY 4.0",
+                        "subject": os.path.basename(os.path.abspath(subject_dir)),
+                        "labels": "ground-truth 117-class masks (non-empty classes only)"},
+             "landmarks_mm": {k: np.asarray(v).round(1).tolist() for k, v in lm.items()}}
+    return write_rigged_atlas(structs, mhr_npz, out_prefix, extra, verbose)
 
 
 if __name__ == "__main__":
@@ -299,5 +384,10 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("subject_dir"); ap.add_argument("mhr_npz"); ap.add_argument("out_prefix")
     ap.add_argument("--tris", type=int, default=140000)
+    ap.add_argument("--rebind", help="re-run only the rig/binding stage on an existing atlas prefix (v1 or v2)")
     a = ap.parse_args()
-    build(a.subject_dir, a.mhr_npz, a.out_prefix, a.tris)
+    if a.rebind:
+        structs, old = load_meshes(a.rebind)
+        write_rigged_atlas(structs, a.mhr_npz, a.out_prefix, {"source": old.get("source"), "landmarks_mm": old.get("landmarks_mm")})
+    else:
+        build(a.subject_dir, a.mhr_npz, a.out_prefix, a.tris)
