@@ -21,7 +21,7 @@ Everything here is data prep; runtime (anatomy.js / runtime.py) only consumes th
 import numpy as np
 
 CHAIN = ["pelvis", "lumbar", "thorax_low", "thorax_up", "head"]        # spine chain, bottom to top
-SEGMENTS = CHAIN + ["uparm_l", "uparm_r", "thigh_l", "thigh_r"]
+SEGMENTS = CHAIN + ["uparm_l", "uparm_r", "thigh_l", "thigh_r", "shoulder_l", "shoulder_r"]
 SEG = {n: i for i, n in enumerate(SEGMENTS)}
 KP = {"lSh": 5, "rSh": 6, "lEl": 7, "rEl": 8, "lHip": 9, "rHip": 10, "lKn": 11, "rKn": 12, "neck": 69}
 
@@ -62,6 +62,10 @@ def build_segments(mhr_v, joints, lv):
         "thorax_up": band(lv["thorax_up"], 0.05, 0.12),     # narrow: keep the armpits out so arm motion cannot leak in
     }
     for s, side in (("l", +1), ("r", -1)):
+        # shoulder girdle (clavicle/scapula motion: shrug, protraction): the upper cap of the shoulder, which
+        # follows the girdle while the deltoid below it follows the arm
+        cap = j[f"{s}Sh"] + np.array([0.0, -0.02, 0.0])
+        out[f"shoulder_{s}"] = np.flatnonzero((np.linalg.norm(mhr_v - cap, axis=1) < 0.065) & (y < j[f"{s}Sh"][1] + 0.01))
         out[f"uparm_{s}"] = np.flatnonzero(
             _near_segment(mhr_v, j[f"{s}Sh"], j[f"{s}El"], 0.06, 0.25, 0.9) & (x * side > 0.19))
         out[f"thigh_{s}"] = np.flatnonzero(
@@ -235,3 +239,46 @@ def _rot_between(a, b):
         return 2 * np.outer(p, p) - np.eye(3)
     K = np.array([[0, -v[2], v[1]], [v[2], 0, -v[0]], [-v[1], v[0], 0]])
     return np.eye(3) + K + K @ K / (1 + c)
+
+
+# ------------------------------------------------------------------ articulated groups and joints
+def bone_group(name):
+    """Bones that articulate with each other keep the CT subject's own relative geometry: each group is
+    placed with ONE rigid transform, so heads sit in sockets, ribs on vertebrae, skull on C1 by construction."""
+    import re
+    if name == "skull" or re.match(r"^vertebrae_C\d$", name):
+        return "head_neck"
+    if re.match(r"^vertebrae_T\d+$", name) or re.match(r"^(rib_|sternum|costal_cartilages|clavicula_|scapula_|humerus_)", name):
+        return "thorax"
+    if re.match(r"^vertebrae_L\d$", name):
+        return "lumbar"
+    if re.match(r"^(sacrum|hip_|femur_|vertebrae_S1)", name):
+        return "pelvis"
+    return None
+
+
+# max relative rotation (degrees) of the child w.r.t. its parent frame. Isotropic cones, not anatomical envelopes:
+# they only stop skin noise from producing impossible poses. Literature ranges in comments.
+JOINT_LIMIT_DEG = {
+    "glenohumeral": 160.0,      # elevation ~180, rotation ~ 90+
+    "sternoclavicular": 40.0,   # elevation ~45, protraction ~ 30
+    "acromioclavicular": 35.0,  # scapula on clavicle ~ 30 combined
+    "hip": 120.0,               # flexion ~120
+    "atlanto_occipital": 75.0,  # skull on the cervical spine: flexion/extension 60, rotation 80 (incl. C1-C2)
+    "costovertebral": 12.0,     # respiratory rib rotation
+}
+
+
+def limit_rotation(Rrel, max_deg):
+    """Clamp the angle of a relative rotation to max_deg (axis kept)."""
+    from scipy.spatial.transform import Rotation
+    rv = Rotation.from_matrix(Rrel).as_rotvec()
+    ang = np.linalg.norm(rv)
+    m = np.radians(max_deg)
+    return Rotation.from_rotvec(rv * (m / ang)).as_matrix() if ang > m else Rrel
+
+
+# quiet-breathing rib rotation about the costovertebral neck axis at full inspiration (degrees, depth = 1).
+# Upper ribs move like a pump handle, lower ribs like a bucket handle; 11-12 barely move. Calibrated against
+# tidal volume in tests/validate_breathing.py, not taken as ground truth.
+RESP_DEG = {1: 2.0, 2: 2.5, 3: 3.0, 4: 3.5, 5: 4.0, 6: 4.0, 7: 4.0, 8: 4.0, 9: 3.5, 10: 3.0, 11: 1.5, 12: 1.0}

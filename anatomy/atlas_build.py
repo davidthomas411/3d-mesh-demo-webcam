@@ -332,18 +332,40 @@ def enforce_containment(structs, mhr_v, mhr_f, rounds=4, n_ctrl=500, verbose=Tru
         disp = np.vstack([inward[pick] * (margin[pick] - depth[pick])[:, None], np.zeros((len(anchors), 3))])
         f = RBFInterpolator(ctrl, disp, kernel="thin_plate_spline", smoothing=2e-3, degree=1)
         step = f(P)
+        from . import rig
+        bone_groups = {}
         for k, st in enumerate(structs):
             sl = slice(off[k], off[k + 1])
-            moved = st["verts"] + step[sl]
-            st["verts"] = rigid_place(st["verts"], moved) if is_bone(st["name"]) else moved
-    # independent bones get their own rigid fit (the shared field cannot seat a skull in a smaller head)
+            if is_bone(st["name"]):
+                bone_groups.setdefault(rig.bone_group(st["name"]) or st["name"], []).append((st, sl))
+            else:
+                st["verts"] = st["verts"] + step[sl]
+        for g, members in bone_groups.items():          # an articulated group moves as ONE rigid body
+            union = np.vstack([m["verts"] for m, _ in members])
+            moved = np.vstack([m["verts"] + step[sl] for m, sl in members])
+            _, R, t = umeyama(union, moved, with_scale=False)
+            for m, _ in members:
+                m["verts"] = m["verts"] @ R.T + t
+    # group-level seating: the shared field cannot seat a skull in a smaller head, and a group may only move rigidly
+    from . import rig
+    members_of = {}
     for st in structs:
-        g = group_of(st["name"])
-        if g == "skull":
-            st["verts"], sc = seat_bone(st["verts"], mesh, margin_mm=6.0, verbose=verbose)
-            st["scale"] = sc
-        elif g in ("shoulder", "pelvis_leg"):
-            st["verts"] = fit_bone_inside(st["verts"], mesh, 0.004)
+        if is_bone(st["name"]):
+            members_of.setdefault(rig.bone_group(st["name"]), []).append(st)
+    for g, members in members_of.items():
+        union = np.vstack([m["verts"] for m in members])
+        if g == "head_neck":                            # seat the SKULL; the cervical spine rides with it
+            sk = next(m for m in members if m["name"] == "skull")
+            placed, sc = seat_bone(sk["verts"], mesh, margin_mm=6.0, verbose=verbose)
+            s_, R, t = umeyama(sk["verts"], placed, with_scale=True)
+            for m in members:
+                m["verts"] = s_ * m["verts"] @ R.T + t
+            sk["scale"] = sc
+        elif g is not None:
+            fitted = fit_bone_inside(union, mesh, 0.004)
+            _, R, t = umeyama(union, fitted, with_scale=False)
+            for m in members:
+                m["verts"] = m["verts"] @ R.T + t
     if verbose:
         P = np.vstack([st["verts"] for st in structs]); depth, _ = _skin_depth(mesh, P)
         print(f"  after bone fits: {100 * (depth < 0).mean():.1f}% of vertices outside the skin")
@@ -371,6 +393,53 @@ def load_meshes_npz(path):
     return [{"name": n, "verts": z[f"v_{n}"], "faces": z[f"f_{n}"], "volume_ml": float(z[f"m_{n}"])} for n in names]
 
 
+def build_joints(by, mhr_j):
+    """Joint table from the FINAL placed geometry: every joint is a centre shared by a parent and a child bone.
+    At runtime the child is rotated about that centre and the centre is pinned to the parent's image of it,
+    so no motion can pull a ball out of its socket."""
+    from . import rig
+    head_fn = lambda v: joint_head_center(v * 1000.0, -1)[0] / 1000.0
+    J = []
+
+    def add(name, typ, parent, child, center, limit, **kw):
+        J.append({"name": name, "type": typ, "parent": parent, "child": child,
+                  "center": np.asarray(center, float).round(5).tolist(), "limit_deg": limit, **kw})
+
+    for side, k in (("left", "l"), ("right", "r")):
+        hum, fem, clav, scap = f"humerus_{side}", f"femur_{side}", f"clavicula_{side}", f"scapula_{side}"
+        if hum in by and scap in by:
+            add(f"gh_{k}", "ball", scap, hum, head_fn(by[hum]["verts"]), rig.JOINT_LIMIT_DEG["glenohumeral"])
+        if clav in by and "sternum" in by:
+            v = by[clav]["verts"]; ax = np.abs(v[:, 0])
+            add(f"sc_{k}", "saddle", "sternum", clav, v[np.argsort(ax)[:15]].mean(0), rig.JOINT_LIMIT_DEG["sternoclavicular"])
+            if scap in by:
+                add(f"ac_{k}", "plane", clav, scap, v[np.argsort(-ax)[:15]].mean(0), rig.JOINT_LIMIT_DEG["acromioclavicular"])
+        if fem in by and f"hip_{side}" in by:
+            add(f"hip_{k}", "ball", f"hip_{side}", fem, head_fn(by[fem]["verts"]), rig.JOINT_LIMIT_DEG["hip"])
+    if "skull" in by and "vertebrae_C1" in by:
+        c1 = by["vertebrae_C1"]["verts"].mean(0); sv = by["skull"]["verts"]
+        add("ao", "condyloid", "vertebrae_C1", "skull", 0.5 * (c1 + sv[np.argmin(np.linalg.norm(sv - c1, axis=1))]),
+            rig.JOINT_LIMIT_DEG["atlanto_occipital"])
+    from scipy.spatial.transform import Rotation
+    for side in ("left", "right"):
+        for k in range(1, 13):
+            name, vname = f"rib_{side}_{k}", f"vertebrae_T{k}"
+            if name not in by or vname not in by:
+                continue
+            v = by[name]["verts"]; cv = by[vname]["verts"].mean(0)
+            head = v[np.argmin(np.linalg.norm(v - cv, axis=1))]
+            Jc = v[np.linalg.norm(v - head, axis=1) < 0.007].mean(0)             # costovertebral joint centre
+            d = np.linalg.norm(v - Jc, axis=1)
+            neck = v[(d > 0.022) & (d < 0.040)]
+            axis = (neck.mean(0) - Jc) if len(neck) else (v.mean(0) - Jc)
+            axis = axis / np.linalg.norm(axis)
+            rot1 = (v - Jc) @ Rotation.from_rotvec(axis * np.radians(1.0)).as_matrix().T + Jc
+            sign = -1.0 if rot1[:, 1].mean() > v[:, 1].mean() else 1.0               # inspiration RAISES the rib (y is down)
+            add(f"cv_{name}", "costovertebral", vname, name, Jc, rig.JOINT_LIMIT_DEG["costovertebral"],
+                axis=axis.round(5).tolist(), resp_deg=rig.RESP_DEG[k], resp_sign=sign)
+    return J
+
+
 def write_rigged_atlas(structs, mhr_npz, out_prefix, extra_meta=None, verbose=True, enforce=True):
     """structs: [{name, verts(m), faces, volume_ml}] in the MHR rest frame. Applies limb pose
     normalisation, builds the biomechanical rig (anatomy.rig) and writes atlas.json/.bin (v2)."""
@@ -378,10 +447,14 @@ def write_rigged_atlas(structs, mhr_npz, out_prefix, extra_meta=None, verbose=Tr
     z = np.load(mhr_npz)
     mhr_v, mhr_j = z["verts"].astype(np.float64), z["joints"].astype(np.float64)
     head_fn = lambda v: (lambda c, r, f: (c / 1000.0, r))(*joint_head_center(v * 1000.0, -1))
-    for st in structs:
-        st["verts"] = rig.normalise_limb(st["name"], st["verts"], mhr_j, head_fn)
     if enforce:
         enforce_containment(structs, mhr_v, z["faces"], verbose=verbose)
+    by_name = {st["name"]: st for st in structs}
+    joints = build_joints(by_name, mhr_j)              # from the final placed geometry (the CT's own articulation)
+    for st in structs:                                  # then swing limb bones about their joint centre onto the MHR limb axis
+        st["verts"] = rig.normalise_limb(st["name"], st["verts"], mhr_j, head_fn)
+    if verbose:
+        print("joints:", ", ".join(j["name"] for j in joints if not j["name"].startswith("cv_")), f"+ {sum(j['name'].startswith('cv_') for j in joints)} costovertebral")
     cents = {st["name"]: st["verts"].mean(0) for st in structs}
     lv = rig.spine_levels(cents, mhr_j)
     segs = rig.build_segments(mhr_v, mhr_j, lv)
@@ -398,6 +471,7 @@ def write_rigged_atlas(structs, mhr_npz, out_prefix, extra_meta=None, verbose=Tr
         seg_meta.append({"name": name, "n": int(len(ids)), "idx": put(ids), "rest": put(mhr_v[ids].astype(np.float32))})
     chain = rig.chain_names(cents)
     chain_y = [float(cents[n][1]) for n in chain]
+    joint_of_child = {j["child"]: j["name"] for j in joints}
     out = []
     for st in sorted(structs, key=lambda d: d["name"]):
         name, v, f = st["name"], st["verts"], st["faces"]
@@ -410,7 +484,14 @@ def write_rigged_atlas(structs, mhr_npz, out_prefix, extra_meta=None, verbose=Tr
         e["idx_type"] = "u16" if len(v) < 65536 else "u32"
         e["idx"] = put(f.astype(np.uint16 if len(v) < 65536 else np.uint32))
         att = rig.attach_for(name, chain) if kind == "bone_spine" and not name.startswith("vertebrae_") else None
-        if kind == "soft":
+        jn = joint_of_child.get(name)
+        if jn is not None:
+            e["bind"] = "joint"; e["joint"] = jn
+        elif name in ("sternum", "costal_cartilages"):
+            ks = range(2, 8) if name == "sternum" else range(1, 11)
+            rs = [f"rib_{sd}_{k}" for sd in ("left", "right") for k in ks if f"rib_{sd}_{k}" in joint_of_child]
+            e["bind"] = "attach_ribs"; e["attach_ribs"] = [[r, 1.0 / len(rs)] for r in rs]
+        elif kind == "soft":
             idx, w = rig.soft_frame_weights(name, v, lv, chain, chain_y)
             e["bind"] = "soft"; e["inf_idx"] = put(idx); e["inf_w"] = put(w)
         elif kind == "bone_spine" and name.startswith("vertebrae_"):
@@ -421,9 +502,9 @@ def write_rigged_atlas(structs, mhr_npz, out_prefix, extra_meta=None, verbose=Tr
             e["bind"] = "bone"; e["bone_w"] = rig.bone_weights(name, e["centroid"], lv)
         out.append(e)
     meta = {"version": 2, "frame": "mhr_rest_metres_y_down_front_-z", "n_skin_vertices": int(len(mhr_v)),
-            "segments": seg_meta, "spine_levels": lv, "chain": chain,
+            "segments": seg_meta, "spine_levels": lv, "chain": chain, "joints": joints,
             "disclaimer": "Atlas-based illustrative anatomy. Not patient-specific. Not for clinical use.",
-            "rig": "rigid segments from skin; bones rigid; vertebrae blend neighbouring segments; soft tissue LBS",
+            "rig": "rigid segments from skin; bones rigid; joints pin child to parent; vertebrae FK chain; soft tissue LBS",
             "structures": out}
     meta.update(extra_meta or {})
     json.dump(meta, open(out_prefix + ".json", "w"))
@@ -452,12 +533,26 @@ def build(subject_dir, mhr_npz, out_prefix, total_tris=140000, verbose=True):
         if mesh is None:
             continue
         v_mm, f = mesh
-        placed = warp(v_mm)
-        if is_bone(name):
-            # bones are rigid: take only the PLACEMENT from the warp (rigid fit, scale fixed to the global
-            # similarity), never its shape change. Warping bones is what squared the skull.
-            placed = rigid_place(v_mm * warp.s, placed)
-        structs.append({"name": name, "verts": placed, "faces": f, "volume_ml": float(vol[name] * 1.5 ** 3 / 1000)})
+        structs.append({"name": name, "verts": warp(v_mm), "src": v_mm * warp.s, "faces": f,
+                        "volume_ml": float(vol[name] * 1.5 ** 3 / 1000)})
+    # Bones are rigid and take only their PLACEMENT from the warp, never its shape change (warping bones
+    # is what squared the skull). Bones that articulate with each other share ONE rigid transform per group,
+    # so they keep the CT subject's own joint geometry: heads sit in sockets, ribs on vertebrae, skull on C1.
+    from . import rig
+    groups = {}
+    for st in structs:
+        if is_bone(st["name"]):
+            groups.setdefault(rig.bone_group(st["name"]), []).append(st)
+    for g, members in groups.items():
+        if g is None:
+            for st in members:
+                st["verts"] = rigid_place(st["src"], st["verts"])
+            continue
+        _, R, t = umeyama(np.vstack([m["src"] for m in members]), np.vstack([m["verts"] for m in members]), with_scale=False)
+        for st in members:
+            st["verts"] = st["src"] @ R.T + t
+    for st in structs:
+        st.pop("src", None)
     np.savez_compressed(out_prefix + "_meshes.npz", names=[s["name"] for s in structs],
                         **{f"v_{s['name']}": s["verts"] for s in structs}, **{f"f_{s['name']}": s["faces"] for s in structs},
                         **{f"m_{s['name']}": np.array(s["volume_ml"]) for s in structs})

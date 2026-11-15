@@ -9,6 +9,15 @@ Biomechanical model (see anatomy/rig.py):
   3. ribs / sternum / cartilages / clavicles / scapulae ride on the vertebrae they articulate
      with; pelvis, skull and limb bones follow their segment; all bones are rigid;
   4. SOFT tissue is skinned between the chain frames bracketing its height.
+  5. JOINTS (meta["joints"]): a child bone rotates about its joint centre and that centre is pinned to the
+     parent's image of it, so nothing can pull a ball out of its socket. Rotations are clamped to a range of motion.
+     ribs   : costovertebral joint on their vertebra, plus the respiratory rotation about the neck axis
+     sternum: carried by the ribs it is joined to (so it rises with breathing)
+     clavicle: pivots about the sternoclavicular joint so its lateral end follows the shoulder cap (shrug, protraction)
+     scapula : pinned at the acromioclavicular joint; follows about a third of the arm's elevation (scapulohumeral rhythm)
+     humerus : ball joint pinned in the glenoid, rotation from the upper-arm skin
+     femur   : ball joint pinned in the acetabulum, rotation from the thigh skin
+     skull   : pinned on C1 (atlanto-occipital joint), rotation from the head skin
 There is no organ physics and no claim of internal accuracy.
 """
 import json
@@ -51,7 +60,7 @@ class Atlas:
             out.append((rot_to_quat(R), R, cs, cd))
         return out
 
-    def frames(self, skin):
+    def frames(self, skin, breath=0.0, depth=1.0):
         """-> (segment_frames, chain_frames, soft_frames). A frame is (q, R, c_rest, c_live)."""
         from . import rig
         T = self.segment_transforms(skin)
@@ -79,15 +88,74 @@ class Atlas:
             cp = np.array(cp) + ds
             cf = [(q[i], quat_to_rot(q[i]), c[i], cp[i]) for i in range(len(chain))]
         sf = [T[rig.SEG["pelvis"]]] + cf + [T[rig.SEG["head"]]] + [T[rig.SEG[n]] for n in ("uparm_l", "uparm_r", "thigh_l", "thigh_r")]
-        return T, cf, sf
+        F = self._joint_frames(T, cf, chain, by, breath, depth)
+        return T, cf, sf, F
 
-    def pose(self, skin):
-        """skin: (V,3) live MHR vertices in the rest frame/units (metres). -> {name: (n,3)}."""
-        T, cf, sf = self.frames(skin)
+    def _joint_frames(self, T, cf, chain, by, breath, depth):
+        """Body frames (q, R, J, pJ): x' = R (x - J) + pJ, for every joint-driven bone."""
+        from . import rig
+        from scipy.spatial.transform import Rotation as Rot
+        SEG = rig.SEG
+        J = {j["name"]: j for j in self.meta.get("joints", [])}
+        F = {}
+        mk = lambda R, Jc, pJ: (rot_to_quat(R), R, np.asarray(Jc), pJ)
+        for j in J.values():                                   # ribs: costovertebral joint + respiratory rotation
+            if j["type"] != "costovertebral" or j["parent"] not in chain:
+                continue
+            fv = cf[chain.index(j["parent"])]
+            Jc = np.asarray(j["center"])
+            ang = np.radians(j["resp_deg"] * depth * breath) * j["resp_sign"]
+            Rr = Rot.from_rotvec(np.asarray(j["axis"]) * ang).as_matrix()
+            F[j["child"]] = mk(fv[1] @ Rr, Jc, _apply(fv, Jc))
+        if "sternum" in by and by["sternum"].get("attach_ribs"):
+            wf = [(F[r], w) for r, w in by["sternum"]["attach_ribs"] if r in F]
+            F["sternum"] = _blend_frame(np.asarray(by["sternum"]["centroid"]), wf)
+        S = F.get("sternum")
+        Rthup = T[SEG["thorax_up"]][1]
+        for k, side in (("l", "left"), ("r", "right")):
+            Rarm, Rthigh = T[SEG[f"uparm_{k}"]][1], T[SEG[f"thigh_{k}"]][1]
+            if S is not None and f"sc_{k}" in J:
+                sc, ac = J[f"sc_{k}"], J.get(f"ac_{k}")
+                Jsc = np.asarray(sc["center"]); pJ = _apply(S, Jsc)
+                # clavicle: aim its lateral end (AC joint) at where the shoulder cap went, about the SC joint
+                tgt = _apply(T[SEG[f"shoulder_{k}"]], np.asarray(ac["center"])) - pJ
+                a = S[1] @ (np.asarray(ac["center"]) - Jsc)
+                Rcl = _aim(a, tgt, sc["limit_deg"]) @ S[1]
+                F[sc["child"]] = mk(Rcl, Jsc, pJ)
+                # scapula: pinned at the AC joint; rotates with a third of the arm's elevation (scapulohumeral rhythm)
+                Jac = np.asarray(ac["center"]); pJac = _apply(F[sc["child"]], Jac)
+                rv = Rot.from_matrix(Rthup.T @ Rarm).as_rotvec()
+                Rrel = rig.limit_rotation(Rot.from_rotvec(rv / 3.0).as_matrix(), ac["limit_deg"])
+                Rsc = S[1] @ Rrel
+                F[ac["child"]] = mk(Rsc, Jac, pJac)
+                gh = J.get(f"gh_{k}")
+                if gh:                                          # humerus: ball pinned in the glenoid
+                    Jgh = np.asarray(gh["center"])
+                    Rh = Rsc @ rig.limit_rotation(Rsc.T @ Rarm, gh["limit_deg"])
+                    F[gh["child"]] = mk(Rh, Jgh, _apply(F[ac["child"]], Jgh))
+            hip = J.get(f"hip_{k}")
+            if hip:                                             # femur: ball pinned in the acetabulum
+                Tp = T[SEG["pelvis"]]; Jh = np.asarray(hip["center"])
+                Rf = Tp[1] @ rig.limit_rotation(Tp[1].T @ Rthigh, hip["limit_deg"])
+                F[hip["child"]] = mk(Rf, Jh, _apply(Tp, Jh))
+        if "ao" in J and J["ao"]["parent"] in chain:           # skull on C1
+            c1 = cf[chain.index(J["ao"]["parent"])]; Jao = np.asarray(J["ao"]["center"])
+            Rh = T[SEG["head"]][1]
+            F["skull"] = mk(c1[1] @ rig.limit_rotation(c1[1].T @ Rh, J["ao"]["limit_deg"]), Jao, _apply(c1, Jao))
+        return F
+
+    def pose(self, skin, breath=0.0, depth=1.0):
+        """skin: (V,3) live MHR vertices in the rest frame/units (metres). breath: 0 (end-expiration) .. 1
+        (end-inspiration), depth: 1 = quiet breathing. -> {name: (n,3)}."""
+        T, cf, sf, F = self.frames(skin, breath, depth)
         out = {}
         for s in self.structures:
             b = s["bind"]
-            if b == "bone":
+            if b == "joint":
+                out[s["name"]] = _apply(F[s["name"]], s["pos"])
+            elif b == "attach_ribs":
+                out[s["name"]] = _rigid(s["pos"], np.asarray(s["centroid"]), [(F[r], w) for r, w in s["attach_ribs"] if r in F])
+            elif b == "bone":
                 out[s["name"]] = _rigid(s["pos"], np.asarray(s["centroid"]), [(T[sg], w) for sg, w in s["bone_w"]])
             elif b == "vertebra":
                 out[s["name"]] = _rigid(s["pos"], np.asarray(s["centroid"]), [(cf[s["chain_index"]], 1.0)])
@@ -96,6 +164,28 @@ class Atlas:
             else:
                 out[s["name"]] = _pose_soft(s, sf)
         return out
+
+
+def _blend_frame(centroid, wf):
+    """Frame (q, R, c, cp) of a bone carried by several frames: blended rotation, averaged centroid image."""
+    ref = wf[0][0][0]
+    q = sum(w * (f[0] if f[0] @ ref >= 0 else -f[0]) for f, w in wf)
+    q = q / np.linalg.norm(q)
+    return (q, quat_to_rot(q), centroid, sum(w * _apply(f, centroid) for f, w in wf))
+
+
+def _aim(a, b, max_deg):
+    """Shortest-arc rotation taking vector a onto the direction of b, clamped to max_deg."""
+    na, nb = np.linalg.norm(a), np.linalg.norm(b)
+    if na < 1e-9 or nb < 1e-9:
+        return np.eye(3)
+    a, b = a / na, b / nb
+    v = np.cross(a, b); c = float(np.clip(a @ b, -1, 1)); sn = np.linalg.norm(v)
+    if sn < 1e-9:
+        return np.eye(3)
+    ang = min(np.arctan2(sn, c), np.radians(max_deg))
+    from scipy.spatial.transform import Rotation as Rot
+    return Rot.from_rotvec(v / sn * ang).as_matrix()
 
 
 def _apply(Tk, x):
