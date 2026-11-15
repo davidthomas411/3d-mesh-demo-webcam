@@ -59,3 +59,25 @@ distribution as a defensible default to be fitted to imaging data, not as ground
 No breathing, no scapulothracic contact, no soft-tissue sliding, arms and couch removed from the CT, and the CT is one supine subject, so
 internal anatomy here is that subject's, warped by the model, not a patient's own. The deformation of tissue between bones is an interpolation
 of the modelled structures' motion (Gaussian weighting of landmark motion, rigid inside bones), not a physical simulation.
+
+## Premise audit: no gaps between bones, no bones out of joints (`experiments/joint_audit.py`)
+
+72 bone pairs touch or nearly touch at rest. For each, over three motions x seven poses, the worst change from rest: gap opened (mm) and
+interpenetration added (mm). A pair is counted as a violation above 3 mm. Raw results: `docs/joint_audit_results.json`.
+
+| Stage | Pairs opened > 3 mm | Pairs overlapping > 3 mm | Worst overlap |
+|---|---|---|---|
+| V1 per-structure fits | 3 | 21 | - |
+| V2 rigid chain, no joints | 0 | 11 | - |
+| V3 + joint rules | 1 | 10 | T11/T12 vertebrae 15.7 mm |
+| V4 + in-vivo spine split | 2 | 14 | left clavicle/costal cartilage 18.0 mm; T11/T12 8.8 mm |
+
+Reading: the joint rules removed the large dislocations at the shoulder (humerus/scapula, hip), but **the premise is not yet met**.
+Remaining violations are (a) vertebra-to-vertebra interpenetration (spinous processes and facets are not constrained, only centroid spacing),
+(b) clavicle/costal-cartilage and rib/cartilage overlap and a 3-6 mm opening at the sternoclavicular joint and rib 9 cartilage, (c) no collision
+handling anywhere. The overlap estimate uses a nearest-vertex normal sign test, so it is indicative to a few mm, not a measurement; it is
+still enough to show that overlap exists and V4's spine split made vertebra contacts worse in places.
+
+Consequence for the design: constraints are currently added after fitting each bone to skin, so they can only reduce violations.
+Doing it by construction means a kinematic tree with joint coordinates (angles and translations within limits) as the unknowns that
+are solved against the camera or image data, plus a collision/penetration projection step, with this audit as a regression test.
