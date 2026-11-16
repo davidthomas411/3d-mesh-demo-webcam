@@ -16,10 +16,12 @@ def side_panels(version, posed, skin, centre, x_mid, PW=int(os.environ.get("PW",
     region = (np.array([c[0] - 260, y0, c[2] - 560.0]), np.array([c[0] + 260, y1, c[2] + 220.0]))
     vol, bone, axes, st = W.warped_volume(fld, step=float(os.environ.get("CTW_STEP", 2.0)), region=region, soft_bone=True)
     L = rr.radiograph(vol, bone, 0, st)                                   # sum over x -> (y, z); row 0 = head, column 0 = front (-z)
+    zc = c[2] - 100.0                                                     # the 520 mm window shared with the sagittal plane (and the AP / coronal width): ONE mm-per-pixel scale
+    zs = axes[2]; keep = (zs >= zc - 260.0) & (zs <= zc + 260.0); L = L[:, keep]
     u8 = rr.unsharp(rr.window(L, 0.0, 20.0, 0.75), 2.2, 1.0)
     lat = Image.fromarray(u8).convert("RGB").resize((PW, int(u8.shape[0] * PW / u8.shape[1])), Image.BICUBIC)
     cs = centre.copy(); cs[2] -= 100.0                                      # shifted forward: a bent-forward head and chest leave the standing frame
-    P, shape = W.plane(0, x_mid, 2, 1, cs, 280.0, (y1 - y0) / 2, 2.0)  # sagittal plane through the posed T9: horizontal = z, vertical = y
+    P, shape = W.plane(0, x_mid, 2, 1, cs, 260.0, (y1 - y0) / 2, 2.0)       # 520 mm wide, like the AP / coronal panels  # sagittal plane through the posed T9: horizontal = z, vertical = y
     src = W.source_positions(fld, P)
     hu = W.sample(W.hu_c, src).reshape(shape).astype(np.float32)
     g = rr.unsharp(rr.window(hu, 40 - 175, 40 + 175), 1.4, 0.6)
