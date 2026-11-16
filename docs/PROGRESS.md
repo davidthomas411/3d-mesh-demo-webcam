@@ -18,8 +18,8 @@ plus a penetration-resolving step; `experiments/joint_audit.py` is its regressio
 - Held-out accuracy at the head-turn frame (build the field from half the landmarks, reconstruct the rest): skin median 3.1 mm / p90 12.0 (was 6.1 / 29.6), soft landmarks median 1.5 / p90 7.4 / p99 16.7 (was 1.7 / 11.2 / 23.2).
 - Remaining: ribs, sternum and spine disagree with the skin by 15-25 mm in the thorax (partly real: skin over the shoulder follows the arms, not the ribs); the rig's own pelvis and root motion are not retargeted.
 
-## Motion gallery (site/)
-- `experiments/make_gallery.py` retargets, renders (rig + CT with the original motion beside it), encodes and indexes Rocketbox clips; `site/index.html` is the player page (data from `site/data/motions.json`).
+## Motion gallery (docs/)
+- `experiments/make_gallery.py` retargets, renders (rig + CT with the original motion beside it), encodes and indexes Rocketbox clips; `docs/index.html` is the player page (data from `docs/data/motions.json`).
 
 ## Mushy CT soft tissue: diagnosis and first fix
 - Bones render fine; the CT reformats tore (face), smeared (torso) and left black gaps beside bones. Measured instead of guessed:

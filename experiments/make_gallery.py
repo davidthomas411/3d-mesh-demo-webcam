@@ -1,5 +1,5 @@
 """Build the motion gallery: for each Rocketbox clip, retarget to MHR, render the rig + CT frames, put the original motion beside them, encode a video and a
-poster, and write site/data/motions.json. Resumable (finished clips are skipped).
+poster, and write docs/data/motions.json. Resumable (finished clips are skipped).
 usage: ATLAS=.. REST=.. ONNX=.. SUBJECT=.. CORR=.. python experiments/make_gallery.py WORKDIR SITEDIR [clip ...]"""
 import os, sys, json, math, subprocess, urllib.request, shutil
 import numpy as np
