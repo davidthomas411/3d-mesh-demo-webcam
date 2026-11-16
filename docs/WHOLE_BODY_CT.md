@@ -13,3 +13,10 @@ The current CT (TotalSegmentator s1159) is a torso with the arms removed, so arm
 Inspected sample (autoPET, `PETCT_0beb67c923`, 978 slices, 0.86 x 0.86 x 1.0 mm, `docs/whole_body_ct_sample_overview.png`): it runs from the upper thorax to the mid-thigh; **no head**, arms raised above the head and cut off at the top of the scan,
 both femora to mid-thigh. So it gives legs and (partly) raised arms but not a full avatar. Next steps: inspect the longer "WF" series for ones that include the head, choose an arms-down or arms-by-side case if one exists, run TotalSegmentator, and
 rebuild the atlas (the pipeline in `anatomy/atlas_build.py` assumes the MHR rest frame, so arm/leg bones need limb pose normalisation like the current humerus/femur handling).
+
+## HIT (MPI-IS, CVPR 2024): whole-body MRI with tissue segmentations and SMPL fits
+https://hit.is.tue.mpg.de/ . Full-body MRI of about 440 people (paper: 260 female, 182 male; the poster lists 241 and 157), segmented into subcutaneous fat, lean tissue (muscle and organs) and long bones
+(arms, legs, pelvis), with an SMPL body registered to each surface in two steps that account for lying down. Download needs a registered login and a licence acceptance; I could not read the terms or the file
+format (login wall), so check them before relying on it. Useful here for: limb bones and arm/leg articulation, population statistics of internal tissue against body shape, and the learned correction for the
+soft-tissue deformation of lying down (our supine CT vs a standing avatar). Not a replacement for CT: it is MRI (no HU for radiographs), tissue classes are coarse (no vertebra-level or organ-level meshes),
+and it is SMPL, not MHR (a conversion exists in Fast SAM 3D Body's `mhr2smpl`).
