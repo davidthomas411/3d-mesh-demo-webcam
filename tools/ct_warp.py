@@ -8,6 +8,7 @@ breathing and gas are not modelled; arms and couch are removed.
 
 Frames: everything in the CT's own frame, millimetres, MHR axes (x = patient left, y = down, z = back).
 """
+import os
 import numpy as np
 import nibabel as nib
 from scipy import ndimage as ndi
@@ -148,7 +149,7 @@ class CTWarper:
         (rigid_transfer; displacement-only transfer errs by (R - I) times the CT-to-MHR registration offset wherever the tissue rotates), then blended toward the
         rigid motion of the nearest bone where the skin lies on bone (attach_mm; 0 disables)."""
         s_w, R_w, t_w = self.W
-        if rigid_transfer:
+        if rigid_transfer and os.environ.get("CTW_RT_SKIN", "1") == "1":
             Rs = self.local_rotations(self.mhr_rest, skin_posed)[self.skin_nn]
             q = (self.skin_ct @ R_w.T) * s_w + t_w
             ya = skin_posed[self.skin_nn] + np.einsum("nij,nj->ni", Rs, q - self.mhr_rest[self.skin_nn])
@@ -170,7 +171,9 @@ class CTWarper:
         s_w, R_w, t_w = self.W
         X, Y, bones = [], [], {}
         Rloc = None
-        if structures and rigid_transfer:
+        # Soft-tissue landmarks are carried by displacement only by default: carrying them with the local rotation (CTW_RT_SOFT=1) threw head tissue to the abdomen
+        # and doubled the held-out error (the offset between the CT structure and its atlas counterpart is rotated, and the local rotation changes abruptly at joints).
+        if structures and rigid_transfer and os.environ.get("CTW_RT_SOFT", "0") == "1":
             names_ = [n for n in self.names if n in posed and n in self.by]
             allr = np.vstack([self.by[n]["pos"] for n in names_]); allp = np.vstack([posed[n] for n in names_])
             Rall = self.local_rotations(allr, allp); Rloc, o = {}, 0

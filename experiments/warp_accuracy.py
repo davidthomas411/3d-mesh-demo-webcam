@@ -36,7 +36,7 @@ if __name__ == "__main__":
                 continue
             xs = W.v_ct[n][1::2]; p = posed[n][1::2]; rest = W.by[n]["pos"][1::2]
             q = (xs @ R_w.T) * s_w + t_w
-            ys = ((p + np.einsum("nij,nj->ni", Rl[n][1::2], q - rest) - t_w) @ R_w) / s_w     # same carry as the field's landmarks
+            ys = (((p + np.einsum("nij,nj->ni", Rl[n][1::2], q - rest)) - t_w) @ R_w) / s_w if os.environ.get("CTW_RT_SOFT", "0") == "1" else xs + ((p - rest) @ R_w) / s_w   # same carry as the field's landmarks
             errs[n] = np.linalg.norm(src_at(fld, ys) - xs, axis=1)
         s_w, R_w, _ = W.W
         xs_ = W.skin_ct[1::2]; ys_ = W.skin_targets(skin, fld["bones"], am)[1::2]; es = np.linalg.norm(src_at(fld, ys_) - xs_, axis=1)
