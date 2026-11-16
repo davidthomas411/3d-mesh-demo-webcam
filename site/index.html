@@ -1,0 +1,127 @@
+<title>Rig Motion Atlas</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<style>
+/* Layout: an imaging-viewer layout: one large player on the left, the motion list beside it, the three panels explained below. */
+:root {
+  --bg: #f3f5f7; --surface: #ffffff; --ink: #14202b; --muted: #55646f; --line: #d5dce2;
+  --accent: #b45309; --accent-ink: #ffffff; --screen: #0b1118; --screen-ink: #dfe7ee; --chip: #e7ecf0;
+  --display: "Space Grotesk", "Segoe UI", system-ui, sans-serif; --body: "Inter", "Segoe UI", system-ui, sans-serif; --mono: "IBM Plex Mono", ui-monospace, Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg: #0c1218; --surface: #131b23; --ink: #e5ecf2; --muted: #93a3b0; --line: #24313d;
+  --accent: #f0a53d; --accent-ink: #1b1204; --screen: #05090d; --screen-ink: #dfe7ee; --chip: #1b2631; color-scheme: dark; } }
+:root[data-theme="dark"] {
+  --bg: #0c1218; --surface: #131b23; --ink: #e5ecf2; --muted: #93a3b0; --line: #24313d;
+  --accent: #f0a53d; --accent-ink: #1b1204; --screen: #05090d; --screen-ink: #dfe7ee; --chip: #1b2631; color-scheme: dark; }
+* { box-sizing: border-box; }
+body { background: var(--bg); color: var(--ink); font-family: var(--body); font-size: 15px; line-height: 1.55;
+  padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); padding-block: 28px 56px; }
+.wrap { max-width: 1280px; margin: 0 auto; display: flex; flex-direction: column; gap: 28px; }
+h1, h2, h3 { font-family: var(--display); text-wrap: balance; margin: 0; letter-spacing: -0.01em; }
+h1 { font-size: clamp(28px, 4.4vw, 44px); line-height: 1.05; }
+h2 { font-size: 20px; }
+.lede { max-width: 68ch; color: var(--muted); margin: 10px 0 0; font-size: 16px; }
+.eyebrow { font-family: var(--mono); font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--accent); margin-bottom: 10px; }
+.stage { display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: 20px; align-items: start; }
+.screen { background: var(--screen); border-radius: 6px; overflow: hidden; border: 1px solid var(--line); }
+.screen video { display: block; width: 100%; height: auto; background: var(--screen); }
+.bar { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 6px 18px; padding: 12px 14px; color: var(--screen-ink); }
+.bar h3 { font-size: 18px; }
+.bar p { margin: 0; color: #9fb0bd; font-size: 14px; max-width: 70ch; }
+.meta { font-family: var(--mono); font-size: 12px; color: #9fb0bd; display: flex; gap: 14px; flex-wrap: wrap; }
+.legend { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 0; border-top: 1px solid #1f2a35; }
+.legend div { padding: 10px 14px; font-size: 13px; color: #9fb0bd; border-right: 1px solid #1f2a35; min-width: 0; }
+.legend b { display: block; color: var(--screen-ink); font-weight: 600; margin-bottom: 2px; }
+.list { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.item { display: grid; grid-template-columns: 96px minmax(0, 1fr); gap: 10px; text-align: left; width: 100%; font: inherit; color: inherit; cursor: pointer;
+  background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 8px; align-items: center; }
+.item:hover { border-color: var(--muted); }
+.item[aria-current="true"] { border-color: var(--accent); box-shadow: inset 3px 0 0 var(--accent); }
+.item:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.item img { width: 96px; height: 64px; object-fit: cover; object-position: 50% 0; border-radius: 3px; background: var(--screen); }
+.item strong { font-family: var(--display); font-size: 15px; display: block; }
+.item span { font-family: var(--mono); font-size: 11px; color: var(--muted); }
+.grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 14px; }
+.card { background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 14px; display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.card img { width: 100%; height: 150px; object-fit: cover; object-position: 50% 0; border-radius: 3px; background: var(--screen); }
+.card h3 { font-size: 16px; }
+.card p { margin: 0; color: var(--muted); font-size: 14px; }
+.card a { color: var(--accent); }
+.limits { background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 16px 18px; }
+.limits ul { margin: 10px 0 0; padding-left: 18px; display: flex; flex-direction: column; gap: 6px; max-width: 90ch; }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 12px; }
+.chip { background: var(--chip); border-radius: 3px; padding: 2px 8px; font-family: var(--mono); font-size: 12px; color: var(--muted); }
+footer { color: var(--muted); font-size: 13px; max-width: 90ch; }
+a { color: var(--accent); }
+@media (max-width: 860px) { .stage { grid-template-columns: minmax(0, 1fr); } .list { flex-direction: row; overflow-x: auto; padding-bottom: 6px; } .item { min-width: 250px; } }
+@media (prefers-reduced-motion: reduce) { * { scroll-behavior: auto !important; } }
+</style>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Inter:wght@400;500;600&family=Space+Grotesk:wght@500;700&display=swap">
+<div class="wrap">
+  <header>
+    <div class="eyebrow">Rig, CT and motion capture</div>
+    <h1>Rig Motion Atlas</h1>
+    <p class="lede">Real human motion capture drives a biomechanical skeleton and one real CT scan. On the left of each clip is the original motion. On the right, the same motion applied to the rig: bone radiographs and CT reformats.</p>
+  </header>
+
+  <section class="stage" aria-label="Player">
+    <div class="screen">
+      <video id="player" controls loop muted playsinline preload="auto"></video>
+      <div class="bar"><div><h3 id="t"></h3><p id="b"></p></div><div class="meta" id="m"></div></div>
+      <div class="legend">
+        <div><b>Left: the original motion</b>Rocketbox avatar skinned by the capture, with its Bip01 skeleton in red. Front and side views.</div>
+        <div><b>Middle: bone radiographs</b>AP and lateral projections of the rig's bones, deformed from one CT. Bones are rigid; joints are pinned.</div>
+        <div><b>Right: real-HU CT reformats</b>Coronal and sagittal slices of the same CT deformed by the rig. Soft tissue is interpolated, not simulated.</div>
+      </div>
+    </div>
+    <div class="list" id="list" role="list"></div>
+  </section>
+
+  <section>
+    <h2>All motions</h2>
+    <div class="grid" id="grid" style="margin-top:14px"></div>
+  </section>
+
+  <section class="limits">
+    <h2>What this does and does not show</h2>
+    <ul>
+      <li>The CT is one scan from the open TotalSegmentator dataset. The rig is an atlas built from it, so internal anatomy is that subject's, not a patient's.</li>
+      <li>The CT has no arms, so arm motion shows only in the original panel; the CT panels show the shoulder girdle, spine, ribs and head.</li>
+      <li>Pelvis motion, root translation, fingers and face are not transferred. Spine twist and bend are constrained only through the shoulder, hip and neck keypoints.</li>
+      <li>The soft-tissue warp still stretches face and jaw tissue at extreme head turns. The motion is retargeted by direction fitting, not exact mocap retargeting.</li>
+      <li>Illustrative research output. Not patient data and not for clinical use.</li>
+    </ul>
+    <div class="chips"><span class="chip">motion: Microsoft Rocketbox, MIT</span><span class="chip">CT: TotalSegmentator dataset v2.0.1, CC BY 4.0</span><span class="chip">body model: MHR</span></div>
+  </section>
+  <footer>Each clip plays 5 captured frames per second, so it runs slower than the original motion. Frames are rendered at reduced resolution.</footer>
+</div>
+<script>
+(function () {
+  var player = document.getElementById("player"), list = document.getElementById("list"), grid = document.getElementById("grid");
+  var t = document.getElementById("t"), b = document.getElementById("b"), m = document.getElementById("m"), items = [], data = [];
+  function show(i, push) {
+    var d = data[i]; if (!d) return;
+    player.src = "media/" + d.id + ".mp4"; player.poster = "media/" + d.id + ".jpg"; player.play().catch(function () {});
+    t.textContent = d.title; b.textContent = d.blurb;
+    m.innerHTML = ""; [d.seconds + " s of capture", d.frames + " frames", d.direction_error_deg + " deg mean fit error"].forEach(function (x) { var s = document.createElement("span"); s.textContent = x; m.appendChild(s); });
+    items.forEach(function (el, k) { el.setAttribute("aria-current", k === i ? "true" : "false"); });
+    if (push) { try { history.replaceState(null, "", "#" + d.id); } catch (e) {} }
+  }
+  function build() {
+    data.forEach(function (d, i) {
+      var li = document.createElement("button"); li.className = "item"; li.type = "button"; li.setAttribute("role", "listitem");
+      li.innerHTML = '<img alt="" loading="lazy" src="media/' + d.id + '.jpg"><div><strong></strong><span></span></div>';
+      li.querySelector("strong").textContent = d.title; li.querySelector("span").textContent = d.seconds + " s, " + d.frames + " frames";
+      li.addEventListener("click", function () { show(i, true); }); list.appendChild(li); items.push(li);
+      var c = document.createElement("div"); c.className = "card";
+      c.innerHTML = '<img alt="" loading="lazy" src="media/' + d.id + '.jpg"><h3></h3><p></p><p><a class="play" href="#' + d.id + '">Play above</a> &middot; <a target="_blank" rel="noopener">Source clip</a></p>';
+      c.querySelector("h3").textContent = d.title; c.querySelector("p").textContent = d.blurb; c.querySelector("a:not(.play)").href = d.source_url;
+      c.querySelector(".play").addEventListener("click", function (e) { e.preventDefault(); show(i, true); window.scrollTo({ top: 0, behavior: "smooth" }); }); grid.appendChild(c);
+    });
+    var h = (location.hash || "").slice(1), k = data.findIndex(function (d) { return d.id === h; });
+    show(k >= 0 ? k : 0, false);
+  }
+  fetch("data/motions.json").then(function (r) { return r.json(); }).then(function (j) { data = j; build(); })
+    .catch(function () { t.textContent = "Motions could not be loaded"; });
+})();
+</script>

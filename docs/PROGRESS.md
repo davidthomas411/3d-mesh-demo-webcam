@@ -7,6 +7,20 @@ branch (the mobile repo carries the shipped atlas and `anatomy.js`). Evidence an
 Goal: joint coordinates (angles/translations inside limits) are the unknowns solved against camera or image data, bones are connected by construction,
 plus a penetration-resolving step; `experiments/joint_audit.py` is its regression test. Design and status: `docs/KINEMATIC_TREE.md`.
 
+## Rig-versus-skin "pivot mismatch": it was in the CT mapping, not the rig
+- In atlas space the rig agrees with the MHR skin (skin on bone moved with its bone lands a median 0.5-5 mm away for the skull, 4 mm pelvis, 6 mm cervical, 12-15 mm ribs, sternum and spine,
+  `experiments/rig_skin_consistency.py`). The 93 mm skull-vs-skin gap at a 100 degree head turn came from how bone motion was transferred to the CT frame: my `bone_ct_positions` moved
+  each CT bone about its own centroid (before that, through its own CT-to-atlas similarity), adding (I - Q) times the offset between the CT bone and its atlas counterpart (50-90 mm at 100 degrees).
+  Now the CT bone takes the atlas bone's own rigid motion, y = Q W(x) + tau, exactly as skin does. Skull-vs-skin residual in the CT frame: 93 mm to 3.4 mm; all bone groups near the skin median 14.8 mm
+  (was 43 mm) at the head-turn frame, 8.2 mm (was 12.6) near rest (`experiments/skin_bone_consistency.py`).
+- Also tested and rejected: carrying soft-tissue landmarks by the local rotation (`CTW_RT_SOFT=1`) threw head tissue to the abdomen and doubled held-out error (default off). Skin uses the local rotation
+  (`CTW_RT_SKIN`, default on).
+- Held-out accuracy at the head-turn frame (build the field from half the landmarks, reconstruct the rest): skin median 3.1 mm / p90 12.0 (was 6.1 / 29.6), soft landmarks median 1.5 / p90 7.4 / p99 16.7 (was 1.7 / 11.2 / 23.2).
+- Remaining: ribs, sternum and spine disagree with the skin by 15-25 mm in the thorax (partly real: skin over the shoulder follows the arms, not the ribs); the rig's own pelvis and root motion are not retargeted.
+
+## Motion gallery (site/)
+- `experiments/make_gallery.py` retargets, renders (rig + CT with the original motion beside it), encodes and indexes Rocketbox clips; `site/index.html` is the player page (data from `site/data/motions.json`).
+
 ## Mushy CT soft tissue: diagnosis and first fix
 - Bones render fine; the CT reformats tore (face), smeared (torso) and left black gaps beside bones. Measured instead of guessed:
   1. The soft-tissue warp interpolates landmarks from three sources (skin, bones, organs), and they CONTRADICT each other. Skin within 20 mm of a bone, moved with that bone's rigid motion,

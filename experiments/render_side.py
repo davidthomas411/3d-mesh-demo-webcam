@@ -14,7 +14,7 @@ def side_panels(version, posed, skin, centre, x_mid, PW=int(os.environ.get("PW",
     c, (y0, y1) = CFG["c"], CFG["y"]
     fld = W.field(posed, skin, structures=(version != "V0"))
     region = (np.array([c[0] - 260, y0, c[2] - 560.0]), np.array([c[0] + 260, y1, c[2] + 220.0]))
-    vol, bone, axes, st = W.warped_volume(fld, step=2.0, region=region, soft_bone=True)
+    vol, bone, axes, st = W.warped_volume(fld, step=float(os.environ.get("CTW_STEP", 2.0)), region=region, soft_bone=True)
     L = rr.radiograph(vol, bone, 0, st)                                   # sum over x -> (y, z); row 0 = head, column 0 = front (-z)
     u8 = rr.unsharp(rr.window(L, 0.0, 20.0, 0.75), 2.2, 1.0)
     lat = Image.fromarray(u8).convert("RGB").resize((PW, int(u8.shape[0] * PW / u8.shape[1])), Image.BICUBIC)

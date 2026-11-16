@@ -1,0 +1,12 @@
+[
+ {
+  "id": "f-gestic-shrug-01",
+  "title": "Shrug",
+  "blurb": "A conversational shrug: shoulders up, head tilted, palms out.",
+  "frames": 15,
+  "fps": 7.5,
+  "seconds": 2.0,
+  "direction_error_deg": 0.3,
+  "source_url": "https://huggingface.co/datasets/codepawl/rocketbox-motions-glb/tree/main/skeleton/f-gestic-shrug-01"
+ }
+]
