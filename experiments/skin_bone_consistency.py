@@ -21,12 +21,11 @@ if __name__ == "__main__":
     skin = bv.SESS.run(None, {"mhr_params": P[int(sys.argv[2])][None].astype(np.float32), "shape_params": np.zeros((1, 45), np.float32)})[1][0].astype(float)
     posed = bv.posed_for("V4", W.atlas, skin, bv.PS)
     s_w, R_w, _ = W.W
-    Ys = W.skin_ct + (skin[W.skin_nn] - W.mhr_rest[W.skin_nn]) @ R_w / s_w
     names = [n for n in W.names if ab.is_bone(n) and not n.startswith(("humerus", "scapula", "clavicula", "femur"))]
     Xall = np.vstack([W.v_ct[n] for n in names]); own = np.concatenate([[k] * len(W.v_ct[n]) for k, n in enumerate(names)])
     d, i = cKDTree(Xall).query(W.skin_ct); near = d < 20
-    for label, fn in (("bone motion via the global registration W (new)", lambda n: W.bone_ct_positions(n, posed[n])),
-                      ("bone motion via the bone's own similarity (old)", lambda n: old_positions(W, n, posed[n]))):
+    for label, rt in (("skin carried by its LOCAL rotation (new)", True), ("skin carried by displacement only (old)", False)):
+        Ys = W.skin_targets(skin, {}, 0.0, rt); fn = lambda n: W.bone_ct_positions(n, posed[n])
         res = np.full(len(Ys), np.nan)
         for k, n in enumerate(names):
             m = near & (own[i] == k)

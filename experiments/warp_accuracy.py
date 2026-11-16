@@ -26,12 +26,17 @@ if __name__ == "__main__":
         am = float(m.split("@")[1]) if "@" in m else 0.0; mm = m.split("@")[0]
         fld = W.field(posed, skin, method=mm.replace("-nosoft", ""), skin_half=True, soft="-nosoft" not in mm, attach_mm=am)
         errs = {}
-        s_w, R_w, _ = W.W
+        s_w, R_w, t_w = W.W
+        names_ = [n for n in W.names if n in posed and n in W.by]
+        Rall = W.local_rotations(np.vstack([W.by[n]["pos"] for n in names_]), np.vstack([posed[n] for n in names_])); Rl, o_ = {}, 0
+        for n in names_:
+            Rl[n] = Rall[o_:o_ + len(W.by[n]["pos"])]; o_ += len(W.by[n]["pos"])
         for n in W.names:
             if ab.is_bone(n) or n in ("brain",) or n.startswith(("humerus", "scapula", "clavicula", "femur")) or n not in posed:
                 continue
             xs = W.v_ct[n][1::2]; p = posed[n][1::2]; rest = W.by[n]["pos"][1::2]
-            ys = xs + ((p - rest) @ R_w) / s_w
+            q = (xs @ R_w.T) * s_w + t_w
+            ys = ((p + np.einsum("nij,nj->ni", Rl[n][1::2], q - rest) - t_w) @ R_w) / s_w     # same carry as the field's landmarks
             errs[n] = np.linalg.norm(src_at(fld, ys) - xs, axis=1)
         s_w, R_w, _ = W.W
         xs_ = W.skin_ct[1::2]; ys_ = W.skin_targets(skin, fld["bones"], am)[1::2]; es = np.linalg.norm(src_at(fld, ys_) - xs_, axis=1)
