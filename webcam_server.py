@@ -261,9 +261,11 @@ def index():
     return send_from_directory(".", "webcam.html")
 
 
-@app.get("/anatomy/anatomy.js")
-def anatomy_js():
-    return send_from_directory("anatomy", "anatomy.js", mimetype="text/javascript")
+@app.get("/anatomy/<name>")
+def anatomy_js(name):
+    if name not in ("anatomy.js", "stream.js"):
+        return Response("Not found", status=404)
+    return send_from_directory("anatomy", name, mimetype="text/javascript")
 
 
 @app.get("/atlas/<name>")

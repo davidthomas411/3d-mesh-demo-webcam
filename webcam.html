@@ -458,6 +458,7 @@
 
     import { loadAtlas, AnatomyLayer, DISCLAIMER } from
       "/anatomy/anatomy.js";
+    import { RigStream } from "/anatomy/stream.js";
 
     const button = document.getElementById("start");
     const stopButton = document.getElementById("stop");
@@ -561,10 +562,29 @@
       }
     }
 
-    function anatomyUpdate(vertexValues) {
-      if (anatomyLayer && anatomyLayer.group.visible) {
+    /*
+     * The estimator delivers a mesh at ~10-13 Hz, 100-170 ms after capture. With
+     * "Predict between updates" on, new meshes go into a RigStream (with their
+     * capture time) and the rig is recomputed every display frame from the mesh
+     * extrapolated to the present (capped at 120 ms). Off: the rig updates only
+     * when a mesh arrives, as before. See anatomy/stream.js and tests/js/stream_sim.mjs.
+     */
+    const rigStream = new RigStream(18439 * 3, { horizonMs: 120, gain: 1.0, smoothMs: 0 });
+    let predictRig = true;
+
+    function anatomyUpdate(vertexValues, captureTimestampMs) {
+      if (!anatomyLayer || !anatomyLayer.group.visible) return;
+      if (predictRig && Number.isFinite(captureTimestampMs)) {
+        rigStream.push(vertexValues, captureTimestampMs);
+      } else {
         anatomyLayer.update(vertexValues);
       }
+    }
+
+    function anatomyTick() {
+      if (!predictRig || !anatomyLayer || !anatomyLayer.group.visible) return;
+      const sample = rigStream.sample(performance.now());
+      if (sample) anatomyLayer.update(sample);
     }
 
     function buildAnatomyPanel(atlas) {
@@ -575,6 +595,8 @@
         '<label class="anaRow"><input id="anaEnable" type="checkbox">' +
         '<span>Show ' + atlas.structures.length +
         ' TotalSegmentator structures</span></label>' +
+        '<label class="anaRow"><input id="anaPredict" type="checkbox" checked>' +
+        '<span>Predict between updates (low latency)</span></label>' +
         '<label class="anaRow">Anatomy opacity ' +
         '<input id="anaOpacity" type="range" min="0.2" max="1" step="0.05" value="0.9"></label>' +
         '<label class="anaRow">Skin opacity ' +
@@ -609,6 +631,9 @@
         skinMaterial.depthWrite = !(on && a < 1);
         skinMaterial.needsUpdate = true;
       };
+      panel.querySelector("#anaPredict").addEventListener("change", (e) => {
+        predictRig = e.target.checked;
+      });
       panel.querySelector("#anaEnable").addEventListener("change", (e) => {
         anatomyLayer.setEnabled(e.target.checked);
         applySkin();
@@ -758,6 +783,7 @@
 
       function animate() {
         requestAnimationFrame(animate);
+        anatomyTick();
         controls.update();
         renderer.render(scene, camera);
       }
@@ -2184,7 +2210,7 @@
       updateOverallTrackingStatus();
     }
 
-    function updateMesh(vertexValues, predCamT) {
+    function updateMesh(vertexValues, predCamT, captureTimestampMs) {
       const geometry = bodyMesh.geometry;
       const positions = geometry.attributes.position.array;
 
@@ -2269,7 +2295,7 @@
         controls.update();
       }
 
-      anatomyUpdate(vertexValues);
+      anatomyUpdate(vertexValues, captureTimestampMs);
       updateLiveMeshAlignmentColor(vertexValues);
     }
 
@@ -2603,7 +2629,7 @@
 
           const renderStartMs = performance.now();
 
-          updateMesh(vertices, metadata.pred_cam_t);
+          updateMesh(vertices, metadata.pred_cam_t, Number(metadata.capture_timestamp_ms));
           updateOverlay(
             vertices,
             metadata.pred_cam_t,
