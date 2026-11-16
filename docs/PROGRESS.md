@@ -7,6 +7,7 @@ branch (the mobile repo carries the shipped atlas and `anatomy.js`). Evidence an
 - `tools/mri_subject.py` converts a subject of the TotalSegmentator MRI dataset (Zenodo 11367005, CC BY-NC-SA 2.0) into the CT-shaped folder `anatomy.atlas_build` reads. Subject s0175 (head to mid-thigh, 53 structures) built an atlas (`atlas_build`, `ct_correspondence`) and `experiments/render_mri.py` warps the MRI with the existing CT warper (`docs/mri_rig_demo.png`).
 - The MRI label set has no ribs, sternum, clavicle, scapula, skull or per-level vertebrae. Spine levels are cut between the real disc components and numbered up from L5 (an assumption). The 'skull' is a 6 mm shell of the brain surface used as the rigid head body (not bone). Rig joints present: hips only; no shoulder/costovertebral joints.
 - Stray label islands (a femur label in the chest) are removed by keeping the largest component per mask. Coronal reformat shows stitching seams between MRI stations (the source is multi-station).
+- Gallery: all 8 Rocketbox clips rendered on the MRI (`experiments/make_gallery_mri.py`), shown in a separate MRI section of docs/index.html (`modality: mri` in motions.json).
 - `ct_correspondence.py` hardcodes the 140000-triangle budget; build MRI atlases with the default `--tris`.
 
 ## Full kinematic tree (in progress)
