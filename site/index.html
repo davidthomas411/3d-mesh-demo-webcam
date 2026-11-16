@@ -38,12 +38,12 @@ h2 { font-size: 20px; }
 .item:hover { border-color: var(--muted); }
 .item[aria-current="true"] { border-color: var(--accent); box-shadow: inset 3px 0 0 var(--accent); }
 .item:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-.item img { width: 96px; height: 64px; object-fit: cover; object-position: 50% 0; border-radius: 3px; background: var(--screen); }
+.item img { width: 96px; height: 40px; object-fit: contain; border-radius: 3px; background: var(--screen); }
 .item strong { font-family: var(--display); font-size: 15px; display: block; }
 .item span { font-family: var(--mono); font-size: 11px; color: var(--muted); }
 .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 14px; }
 .card { background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 14px; display: flex; flex-direction: column; gap: 6px; min-width: 0; }
-.card img { width: 100%; height: 150px; object-fit: cover; object-position: 50% 0; border-radius: 3px; background: var(--screen); }
+.card img { width: 100%; height: auto; aspect-ratio: 3 / 1; object-fit: contain; border-radius: 3px; background: var(--screen); }
 .card h3 { font-size: 16px; }
 .card p { margin: 0; color: var(--muted); font-size: 14px; }
 .card a { color: var(--accent); }
@@ -93,7 +93,7 @@ a { color: var(--accent); }
     </ul>
     <div class="chips"><span class="chip">motion: Microsoft Rocketbox, MIT</span><span class="chip">CT: TotalSegmentator dataset v2.0.1, CC BY 4.0</span><span class="chip">body model: MHR</span></div>
   </section>
-  <footer>Each clip plays 5 captured frames per second, so it runs slower than the original motion. Frames are rendered at reduced resolution.</footer>
+  <footer>Each clip is 15 or 16 frames spread evenly over the capture and played at 5 frames per second, so short captures run slower than real time and long ones run faster. Frames are rendered at reduced resolution.</footer>
 </div>
 <script>
 (function () {
@@ -103,7 +103,7 @@ a { color: var(--accent); }
     var d = data[i]; if (!d) return;
     player.src = "media/" + d.id + ".mp4"; player.poster = "media/" + d.id + ".jpg"; player.play().catch(function () {});
     t.textContent = d.title; b.textContent = d.blurb;
-    m.innerHTML = ""; [d.seconds + " s of capture", d.frames + " frames", d.direction_error_deg + " deg mean fit error"].forEach(function (x) { var s = document.createElement("span"); s.textContent = x; m.appendChild(s); });
+    m.innerHTML = ""; [d.seconds + " s of capture", d.frames + " frames, plays at " + (d.seconds / (d.frames / 5)).toFixed(1) + "x real time", d.direction_error_deg + " deg mean fit error"].forEach(function (x) { var s = document.createElement("span"); s.textContent = x; m.appendChild(s); });
     items.forEach(function (el, k) { el.setAttribute("aria-current", k === i ? "true" : "false"); });
     if (push) { try { history.replaceState(null, "", "#" + d.id); } catch (e) {} }
   }

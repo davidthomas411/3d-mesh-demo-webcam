@@ -57,3 +57,6 @@ Skull hole: the couch/arm removal mask was cutting 2945 skull voxels (1.4%) at t
 Original motion next to the rig: `tools/rocketbox_original_panel.py AVATAR_ENGINE.glb CLIP_FRAMES_DIR OUT_DIR` skins the Rocketbox avatar (`engine/<clip>/<clip>.glb`) with its own animation and draws the Bip01
 skeleton over it in front and side views, pasted left of the rig/CT frames (same frame times, same axes). The first front/side figures (`docs/rig_*.png`) and the first version of this panel drew the
 front view mirrored (person-left on the image left); fixed so a viewer facing the person sees person-left on the right, matching the radiograph panels.
+
+Gallery: `site/` is a static page (`index.html`, `data/motions.json`, `media/*.mp4|jpg`) showing eight Rocketbox motions with the original beside the rig + CT render, built by
+`experiments/make_gallery.py`. It can be served from any static host (for GitHub Pages: publish `site/`).

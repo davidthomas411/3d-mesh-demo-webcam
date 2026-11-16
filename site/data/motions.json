@@ -8,5 +8,75 @@
   "seconds": 2.0,
   "direction_error_deg": 0.3,
   "source_url": "https://huggingface.co/datasets/codepawl/rocketbox-motions-glb/tree/main/skeleton/f-gestic-shrug-01"
+ },
+ {
+  "id": "f-idle-look-around-01",
+  "title": "Look around",
+  "blurb": "The head turns well past 90 degrees each way: the hardest test of the neck and skull.",
+  "frames": 16,
+  "fps": 3.3333333333333335,
+  "seconds": 4.8,
+  "direction_error_deg": 0.9,
+  "source_url": "https://huggingface.co/datasets/codepawl/rocketbox-motions-glb/tree/main/skeleton/f-idle-look-around-01"
+ },
+ {
+  "id": "f-idle-stretch-arms-01",
+  "title": "Stretch the arms",
+  "blurb": "Both arms reach up and back: shoulder girdle, scapulae and upper spine.",
+  "frames": 16,
+  "fps": 2.142857142857143,
+  "seconds": 7.5,
+  "direction_error_deg": 0.7,
+  "source_url": "https://huggingface.co/datasets/codepawl/rocketbox-motions-glb/tree/main/skeleton/f-idle-stretch-arms-01"
+ },
+ {
+  "id": "f-cheer-01",
+  "title": "Cheer",
+  "blurb": "Arms thrown up with a lean: large shoulder elevation and thoracic extension.",
+  "frames": 16,
+  "fps": 1.0344827586206897,
+  "seconds": 15.5,
+  "direction_error_deg": 0.6,
+  "source_url": "https://huggingface.co/datasets/codepawl/rocketbox-motions-glb/tree/main/skeleton/f-cheer-01"
+ },
+ {
+  "id": "f-claphands-01",
+  "title": "Clap",
+  "blurb": "Hands brought together in front of the chest: scapular protraction.",
+  "frames": 16,
+  "fps": 1.0,
+  "seconds": 16.0,
+  "direction_error_deg": 0.4,
+  "source_url": "https://huggingface.co/datasets/codepawl/rocketbox-motions-glb/tree/main/skeleton/f-claphands-01"
+ },
+ {
+  "id": "f-drink-drinking",
+  "title": "Drink",
+  "blurb": "One arm lifts a cup to the mouth and the head tips back.",
+  "frames": 16,
+  "fps": 1.3043478260869565,
+  "seconds": 12.3,
+  "direction_error_deg": 0.6,
+  "source_url": "https://huggingface.co/datasets/codepawl/rocketbox-motions-glb/tree/main/skeleton/f-drink-drinking"
+ },
+ {
+  "id": "f-gestic-presentation-left-01",
+  "title": "Present to the left",
+  "blurb": "An open-handed gesture with a turn of the trunk and head.",
+  "frames": 16,
+  "fps": 0.967741935483871,
+  "seconds": 16.5,
+  "direction_error_deg": 1.5,
+  "source_url": "https://huggingface.co/datasets/codepawl/rocketbox-motions-glb/tree/main/skeleton/f-gestic-presentation-left-01"
+ },
+ {
+  "id": "f-idle-shake-arms-01",
+  "title": "Shake out the arms",
+  "blurb": "Loose, fast arm shaking with a bouncing trunk.",
+  "frames": 16,
+  "fps": 3.3333333333333335,
+  "seconds": 4.8,
+  "direction_error_deg": 0.3,
+  "source_url": "https://huggingface.co/datasets/codepawl/rocketbox-motions-glb/tree/main/skeleton/f-idle-shake-arms-01"
  }
 ]
