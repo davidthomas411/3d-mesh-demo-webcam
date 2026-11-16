@@ -3,6 +3,12 @@
 Newest first. Each entry says what changed, what was measured, and what is still wrong. Commit hashes are in this repo's `claude/femto-bolt-mesh-anatomy-x2x9wl`
 branch (the mobile repo carries the shipped atlas and `anatomy.js`). Evidence and numbers live in `docs/BENCHMARK.md`; the plan is `docs/PATIENT_RIG_PLAN.md`.
 
+## 2026-11-16 MRI: the same rig drives a TotalSegmentator-MRI subject
+- `tools/mri_subject.py` converts a subject of the TotalSegmentator MRI dataset (Zenodo 11367005, CC BY-NC-SA 2.0) into the CT-shaped folder `anatomy.atlas_build` reads. Subject s0175 (head to mid-thigh, 53 structures) built an atlas (`atlas_build`, `ct_correspondence`) and `experiments/render_mri.py` warps the MRI with the existing CT warper (`docs/mri_rig_demo.png`).
+- The MRI label set has no ribs, sternum, clavicle, scapula, skull or per-level vertebrae. Spine levels are cut between the real disc components and numbered up from L5 (an assumption). The 'skull' is a 6 mm shell of the brain surface used as the rigid head body (not bone). Rig joints present: hips only; no shoulder/costovertebral joints.
+- Stray label islands (a femur label in the chest) are removed by keeping the largest component per mask. Coronal reformat shows stitching seams between MRI stations (the source is multi-station).
+- `ct_correspondence.py` hardcodes the 140000-triangle budget; build MRI atlases with the default `--tris`.
+
 ## Full kinematic tree (in progress)
 Goal: joint coordinates (angles/translations inside limits) are the unknowns solved against camera or image data, bones are connected by construction,
 plus a penetration-resolving step; `experiments/joint_audit.py` is its regression test. Design and status: `docs/KINEMATIC_TREE.md`.
