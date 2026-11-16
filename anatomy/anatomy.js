@@ -245,10 +245,35 @@ const mkFrame = (R, J, pJ) => ({ q: matToQuat(R), R, c: J, cp: pJ });
 // ---------------------------------------------------------------------------------------------
 // Kinematics (no three.js): segment frames -> spine chain -> joint frames -> soft-tissue frames.
 // breath: 0 (end-expiration) .. 1 (end-inspiration); depth: 1 = quiet breathing.
-export function computeFrames(atlas, skin, breath = 0, depth = 1) {
+// Physiologic distribution of trunk motion along the vertebrae (spine = "physio"; mirrors physio_cumulative in anatomy/runtime.py).
+// Per-level axial rotation (Fujimori 2012 thoracic; lumbar chosen inside Ochia 2006 / Pearcy 1984 ranges), lateral bending and flexion shares: see runtime.py for sources.
+const PH_AXIAL = { L5: .8, L4: 1.6, L3: 2.0, L2: 2.0, L1: 1.8, T12: .5, T11: 1.3, T10: 2.6, T9: 2.7, T8: 2.5, T7: 2.3, T6: 1.9, T5: 1.8, T4: 1.6, T3: 1.4, T2: 1.6, T1: 1.2 };
+const PH_TW = {}; for (let k = 1; k <= 12; k++) PH_TW["T" + k] = k <= 4 ? 0.8 : k <= 8 ? 1.0 : 1.3;
+const PH_TWSUM = Object.values(PH_TW).reduce((a, b) => a + b, 0);
+const PH_LAT = {}, PH_FLX = {};
+[["L5", 3], ["L4", 6], ["L3", 10], ["L2", 10], ["L1", 10]].forEach(([n, w]) => { PH_LAT[n] = 17.35 * w / 39.0; PH_FLX[n] = 55.4 / 5; });
+Object.entries(PH_TW).forEach(([n, w]) => { PH_LAT[n] = 25.5 * w / PH_TWSUM; PH_FLX[n] = 19.9 * w / PH_TWSUM; });
+function physioCumulative(chain) {
+  const names = chain.filter(n => (n.replace("vertebrae_", "") in PH_AXIAL)), tabs = [PH_FLX, PH_AXIAL, PH_LAT];
+  const tot = tabs.map(t => names.reduce((a, n) => a + t[n.replace("vertebrae_", "")], 0)), run = [0, 0, 0], out = {};
+  for (const n of names) { const k = n.replace("vertebrae_", ""); tabs.forEach((t, a) => { run[a] += t[k]; }); out[n] = run.map((v, a) => v / tot[a]); }
+  return out;
+}
+
+export function computeFrames(atlas, skin, breath = 0, depth = 1, spine = "skin", supportStride = 1) {
   const SEG = Object.fromEntries(atlas.segments.map((g, i) => [g.name, i]));
   const T = atlas.segments.map(g => {
-    const r = weightedRigid(g.rest, g.idx, null, skin);
+    let rest = g.rest, idx = g.idx;
+    if (supportStride > 1) {                                     // fit each segment on every k-th support vertex: ~k times faster, sub-millimetre change
+      const key = "_s" + supportStride;
+      if (!g[key]) {
+        const m = Math.ceil(g.idx.length / supportStride), r2 = new Float32Array(m * 3), i2 = new Uint32Array(m);
+        for (let a = 0; a < m; a++) { const b = a * supportStride; i2[a] = g.idx[b]; r2[a * 3] = g.rest[b * 3]; r2[a * 3 + 1] = g.rest[b * 3 + 1]; r2[a * 3 + 2] = g.rest[b * 3 + 2]; }
+        g[key] = { rest: r2, idx: i2 };
+      }
+      rest = g[key].rest; idx = g[key].idx;
+    }
+    const r = weightedRigid(rest, idx, null, skin);
     return { q: r.q, R: r.R, c: r.cs, cp: r.cd };
   });
   const chain = atlas.chain, n = chain.length, cf = [];
@@ -260,6 +285,15 @@ export function computeFrames(atlas, skin, breath = 0, depth = 1) {
       const p = [0, 0, 0];
       for (const [f, w] of wf) { const m = mapPoint(f, s.centroid); for (let k = 0; k < 3; k++) p[k] += w * m[k]; }
       sp.push(p);
+    }
+    if (spine === "physio") {                                    // share the measured pelvis->thorax rotation along the vertebrae by in-vivo per-level data
+      const Rp = T[SEG.pelvis].R, Rt = T[SEG.thorax_up].R, rv = matToRotvec(mul3(tr3(Rp), Rt));
+      const cum = atlas._physio || (atlas._physio = physioCumulative(chain));
+      for (let i = 0; i < n; i++) {
+        const fr = cum[chain[i]]; if (!fr) continue;
+        const w = [fr[0] * rv[0], fr[1] * rv[1], fr[2] * rv[2]];
+        q[i] = matToQuat(mul3(Rp, rodrigues(w, Math.hypot(...w))));
+      }
     }
     const cp = [sp[0].slice()];
     for (let i = 1; i < n; i++) {
@@ -401,7 +435,8 @@ export function transformStructure(s, fr, P, N, rn, f = 1) {
 export class AnatomyLayer {
   // flipYZ: write display positions as (x, -y, -z) (mobile page). Leave false to keep the raw MHR
   // frame as a child of a mesh that already carries the flip (webcam page's bodyMesh).
-  constructor(THREE, atlas, { flipYZ = false, opacity = 0.9 } = {}) {
+  constructor(THREE, atlas, { flipYZ = false, opacity = 0.9, spine = "physio", supportStride = 1 } = {}) {
+    this.spine = spine; this.supportStride = supportStride;
     this.THREE = THREE;
     this.atlas = atlas;
     this.flipYZ = flipYZ;
@@ -448,7 +483,7 @@ export class AnatomyLayer {
   // breath: 0..1 respiratory state (ribs, sternum and the structures they carry), depth: 1 = quiet breathing.
   update(skin, breath = 0, depth = 1) {
     if (!this.group.visible || !skin) return;
-    const fr = computeFrames(this.atlas, skin, breath, depth), f = this.flipYZ ? -1 : 1;
+    const fr = computeFrames(this.atlas, skin, breath, depth, this.spine, this.supportStride), f = this.flipYZ ? -1 : 1;
     for (const e of this.entries) {
       if (!e.mesh.visible) continue;
       const g = e.mesh.geometry;

@@ -132,6 +132,20 @@ def test_js_runtime_matches_numpy_with_joints_and_breathing(atlas, tmp_path):
     assert r.returncode == 0, r.stdout + r.stderr
 
 
+def test_js_runtime_matches_numpy_with_the_physiologic_spine(atlas, tmp_path):
+    if not shutil.which("node"):
+        pytest.skip("node not installed")
+    skin = skin_with(atlas, BIG)
+    out = atlas.pose(skin, breath=0.5, depth=1.0, spine="physio")
+    exp = np.concatenate([out[s["name"]].reshape(-1) for s in atlas.structures]).astype("<f4")
+    sk, ep = tmp_path / "skin.bin", tmp_path / "exp.bin"
+    skin.astype("<f4").tofile(sk); exp.tofile(ep)
+    case = tmp_path / "case.json"
+    case.write_text(json.dumps({"skin": str(sk), "breath": 0.5, "depth": 1.0, "spine": "physio", "expected": str(ep)}))
+    r = subprocess.run(["node", os.path.join(os.path.dirname(__file__), "js", "parity_pose.mjs"), ATLAS, str(case)], capture_output=True, text=True)
+    assert r.returncode == 0, r.stdout + r.stderr
+
+
 def _head_in_socket(atlas, posed, side):
     from anatomy.atlas_build import joint_head_center
     by = {s["name"]: s["pos"] for s in atlas.structures}
