@@ -263,7 +263,7 @@ def index():
 
 @app.get("/anatomy/<name>")
 def anatomy_js(name):
-    if name not in ("anatomy.js", "stream.js"):
+    if name not in ("anatomy.js", "stream.js", "xray.js"):
         return Response("Not found", status=404)
     return send_from_directory("anatomy", name, mimetype="text/javascript")
 

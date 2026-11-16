@@ -459,6 +459,7 @@
     import { loadAtlas, AnatomyLayer, DISCLAIMER } from
       "/anatomy/anatomy.js";
     import { RigStream } from "/anatomy/stream.js";
+    import { XrayView } from "/anatomy/xray.js";
 
     const button = document.getElementById("start");
     const stopButton = document.getElementById("stop");
@@ -573,7 +574,7 @@
     let predictRig = true;
 
     function anatomyUpdate(vertexValues, captureTimestampMs) {
-      if (!anatomyLayer || !anatomyLayer.group.visible) return;
+      if (!anatomyLayer || !(anatomyLayer.group.visible || xrayOn)) return;
       if (predictRig && Number.isFinite(captureTimestampMs)) {
         rigStream.push(vertexValues, captureTimestampMs);
       } else {
@@ -581,8 +582,25 @@
       }
     }
 
+    /*
+     * Live radiograph of the posed rig (AP + lateral), drawn into the corner of
+     * the canvas every frame from the same bone meshes the rig just posed. Off by default.
+     */
+    let xrayView = null;
+    let xrayOn = false;
+
+    function xrayDraw() {
+      if (!xrayOn || !xrayView || !renderer) return;
+      const size = renderer.getSize(new THREE.Vector2());
+      const s = Math.round(Math.min(300, size.y / 2.4));
+      const centre = [0, -1.3, 0];
+      xrayView.render("ap", centre, { x: size.x - 2 * s - 24, y: 12, w: s, h: s });
+      xrayView.render("lateral", centre, { x: size.x - s - 12, y: 12, w: s, h: s });
+      renderer.setViewport(0, 0, size.x, size.y);
+    }
+
     function anatomyTick() {
-      if (!predictRig || !anatomyLayer || !anatomyLayer.group.visible) return;
+      if (!predictRig || !anatomyLayer || !(anatomyLayer.group.visible || xrayOn)) return;
       const sample = rigStream.sample(performance.now());
       if (sample) anatomyLayer.update(sample);
     }
@@ -597,6 +615,8 @@
         ' TotalSegmentator structures</span></label>' +
         '<label class="anaRow"><input id="anaPredict" type="checkbox" checked>' +
         '<span>Predict between updates (low latency)</span></label>' +
+        '<label class="anaRow"><input id="anaXray" type="checkbox">' +
+        '<span>Live X-ray (AP + lateral)</span></label>' +
         '<label class="anaRow">Anatomy opacity ' +
         '<input id="anaOpacity" type="range" min="0.2" max="1" step="0.05" value="0.9"></label>' +
         '<label class="anaRow">Skin opacity ' +
@@ -631,6 +651,16 @@
         skinMaterial.depthWrite = !(on && a < 1);
         skinMaterial.needsUpdate = true;
       };
+      panel.querySelector("#anaXray").addEventListener("change", (e) => {
+        try {
+          if (e.target.checked && !xrayView) xrayView = new XrayView(THREE, renderer, anatomyLayer, { size: 512 });
+          xrayOn = e.target.checked;
+        } catch (error) {
+          console.warn("X-ray view unavailable:", error);
+          e.target.checked = false;
+          xrayOn = false;
+        }
+      });
       panel.querySelector("#anaPredict").addEventListener("change", (e) => {
         predictRig = e.target.checked;
       });
@@ -786,6 +816,7 @@
         anatomyTick();
         controls.update();
         renderer.render(scene, camera);
+        xrayDraw();
       }
 
       animate();

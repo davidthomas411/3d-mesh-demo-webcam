@@ -482,10 +482,10 @@ export class AnatomyLayer {
   // skin: Float32Array(V*3) live MHR vertices in the raw frame (metres), same layout as the mesh.
   // breath: 0..1 respiratory state (ribs, sternum and the structures they carry), depth: 1 = quiet breathing.
   update(skin, breath = 0, depth = 1) {
-    if (!this.group.visible || !skin) return;
+    if ((!this.group.visible && !this.xrayActive) || !skin) return;
     const fr = computeFrames(this.atlas, skin, breath, depth, this.spine, this.supportStride), f = this.flipYZ ? -1 : 1;
     for (const e of this.entries) {
-      if (!e.mesh.visible) continue;
+      if (!e.mesh.visible && !e.forceUpdate) continue;
       const g = e.mesh.geometry;
       transformStructure(e.s, fr, g.attributes.position.array, g.attributes.normal.array, e.restN, f);
       g.attributes.position.needsUpdate = true;
