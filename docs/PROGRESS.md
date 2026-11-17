@@ -6,6 +6,7 @@ branch (the mobile repo carries the shipped atlas and `anatomy.js`). Evidence an
 ## 2026-11-17 Cinematic rendering
 - `tools/cinematic.py`: Monte Carlo volumetric path tracer (numba, CPU): delta-tracked free flight, density/colour transfer function (translucent fat and soft tissue, dense ivory bone, orange contrast vessels), hybrid phase / gradient-surface shading, next-event estimation with ratio-tracked shadows to soft key, fill and rim lights, multiple scattering with Russian roulette, ACES filmic tone map, non-local-means denoise. PET SUV is emission (glowing uptake); MRI replaces the CT transfer function inside the MR box.
 - Stand-alone MRI has no HU, so its bone/organ colour comes from the warped TotalSegmentator labels and intensity only modulates density (stated on the page). Skull stand-in and humeri are left out of the MRI view (they float free).
+- Stills were removed from the Pages site at the user's request (a static image is not a dynamic render): renderer and driver stay in the repo. Dynamic options: GPU path tracer in the browser, or an animated CPU render at reduced quality (~40 s/frame, ~85 min per dataset).
 - `experiments/render_cinematic.py` (warps CT + PET + MRI/labels with the same field; `--auto` picks the most extreme pose), `experiments/add_cinematic.py` (puts stills into docs/media and motions.json). Cost: ~3.5 min per 432x648 still at 128 spp on 4 CPU cores. It is our own implementation, not Siemens' renderer.
 
 ## 2026-11-17 Matched CT + PET + MRI of one patient (STS_012)

@@ -7,8 +7,7 @@
   "fps": 7.5,
   "seconds": 2.0,
   "direction_error_deg": 0.3,
-  "source_url": "https://huggingface.co/datasets/codepawl/rocketbox-motions-glb/tree/main/skeleton/f-gestic-shrug-01",
-  "cine": "media/cine-f-gestic-shrug-01.jpg"
+  "source_url": "https://huggingface.co/datasets/codepawl/rocketbox-motions-glb/tree/main/skeleton/f-gestic-shrug-01"
  },
  {
   "id": "f-idle-look-around-01",
@@ -18,8 +17,7 @@
   "fps": 3.3333333333333335,
   "seconds": 4.8,
   "direction_error_deg": 0.9,
-  "source_url": "https://huggingface.co/datasets/codepawl/rocketbox-motions-glb/tree/main/skeleton/f-idle-look-around-01",
-  "cine": "media/cine-f-idle-look-around-01.jpg"
+  "source_url": "https://huggingface.co/datasets/codepawl/rocketbox-motions-glb/tree/main/skeleton/f-idle-look-around-01"
  },
  {
   "id": "f-idle-stretch-arms-01",
@@ -29,8 +27,7 @@
   "fps": 2.142857142857143,
   "seconds": 7.5,
   "direction_error_deg": 0.7,
-  "source_url": "https://huggingface.co/datasets/codepawl/rocketbox-motions-glb/tree/main/skeleton/f-idle-stretch-arms-01",
-  "cine": "media/cine-f-idle-stretch-arms-01.jpg"
+  "source_url": "https://huggingface.co/datasets/codepawl/rocketbox-motions-glb/tree/main/skeleton/f-idle-stretch-arms-01"
  },
  {
   "id": "f-cheer-01",
@@ -40,8 +37,7 @@
   "fps": 1.0344827586206897,
   "seconds": 15.5,
   "direction_error_deg": 0.6,
-  "source_url": "https://huggingface.co/datasets/codepawl/rocketbox-motions-glb/tree/main/skeleton/f-cheer-01",
-  "cine": "media/cine-f-cheer-01.jpg"
+  "source_url": "https://huggingface.co/datasets/codepawl/rocketbox-motions-glb/tree/main/skeleton/f-cheer-01"
  },
  {
   "id": "f-claphands-01",
@@ -51,8 +47,7 @@
   "fps": 1.0,
   "seconds": 16.0,
   "direction_error_deg": 0.4,
-  "source_url": "https://huggingface.co/datasets/codepawl/rocketbox-motions-glb/tree/main/skeleton/f-claphands-01",
-  "cine": "media/cine-f-claphands-01.jpg"
+  "source_url": "https://huggingface.co/datasets/codepawl/rocketbox-motions-glb/tree/main/skeleton/f-claphands-01"
  },
  {
   "id": "f-drink-drinking",
@@ -62,8 +57,7 @@
   "fps": 1.3043478260869565,
   "seconds": 12.3,
   "direction_error_deg": 0.6,
-  "source_url": "https://huggingface.co/datasets/codepawl/rocketbox-motions-glb/tree/main/skeleton/f-drink-drinking",
-  "cine": "media/cine-f-drink-drinking.jpg"
+  "source_url": "https://huggingface.co/datasets/codepawl/rocketbox-motions-glb/tree/main/skeleton/f-drink-drinking"
  },
  {
   "id": "f-gestic-presentation-left-01",
@@ -73,8 +67,7 @@
   "fps": 0.967741935483871,
   "seconds": 16.5,
   "direction_error_deg": 1.5,
-  "source_url": "https://huggingface.co/datasets/codepawl/rocketbox-motions-glb/tree/main/skeleton/f-gestic-presentation-left-01",
-  "cine": "media/cine-f-gestic-presentation-left-01.jpg"
+  "source_url": "https://huggingface.co/datasets/codepawl/rocketbox-motions-glb/tree/main/skeleton/f-gestic-presentation-left-01"
  },
  {
   "id": "f-idle-shake-arms-01",
@@ -84,8 +77,7 @@
   "fps": 3.3333333333333335,
   "seconds": 4.8,
   "direction_error_deg": 0.3,
-  "source_url": "https://huggingface.co/datasets/codepawl/rocketbox-motions-glb/tree/main/skeleton/f-idle-shake-arms-01",
-  "cine": "media/cine-f-idle-shake-arms-01.jpg"
+  "source_url": "https://huggingface.co/datasets/codepawl/rocketbox-motions-glb/tree/main/skeleton/f-idle-shake-arms-01"
  },
  {
   "id": "mri-f-gestic-shrug-01",
@@ -96,8 +88,7 @@
   "seconds": 2.0,
   "direction_error_deg": 0.3,
   "source_url": "https://huggingface.co/datasets/codepawl/rocketbox-motions-glb/tree/main/skeleton/f-gestic-shrug-01",
-  "modality": "mri",
-  "cine": "media/cine-mri-f-gestic-shrug-01.jpg"
+  "modality": "mri"
  },
  {
   "id": "mri-f-idle-look-around-01",
@@ -108,8 +99,7 @@
   "seconds": 4.8,
   "direction_error_deg": 0.9,
   "source_url": "https://huggingface.co/datasets/codepawl/rocketbox-motions-glb/tree/main/skeleton/f-idle-look-around-01",
-  "modality": "mri",
-  "cine": "media/cine-mri-f-idle-look-around-01.jpg"
+  "modality": "mri"
  },
  {
   "id": "mri-f-idle-stretch-arms-01",
@@ -120,8 +110,7 @@
   "seconds": 7.5,
   "direction_error_deg": 0.7,
   "source_url": "https://huggingface.co/datasets/codepawl/rocketbox-motions-glb/tree/main/skeleton/f-idle-stretch-arms-01",
-  "modality": "mri",
-  "cine": "media/cine-mri-f-idle-stretch-arms-01.jpg"
+  "modality": "mri"
  },
  {
   "id": "mri-f-cheer-01",
@@ -132,8 +121,7 @@
   "seconds": 15.5,
   "direction_error_deg": 0.6,
   "source_url": "https://huggingface.co/datasets/codepawl/rocketbox-motions-glb/tree/main/skeleton/f-cheer-01",
-  "modality": "mri",
-  "cine": "media/cine-mri-f-cheer-01.jpg"
+  "modality": "mri"
  },
  {
   "id": "mri-f-claphands-01",
@@ -144,8 +132,7 @@
   "seconds": 16.0,
   "direction_error_deg": 0.4,
   "source_url": "https://huggingface.co/datasets/codepawl/rocketbox-motions-glb/tree/main/skeleton/f-claphands-01",
-  "modality": "mri",
-  "cine": "media/cine-mri-f-claphands-01.jpg"
+  "modality": "mri"
  },
  {
   "id": "mri-f-drink-drinking",
@@ -156,8 +143,7 @@
   "seconds": 12.3,
   "direction_error_deg": 0.6,
   "source_url": "https://huggingface.co/datasets/codepawl/rocketbox-motions-glb/tree/main/skeleton/f-drink-drinking",
-  "modality": "mri",
-  "cine": "media/cine-mri-f-drink-drinking.jpg"
+  "modality": "mri"
  },
  {
   "id": "mri-f-gestic-presentation-left-01",
@@ -168,8 +154,7 @@
   "seconds": 16.5,
   "direction_error_deg": 1.5,
   "source_url": "https://huggingface.co/datasets/codepawl/rocketbox-motions-glb/tree/main/skeleton/f-gestic-presentation-left-01",
-  "modality": "mri",
-  "cine": "media/cine-mri-f-gestic-presentation-left-01.jpg"
+  "modality": "mri"
  },
  {
   "id": "mri-f-idle-shake-arms-01",
@@ -180,8 +165,7 @@
   "seconds": 4.8,
   "direction_error_deg": 0.3,
   "source_url": "https://huggingface.co/datasets/codepawl/rocketbox-motions-glb/tree/main/skeleton/f-idle-shake-arms-01",
-  "modality": "mri",
-  "cine": "media/cine-mri-f-idle-shake-arms-01.jpg"
+  "modality": "mri"
  },
  {
   "id": "petct-f-gestic-shrug-01",
@@ -192,8 +176,7 @@
   "seconds": 2.0,
   "direction_error_deg": 0.3,
   "source_url": "https://huggingface.co/datasets/codepawl/rocketbox-motions-glb/tree/main/skeleton/f-gestic-shrug-01",
-  "modality": "petct",
-  "cine": "media/cine-petct-f-gestic-shrug-01.jpg"
+  "modality": "petct"
  },
  {
   "id": "petct-f-idle-look-around-01",
@@ -204,8 +187,7 @@
   "seconds": 4.8,
   "direction_error_deg": 0.9,
   "source_url": "https://huggingface.co/datasets/codepawl/rocketbox-motions-glb/tree/main/skeleton/f-idle-look-around-01",
-  "modality": "petct",
-  "cine": "media/cine-petct-f-idle-look-around-01.jpg"
+  "modality": "petct"
  },
  {
   "id": "petct-f-idle-stretch-arms-01",
@@ -216,8 +198,7 @@
   "seconds": 7.5,
   "direction_error_deg": 0.7,
   "source_url": "https://huggingface.co/datasets/codepawl/rocketbox-motions-glb/tree/main/skeleton/f-idle-stretch-arms-01",
-  "modality": "petct",
-  "cine": "media/cine-petct-f-idle-stretch-arms-01.jpg"
+  "modality": "petct"
  },
  {
   "id": "petct-f-cheer-01",
@@ -228,8 +209,7 @@
   "seconds": 15.5,
   "direction_error_deg": 0.6,
   "source_url": "https://huggingface.co/datasets/codepawl/rocketbox-motions-glb/tree/main/skeleton/f-cheer-01",
-  "modality": "petct",
-  "cine": "media/cine-petct-f-cheer-01.jpg"
+  "modality": "petct"
  },
  {
   "id": "petct-f-claphands-01",
@@ -240,8 +220,7 @@
   "seconds": 16.0,
   "direction_error_deg": 0.4,
   "source_url": "https://huggingface.co/datasets/codepawl/rocketbox-motions-glb/tree/main/skeleton/f-claphands-01",
-  "modality": "petct",
-  "cine": "media/cine-petct-f-claphands-01.jpg"
+  "modality": "petct"
  },
  {
   "id": "petct-f-drink-drinking",
@@ -252,8 +231,7 @@
   "seconds": 12.3,
   "direction_error_deg": 0.6,
   "source_url": "https://huggingface.co/datasets/codepawl/rocketbox-motions-glb/tree/main/skeleton/f-drink-drinking",
-  "modality": "petct",
-  "cine": "media/cine-petct-f-drink-drinking.jpg"
+  "modality": "petct"
  },
  {
   "id": "petct-f-gestic-presentation-left-01",
@@ -264,8 +242,7 @@
   "seconds": 16.5,
   "direction_error_deg": 1.5,
   "source_url": "https://huggingface.co/datasets/codepawl/rocketbox-motions-glb/tree/main/skeleton/f-gestic-presentation-left-01",
-  "modality": "petct",
-  "cine": "media/cine-petct-f-gestic-presentation-left-01.jpg"
+  "modality": "petct"
  },
  {
   "id": "petct-f-idle-shake-arms-01",
@@ -276,8 +253,7 @@
   "seconds": 4.8,
   "direction_error_deg": 0.3,
   "source_url": "https://huggingface.co/datasets/codepawl/rocketbox-motions-glb/tree/main/skeleton/f-idle-shake-arms-01",
-  "modality": "petct",
-  "cine": "media/cine-petct-f-idle-shake-arms-01.jpg"
+  "modality": "petct"
  },
  {
   "id": "trio-f-gestic-shrug-01",
@@ -288,8 +264,7 @@
   "seconds": 2.0,
   "direction_error_deg": 0.3,
   "source_url": "https://huggingface.co/datasets/codepawl/rocketbox-motions-glb/tree/main/skeleton/f-gestic-shrug-01",
-  "modality": "trio",
-  "cine": "media/cine-trio-f-gestic-shrug-01.jpg"
+  "modality": "trio"
  },
  {
   "id": "trio-f-idle-look-around-01",
@@ -300,8 +275,7 @@
   "seconds": 4.8,
   "direction_error_deg": 0.9,
   "source_url": "https://huggingface.co/datasets/codepawl/rocketbox-motions-glb/tree/main/skeleton/f-idle-look-around-01",
-  "modality": "trio",
-  "cine": "media/cine-trio-f-idle-look-around-01.jpg"
+  "modality": "trio"
  },
  {
   "id": "trio-f-idle-stretch-arms-01",
@@ -312,8 +286,7 @@
   "seconds": 7.5,
   "direction_error_deg": 0.7,
   "source_url": "https://huggingface.co/datasets/codepawl/rocketbox-motions-glb/tree/main/skeleton/f-idle-stretch-arms-01",
-  "modality": "trio",
-  "cine": "media/cine-trio-f-idle-stretch-arms-01.jpg"
+  "modality": "trio"
  },
  {
   "id": "trio-f-cheer-01",
@@ -324,8 +297,7 @@
   "seconds": 15.5,
   "direction_error_deg": 0.6,
   "source_url": "https://huggingface.co/datasets/codepawl/rocketbox-motions-glb/tree/main/skeleton/f-cheer-01",
-  "modality": "trio",
-  "cine": "media/cine-trio-f-cheer-01.jpg"
+  "modality": "trio"
  },
  {
   "id": "trio-f-claphands-01",
@@ -336,8 +308,7 @@
   "seconds": 16.0,
   "direction_error_deg": 0.4,
   "source_url": "https://huggingface.co/datasets/codepawl/rocketbox-motions-glb/tree/main/skeleton/f-claphands-01",
-  "modality": "trio",
-  "cine": "media/cine-trio-f-claphands-01.jpg"
+  "modality": "trio"
  },
  {
   "id": "trio-f-drink-drinking",
@@ -348,8 +319,7 @@
   "seconds": 12.3,
   "direction_error_deg": 0.6,
   "source_url": "https://huggingface.co/datasets/codepawl/rocketbox-motions-glb/tree/main/skeleton/f-drink-drinking",
-  "modality": "trio",
-  "cine": "media/cine-trio-f-drink-drinking.jpg"
+  "modality": "trio"
  },
  {
   "id": "trio-f-gestic-presentation-left-01",
@@ -360,8 +330,7 @@
   "seconds": 16.5,
   "direction_error_deg": 1.5,
   "source_url": "https://huggingface.co/datasets/codepawl/rocketbox-motions-glb/tree/main/skeleton/f-gestic-presentation-left-01",
-  "modality": "trio",
-  "cine": "media/cine-trio-f-gestic-presentation-left-01.jpg"
+  "modality": "trio"
  },
  {
   "id": "trio-f-idle-shake-arms-01",
@@ -372,7 +341,6 @@
   "seconds": 4.8,
   "direction_error_deg": 0.3,
   "source_url": "https://huggingface.co/datasets/codepawl/rocketbox-motions-glb/tree/main/skeleton/f-idle-shake-arms-01",
-  "modality": "trio",
-  "cine": "media/cine-trio-f-idle-shake-arms-01.jpg"
+  "modality": "trio"
  }
 ]
