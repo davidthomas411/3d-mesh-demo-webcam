@@ -354,7 +354,7 @@ def enforce_containment(structs, mhr_v, mhr_f, rounds=4, n_ctrl=500, verbose=Tru
             members_of.setdefault(rig.bone_group(st["name"]), []).append(st)
     for g, members in members_of.items():
         union = np.vstack([m["verts"] for m in members])
-        if g == "head_neck":                            # seat the SKULL; the cervical spine rides with it
+        if g == "head_neck" and any(m["name"] == "skull" for m in members):   # seat the SKULL; the cervical spine rides with it
             sk = next(m for m in members if m["name"] == "skull")
             placed, sc = seat_bone(sk["verts"], mesh, margin_mm=6.0, verbose=verbose)
             s_, R, t = umeyama(sk["verts"], placed, with_scale=True)
@@ -406,9 +406,14 @@ def thorax_ellipsoid(by):
     A = np.hstack([X ** 2, X])                                   # sum a_i x_i^2 + b_i x_i = 1
     coef = np.linalg.lstsq(A, np.ones(len(P)), rcond=None)[0]
     a, b = coef[:3], coef[3:]
-    c = c0 - b / (2 * a)
-    k = 1 + (b ** 2 / (4 * a)).sum()
-    return c, np.sqrt(k / a)
+    with np.errstate(all="ignore"):
+        c = c0 - b / (2 * a)
+        k = 1 + (b ** 2 / (4 * a)).sum()
+        r = np.sqrt(k / a)
+    half = 0.5 * (P.max(0) - P.min(0))
+    if not (np.all(np.isfinite(r)) and np.all(np.isfinite(c)) and np.all(r > 0.5 * half) and np.all(r < 2.0 * half)):
+        c, r = c0, half * 1.05        # truncated or poorly segmented rib cage: bounding-box ellipsoid
+    return c, r
 
 
 def scapulothoracic_patch(by, side, near_m=0.03):

@@ -3,6 +3,13 @@
 Newest first. Each entry says what changed, what was measured, and what is still wrong. Commit hashes are in this repo's `claude/femto-bolt-mesh-anatomy-x2x9wl`
 branch (the mobile repo carries the shipped atlas and `anatomy.js`). Evidence and numbers live in `docs/BENCHMARK.md`; the plan is `docs/PATIENT_RIG_PLAN.md`.
 
+## 2026-11-17 PET/CT: matched CT + FDG PET of one patient driven by the rig
+- autoPET patient PETCT_0beb67c923 (TCIA FDG-PET-CT-Lesions): the PET series was downloaded, converted to SUVbw with `tools/pet_to_ct_grid.py` (decay-corrected dose, weight) and resampled onto the CT grid (scanner registration). TotalSegmentator fast mode (CPU, 3 mm, ~3 min) segmented the CT; `tools/subsample_subject.py` strides the subject by 2 to fit 15 GB; `anatomy.atlas_build` built a full rig (shoulders, 24 costovertebral joints).
+- Build fixes for a scan with no head and a truncated thorax: skull seating is optional; the scapulothoracic ellipsoid falls back to a bounding-box ellipsoid when the least-squares fit is degenerate.
+- `experiments/render_petct.py` warps CT and PET with the same field; all 8 clips are on the Pages site (modality `petct`).
+- Matched CT/PET/MRI: TCIA Soft-tissue-Sarcoma has CT, PET and MR for all 51 patients, with MR resampled to the PET frame ("Aligned_T1toPET_BOX"); next step.
+- MRI brain contrast: brain median signal is ~470 vs liver ~90 in s0175 (head coil gain and station stitching in a stitched whole-body gradient-echo), so a single fixed window saturates the head.
+
 ## 2026-11-16 MRI: the same rig drives a TotalSegmentator-MRI subject
 - `tools/mri_subject.py` converts a subject of the TotalSegmentator MRI dataset (Zenodo 11367005, CC BY-NC-SA 2.0) into the CT-shaped folder `anatomy.atlas_build` reads. Subject s0175 (head to mid-thigh, 53 structures) built an atlas (`atlas_build`, `ct_correspondence`) and `experiments/render_mri.py` warps the MRI with the existing CT warper (`docs/mri_rig_demo.png`).
 - The MRI label set has no ribs, sternum, clavicle, scapula, skull or per-level vertebrae. Spine levels are cut between the real disc components and numbered up from L5 (an assumption). The 'skull' is a 6 mm shell of the brain surface used as the rigid head body (not bone). Rig joints present: hips only; no shoulder/costovertebral joints.
