@@ -532,6 +532,32 @@ The panel under the video shows the imaging views (DRR X-ray and CT slice). The 
 the button in that panel's corner. The left column holds the reference panel and the anatomy panel, each scrolling on its own; the
 runtime parameters start collapsed ("Show parameters").
 
+### Real CT, deformed live (`tools/build_ct_volume.py`, `anatomy/ctvol.js`)
+
+The CT slice in the page can show the atlas subject's real CT, carried by the rig, instead of flat labels. The CT and the volume
+built from it are not in this repository (`atlas/ct_volume.*` is git-ignored, 48 MB); without them the page shows the label slice.
+
+```bash
+pip install remotezip
+python tools/fetch_ts_subject.py s1159 ../ct_data          # 63 MB out of the 23.6 GB TotalSegmentator archive, by range requests
+python tools/build_ct_volume.py ../ct_data/s1159 atlas/atlas atlas/ct_volume
+```
+
+- **Offline, once per CT.** Meshes regenerated from the CT segmentations have the same vertex order as the atlas, so every atlas
+  vertex has a known place in the CT (all 114 structures pair, 44,868 pairs used). A rest-frame point is mapped to the CT by blending
+  the proposals of its 24 nearest pairs (each with its structure's local affine map), and the CT is resampled on a 2.5 mm rest-frame
+  grid as half-float HU.
+- **Live.** The rig moves soft tissue with the two spine-chain frames bracketing its rest height, and the thighs with their own
+  frames. For each pixel the fragment shader solves `y = sum w_k(y) F_k^-1 p` for the rest point `y` by fixed-point iteration (10
+  rounds) and samples the volume there. Checked against a NumPy reference: the rest point is recovered to under 0.5 mm for 95% of
+  points on the sample pose (the neck converges slowest).
+- **Slice plane.** By default the plane is a coronal plane of the rest body carried by the T8 frame, so it stays coronal when the
+  person turns; it can be fixed to the camera instead. Window presets: soft tissue, bone, lung.
+- **Limits.** It is the atlas subject's CT, not the person's. Bones follow the soft-tissue frames in this view, so the shoulder
+  girdle does not articulate. The arms are not in this CT. Skin and subcutaneous tissue are carried by the nearest segmented
+  structures (the skin is not paired yet), and where the skeleton fit moved neighbouring structures differently (shoulders, neck)
+  the rest volume is smeared. There is no DRR from the CT voxels yet; the DRR is still made from bone surfaces.
+
 ### Label CT slice
 
 `anatomy/ct.js` draws a slice of the posed atlas next to the DRR X-ray. It is a label image (one flat grey per tissue), not

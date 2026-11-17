@@ -400,14 +400,14 @@ def index():
 
 @app.get("/anatomy/<name>")
 def anatomy_js(name):
-    if name not in ("anatomy.js", "stream.js", "xray.js", "ct.js"):
+    if name not in ("anatomy.js", "stream.js", "xray.js", "ct.js", "ctvol.js"):
         return Response("Not found", status=404)
     return send_from_directory("anatomy", name, mimetype="text/javascript")
 
 
 @app.get("/atlas/<name>")
 def atlas_file(name):
-    if name not in ("atlas.json", "atlas.bin", "skel.json", "skel.bin"):
+    if name not in ("atlas.json", "atlas.bin", "skel.json", "skel.bin", "ct_volume.json", "ct_volume.bin"):
         return Response("Not found", status=404)
     return send_from_directory("atlas", name)
 

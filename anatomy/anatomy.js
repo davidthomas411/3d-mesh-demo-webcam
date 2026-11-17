@@ -619,6 +619,7 @@ export class AnatomyLayer {
     if ((!this.group.visible && !this.xrayActive && !this.ctActive) || !skin) return;
     const fr = computeFrames(this.atlas, skin, breath, depth, this.spine, this.supportStride, this.useJoints === false ? null : mhrJoints, this.bodyScale !== false), f = this.flipYZ ? -1 : 1;
     fr.jawRad = (this.jawDeg || 0) * Math.PI / 180;        // jaw opening from the face tracker (degrees), 0 = closed
+    this.lastFrames = fr;                                  // the frames of this pose (the CT volume view warps with them)
     const undriven = !fr.mhr;                              // bones bound to MHR joints cannot be placed without the joints
     if (undriven !== this._undriven) { this._undriven = undriven; this._applyVisibility(); }
     for (const e of this.entries) {

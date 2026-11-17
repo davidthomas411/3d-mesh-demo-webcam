@@ -473,6 +473,7 @@
     import { RigStream } from "/anatomy/stream.js";
     import { XrayView } from "/anatomy/xray.js";
     import { CtSliceView } from "/anatomy/ct.js";
+    import { loadCtVolume, CtVolumeView } from "/anatomy/ctvol.js";
 
     const button = document.getElementById("start");
     const stopButton = document.getElementById("stop");
@@ -582,6 +583,7 @@
     const drrCanvas = document.getElementById("drrCanvas");
     const ctCanvas = document.getElementById("ctCanvas");
     const drrCaption = document.getElementById("drrCaption");
+    const ctCaption = document.getElementById("ctCaption");
     const drrFigure = document.getElementById("drrFigure");
     const ctFigure = document.getElementById("ctFigure");
     const imagingView = document.getElementById("imagingView");
@@ -605,6 +607,12 @@
           skeletonMode = "skel";
         } catch (error) {
           skelLayer = null;           // no SKEL atlas on this machine: CT bones only
+        }
+        try {
+          ctVolume = await loadCtVolume("/atlas/ct_volume.json", "/atlas/ct_volume.bin");
+          ctSource = "real";
+        } catch (error) {
+          ctVolume = null;            // no CT volume on this machine: label slice only
         }
         buildAnatomyPanel(atlas);
       } catch (error) {
@@ -669,7 +677,12 @@
     let xrayView = null;
     const xrayViews = {};             // one per skeleton mode
     let xrayOn = false;
-    let ctView = null;
+    let ctView = null;                // label slice (flat grey per atlas structure)
+    let ctVolume = null;              // the atlas subject's real CT in the rest frame (atlas/ct_volume.*, built locally), if there
+    let ctVolView = null;             // real CT, deformed live
+    let ctSource = "labels";          // "real" | "labels"
+    let ctBodyAligned = true;         // real CT: slice plane carried by the trunk (stays coronal) or fixed to the camera
+    const CT_WINDOWS = { soft: [40, 400], bone: [400, 1800], lung: [-600, 1500] };
     let ctOn = false;
     let ctOffsetM = -0.05;
     let imagingVisible = true;
@@ -710,7 +723,8 @@
 
     function xrayDraw() {
       if (!renderer) return;
-      const showX = xrayOn && xrayView, showC = ctOn && ctView;
+      const real = ctSource === "real" && ctVolView;
+      const showX = xrayOn && xrayView, showC = ctOn && (real || ctView);
       drrFigure.style.display = showX ? "" : "none";
       ctFigure.style.display = showC ? "" : "none";
       if (!imagingVisible || !(showX || showC)) return;
@@ -746,14 +760,18 @@
           : "DRR X-ray (" + what + ", " + view + ")";
       }
       if (showC) {
-        ctView.render(insetCentre, ctOffsetM, { x: 0, y: 0, w: s, h: s });
+        if (real) ctVolView.render(insetCentre, ctOffsetM, { x: 0, y: 0, w: s, h: s }, ctBodyAligned);
+        else ctView.render(insetCentre, ctOffsetM, { x: 0, y: 0, w: s, h: s });
         copyTo(ctCanvas);
+        ctCaption.textContent = real
+          ? "CT, atlas subject, deformed live" + (ctBodyAligned ? ", coronal to the body" : ", camera plane") + " (not this person's CT)"
+          : "Label CT slice (atlas, not CT voxels)";
       }
       renderer.setViewport(0, 0, size.x, size.y);
     }
 
     // Console/debug access to the live objects (used to check the views without a visible window).
-    window.demoDebug = () => ({ THREE, renderer, scene, camera, bodyMesh, anatomyLayer, skelLayer, xrayView, ctView, ctOffsetM });
+    window.demoDebug = () => ({ THREE, renderer, scene, camera, bodyMesh, anatomyLayer, skelLayer, xrayView, ctView, ctVolView, ctOffsetM });
 
     function anatomyTick() {
       if (!predictRig || !rigNeeded()) return;
@@ -853,7 +871,16 @@
         '<label class="anaRow"><input id="anaXray" type="checkbox" checked>' +
         '<span>Live DRR X-ray</span></label>' +
         '<label class="anaRow"><input id="anaCt" type="checkbox" checked>' +
-        '<span>Live label CT slice</span></label>' +
+        '<span>Live CT slice</span></label>' +
+        (ctVolume
+          ? '<label class="anaRow">CT source <select id="anaCtSource">' +
+            '<option value="real">Real CT, deformed (atlas subject)</option>' +
+            '<option value="labels">Labels (flat grey per structure)</option></select></label>' +
+            '<label class="anaRow">CT window <select id="anaCtWindow">' +
+            '<option value="soft">Soft tissue</option><option value="bone">Bone</option><option value="lung">Lung</option></select></label>' +
+            '<label class="anaRow"><input id="anaCtBody" type="checkbox" checked>' +
+            '<span>CT plane follows the body (off: fixed to the camera)</span></label>'
+          : '') +
         '<label class="anaRow">CT slice position ' +
         '<input id="anaCtOffset" type="range" min="-0.16" max="0.08" step="0.005" value="-0.05">' +
         '<output id="anaCtOffsetValue"></output></label>' +
@@ -920,8 +947,12 @@
       };
       const setCt = (on) => {
         try {
-          if (on && !ctView) ctView = new CtSliceView(THREE, renderer, anatomyLayer, bodyMesh.geometry, { size: 512 });
-          if (ctView) ctView.setActive(on);
+          const real = ctSource === "real" && ctVolume;
+          if (on && real && !ctVolView) ctVolView = new CtVolumeView(THREE, renderer, anatomyLayer, ctVolume);
+          if (on && !real && !ctView) ctView = new CtSliceView(THREE, renderer, anatomyLayer, bodyMesh.geometry, { size: 512 });
+          // the label slice needs every structure posed each frame; the real CT only needs the rig's frames
+          if (ctView) ctView.setActive(on && !real);
+          anatomyLayer.ctActive = on;
           ctOn = on;
         } catch (error) {
           console.warn("CT slice view unavailable:", error);
@@ -940,6 +971,17 @@
       showCtOffset();
       panel.querySelector("#anaXray").addEventListener("change", (e) => setXray(e.target.checked));
       panel.querySelector("#anaCt").addEventListener("change", (e) => setCt(e.target.checked));
+      const ctSourceSelect = panel.querySelector("#anaCtSource");
+      if (ctSourceSelect) {
+        ctSourceSelect.addEventListener("change", (e) => {
+          ctSource = e.target.value;
+          setCt(panel.querySelector("#anaCt").checked);
+        });
+        panel.querySelector("#anaCtBody").addEventListener("change", (e) => { ctBodyAligned = e.target.checked; });
+        panel.querySelector("#anaCtWindow").addEventListener("change", (e) => {
+          if (ctVolView) ctVolView.setWindow(...CT_WINDOWS[e.target.value]);
+        });
+      }
       panel.querySelector("#anaSkeleton").value = skeletonMode;
       panel.querySelector("#anaSkeleton").addEventListener("change", (e) => {
         skeletonMode = e.target.value;

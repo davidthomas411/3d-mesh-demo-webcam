@@ -6,3 +6,5 @@ latest.jpg
 .pytest_cache/
 atlas/skel.json
 atlas/skel.bin
+atlas/ct_volume.json
+atlas/ct_volume.bin

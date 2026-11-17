@@ -215,6 +215,7 @@ def main():
         c = chain[side]
         v, f = decimate(bone_mesh(f"scapula_{side}"), TARGET_TRIS["default"])
         add(f"skel_scapula_{side}", v, f, "skel_arm", "bone", bone_w=[[seg[f"shoulder_{side}"], 1.0]])
+        # (SKEL has no clavicle: no mesh and no body in its skeleton. It is not borrowed from the CT atlas; the two are kept apart.)
 
         # long bones: SKEL joint segment -> MHR joint segment
         for bones, group, ja, jb, j, child in (((f"humerus_{side}",), "skel_arm", f"humerus_{side}", f"ulna_{side}", c["shoulder"], c["elbow"]),
