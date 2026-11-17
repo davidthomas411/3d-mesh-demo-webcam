@@ -910,17 +910,17 @@
             '<option value="soft">Soft tissue</option><option value="bone">Bone</option><option value="lung">Lung</option></select></label>' +
             '<label class="anaRow"><input id="anaCtBody" type="checkbox" checked>' +
             '<span>CT plane follows the body (off: fixed to the camera)</span></label>' +
-            '<label class="anaRow">DRR: CT voxels <input id="anaDrrBlend" type="range" min="0" max="1" step="0.05" value="0.5"> bones' +
+            '<label class="anaRow">CT <input id="anaDrrBlend" type="range" min="0" max="1" step="0.05" value="0.5"> bones' +
             '<output id="anaDrrBlendValue"></output></label>' +
             '<label class="anaRow">DRR bones <select id="anaDrrSource">' +
             '<option value="surfaces">Skeleton shown in the 3-D view</option>' +
             '<option value="atlas">CT atlas bones</option></select></label>' +
             (petVolume
               ? '<label class="anaRow"><input id="anaPet" type="checkbox">' +
-                '<span>PET on the CT and DRR' + (petVolume.meta.simulated ? " (simulated uptake, not a measurement)" : "") + '</span></label>'
+                '<span>PET' + (petVolume.meta.simulated ? " (simulated)" : "") + '</span></label>'
               : '')
           : '') +
-        '<label class="anaRow">CT slice position ' +
+        '<label class="anaRow">Slice ' +
         '<input id="anaCtOffset" type="range" min="-0.16" max="0.08" step="0.005" value="-0.05">' +
         '<output id="anaCtOffsetValue"></output></label>' +
         '<label class="anaRow">Anatomy opacity ' +
@@ -937,7 +937,7 @@
         document.getElementById("referencePanel") || runtimePanel;
       anchor.insertAdjacentElement("afterend", panel);
 
-      const groups = panel.querySelector("#anaGroups");
+      const groups = document.querySelector("#anaGroups");
       for (const g of anatomyLayer.groups()) {
         const label = document.createElement("label");
         label.className = "anaChip";
@@ -953,7 +953,7 @@
       const skinMaterial = bodyMesh.material;
       const applySkin = () => {
         const on = anatomyShown;
-        const a = Number(panel.querySelector("#anaSkin").value);
+        const a = Number(document.querySelector("#anaSkin").value);
         skinMaterial.transparent = on && a < 1;
         skinMaterial.opacity = on ? a : 1;
         skinMaterial.depthWrite = !(on && a < 1);
@@ -978,7 +978,7 @@
         if (!ctVolView && ctVolume) {
           ctVolView = new CtVolumeView(THREE, renderer, anatomyLayer, ctVolume, { pet: petVolume });
           ctVolView.setPet(petOn);
-          const w = panel.querySelector("#anaCtWindow");
+          const w = document.querySelector("#anaCtWindow");
           if (w) ctVolView.setWindow(...CT_WINDOWS[w.value]);
         }
         return ctVolView;
@@ -990,7 +990,7 @@
           if (on) xrayView = xrayViewFor(skeletonMode === "skel" && skelLayer ? "skel" : "ct");
         } catch (error) {
           console.warn("X-ray view unavailable:", error);
-          panel.querySelector("#anaXray").checked = false;
+          document.querySelector("#anaXray").checked = false;
           xrayOn = false;
         }
       };
@@ -1005,57 +1005,57 @@
           ctOn = on;
         } catch (error) {
           console.warn("CT slice view unavailable:", error);
-          panel.querySelector("#anaCt").checked = false;
+          document.querySelector("#anaCt").checked = false;
           ctOn = false;
         }
       };
-      const ctOffsetInput = panel.querySelector("#anaCtOffset");
+      const ctOffsetInput = document.querySelector("#anaCtOffset");
       const showCtOffset = () => {
         ctOffsetM = Number(ctOffsetInput.value);
         const mm = Math.round(Math.abs(ctOffsetM) * 1000);
-        panel.querySelector("#anaCtOffsetValue").textContent =
-          mm + " mm " + (ctOffsetM < 0 ? "anterior" : "posterior") + " of T8";
+        document.querySelector("#anaCtOffsetValue").textContent =
+          mm + " mm " + (ctOffsetM < 0 ? "ant." : "post.");
       };
       ctOffsetInput.addEventListener("input", showCtOffset);
       showCtOffset();
-      panel.querySelector("#anaXray").addEventListener("change", (e) => setXray(e.target.checked));
-      panel.querySelector("#anaCt").addEventListener("change", (e) => setCt(e.target.checked));
-      const ctSourceSelect = panel.querySelector("#anaCtSource");
+      document.querySelector("#anaXray").addEventListener("change", (e) => setXray(e.target.checked));
+      document.querySelector("#anaCt").addEventListener("change", (e) => setCt(e.target.checked));
+      const ctSourceSelect = document.querySelector("#anaCtSource");
       if (ctSourceSelect) {
         ctSourceSelect.addEventListener("change", (e) => {
           ctSource = e.target.value;
-          setCt(panel.querySelector("#anaCt").checked);
+          setCt(document.querySelector("#anaCt").checked);
         });
-        panel.querySelector("#anaCtBody").addEventListener("change", (e) => { ctBodyAligned = e.target.checked; });
-        const drrSelect = panel.querySelector("#anaDrrSource");
+        document.querySelector("#anaCtBody").addEventListener("change", (e) => { ctBodyAligned = e.target.checked; });
+        const drrSelect = document.querySelector("#anaDrrSource");
         drrSource = drrSelect.value;
         drrSelect.addEventListener("change", (e) => {
           drrSource = e.target.value;
           for (const v of Object.values(xrayViews)) v.clearReference();
           if (ctVolView) ctVolView.clearReference("drr");
-          setXray(panel.querySelector("#anaXray").checked);
-          setCt(panel.querySelector("#anaCt").checked);
+          setXray(document.querySelector("#anaXray").checked);
+          setCt(document.querySelector("#anaCt").checked);
         });
-        const blendInput = panel.querySelector("#anaDrrBlend");
+        const blendInput = document.querySelector("#anaDrrBlend");
         const showBlend = () => {
           drrBlend = Number(blendInput.value);
-          panel.querySelector("#anaDrrBlendValue").textContent =
-            drrBlend <= 0 ? "CT voxels only" : drrBlend >= 1 ? "bones only" : Math.round(drrBlend * 100) + "% bones";
+          document.querySelector("#anaDrrBlendValue").textContent =
+            drrBlend <= 0 ? "CT only" : drrBlend >= 1 ? "bones only" : Math.round(drrBlend * 100) + "%";
         };
         blendInput.addEventListener("input", showBlend);
         drrSelect.addEventListener("change", showBlend);
         showBlend();
-        const petBox = panel.querySelector("#anaPet");
+        const petBox = document.querySelector("#anaPet");
         if (petBox) petBox.addEventListener("change", (e) => {
           petOn = e.target.checked;
           if (ensureCtVolView()) ctVolView.setPet(petOn);
         });
-        panel.querySelector("#anaCtWindow").addEventListener("change", (e) => {
+        document.querySelector("#anaCtWindow").addEventListener("change", (e) => {
           if (ctVolView) ctVolView.setWindow(...CT_WINDOWS[e.target.value]);
         });
       }
-      panel.querySelector("#anaSkeleton").value = skeletonMode;
-      panel.querySelector("#anaSkeleton").addEventListener("change", (e) => {
+      document.querySelector("#anaSkeleton").value = skeletonMode;
+      document.querySelector("#anaSkeleton").addEventListener("change", (e) => {
         skeletonMode = e.target.value;
         applySkeleton();
       });
@@ -1063,30 +1063,79 @@
       setCt(true);
       applySkeleton();
       const eachLayer = (fn) => { fn(anatomyLayer); if (skelLayer) fn(skelLayer); };
-      panel.querySelector("#anaJoints").addEventListener("change", (e) => {
+      document.querySelector("#anaJoints").addEventListener("change", (e) => {
         eachLayer((layer) => { layer.useJoints = e.target.checked; });
       });
-      panel.querySelector("#anaScale").addEventListener("change", (e) => {
+      document.querySelector("#anaScale").addEventListener("change", (e) => {
         eachLayer((layer) => { layer.bodyScale = e.target.checked; });
       });
-      panel.querySelector("#anaPredict").addEventListener("change", (e) => {
+      document.querySelector("#anaPredict").addEventListener("change", (e) => {
         predictRig = e.target.checked;
       });
-      panel.querySelector("#anaEnable").addEventListener("change", (e) => {
+      document.querySelector("#anaEnable").addEventListener("change", (e) => {
         anatomyShown = e.target.checked;
         applySkeleton();
       });
-      panel.querySelector("#anaOpacity").addEventListener("input", (e) =>
+      document.querySelector("#anaOpacity").addEventListener("input", (e) =>
         eachLayer((layer) => layer.setOpacity(Number(e.target.value))));
-      panel.querySelector("#anaSkin").addEventListener("input", applySkin);
-      const jawBox = panel.querySelector("#anaJaw");
+      document.querySelector("#anaSkin").addEventListener("input", applySkin);
+      const jawBox = document.querySelector("#anaJaw");
       if (jawBox) {
-        const jawStatus = panel.querySelector("#anaJawStatus");
+        const jawStatus = document.querySelector("#anaJawStatus");
         jawBox.addEventListener("change", (e) => {
           if (e.target.checked) startJawTracking(jawStatus); else stopJawTracking(jawStatus);
         });
         startJawTracking(jawStatus);
       }
+      placeControls(panel);
+    }
+
+    /*
+     * Controls live in the picture they act on. Each view (DRR, CT, 3-D) gets a gear button that opens its options, and the one
+     * or two controls used all the time sit in a strip along the bottom of the picture. The rows are the anatomy panel's own
+     * elements, moved (their listeners go with them); the panel itself is not shown.
+     */
+    function placeControls(panel) {
+      const row = (id) => { const e = panel.querySelector("#" + id); return e ? e.closest(".anaRow") : null; };
+      const menus = [];
+      const addMenu = (host, title, items, side) => {
+        items = items.filter(Boolean);
+        if (!host || !items.length) return;
+        const button = document.createElement("button");
+        button.type = "button"; button.className = "viewMenuButton " + side; button.textContent = "\u2699";
+        button.title = title; button.setAttribute("aria-label", title); button.setAttribute("aria-expanded", "false");
+        const pop = document.createElement("div");
+        pop.className = "viewMenu " + side; pop.hidden = true;
+        const head = document.createElement("div"); head.className = "viewMenuTitle"; head.textContent = title;
+        pop.append(head, ...items);
+        button.addEventListener("click", (e) => {
+          e.stopPropagation();
+          for (const m of menus) if (m.pop !== pop) { m.pop.hidden = true; m.button.setAttribute("aria-expanded", "false"); }
+          pop.hidden = !pop.hidden; button.setAttribute("aria-expanded", String(!pop.hidden));
+        });
+        for (const type of ["click", "pointerdown", "dblclick", "wheel"]) pop.addEventListener(type, (e) => e.stopPropagation());
+        host.append(button, pop); menus.push({ button, pop });
+      };
+      const addStrip = (host, items) => {
+        items = items.filter(Boolean);
+        if (!host || !items.length) return;
+        const strip = document.createElement("div"); strip.className = "viewStrip";
+        for (const type of ["pointerdown", "dblclick"]) strip.addEventListener(type, (e) => e.stopPropagation());
+        strip.append(...items); host.append(strip);
+      };
+      document.addEventListener("click", () => { for (const m of menus) { m.pop.hidden = true; m.button.setAttribute("aria-expanded", "false"); } });
+
+      const notes = [...panel.querySelectorAll(".anaNote")], groups = panel.querySelector("#anaGroups");
+      addStrip(drrFigure, [row("anaDrrBlend")]);
+      addMenu(drrFigure, "DRR options", [row("anaDrrSource")], "right");
+      addStrip(ctFigure, [row("anaPet"), row("anaCtOffset")]);
+      addMenu(ctFigure, "CT options", [row("anaCtSource"), row("anaCtWindow"), row("anaCtBody")], "right");
+      addMenu(document.getElementById("mesh"), "3-D view and anatomy", [
+        row("anaEnable"), row("anaSkeleton"), row("anaSkin"), row("anaOpacity"), row("anaXray"), row("anaCt"),
+        row("anaJaw"), row("anaJoints"), row("anaScale"), row("anaPredict"), notes[0], groups, notes[1],
+      ], "left");
+      panel.style.display = "none";
+      window.requestAnimationFrame(resizeRenderer);
     }
     let referenceMesh = null;
     let topology;
@@ -3210,6 +3259,19 @@
      */
     setRuntimePanelVisible(false);
 
+    // Page chrome out of the way: the two panel toggles sit in the top bar, and the reference panel keeps its set-up
+    // (regions, tolerances) folded away so that what is on screen is the reading.
+    {
+      const bar = document.getElementById("controls");
+      bar.append(toggleRuntimePanel, toggleSecondaryView);
+      const regions = document.getElementById("trackingRegions"), tolerances = document.getElementById("trackingThresholds");
+      if (regions && tolerances) {
+        const details = document.createElement("details"); details.id = "trackingSetup";
+        const summary = document.createElement("summary"); summary.textContent = "Regions and tolerances";
+        regions.before(details); details.append(summary, regions, tolerances);
+      }
+    }
+
     // The panel under the video shows one of: the imaging views (DRR, CT), the latency table, the projected overlay.
     const SECONDARY_MODES = ["imaging", "latency", "overlay"];
     let secondaryMode = "imaging";
@@ -4904,3 +4966,52 @@
   #leftViews { grid-column: 2; grid-row: 1 / 5; }
   #mesh { grid-column: 3; grid-row: 1 / 5; }
 </style>
+
+<style id="controlsInViews">
+  /* top bar: start/stop, status, and the two panel toggles pushed to the right */
+  #controls { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 8px 12px; }
+  #controls #status { flex: 1 1 200px; margin: 0; font-size: 14px; font-weight: 600; }
+  #controls #toggleRuntimePanel, #controls #toggleSecondaryView {
+    position: static; width: auto; min-width: 0; margin: 0; padding: 5px 9px; font-size: 11px; font-weight: 600; line-height: 1;
+    color: #cfcfcf; background: #262626; border: 1px solid #555; border-radius: 3px;
+  }
+  /* left column: parameters (when shown), then the reference panel */
+  #views { grid-template-rows: auto minmax(0, 1fr); height: calc(100vh - 70px); }
+  #runtimePanel { grid-column: 1; grid-row: 1; }
+  #referencePanel { grid-column: 1; grid-row: 2; }
+  #leftViews { grid-column: 2; grid-row: 1 / 3; }
+  #mesh { grid-column: 3; grid-row: 1 / 3; }
+  #trackingSetup { margin: 6px 0; }
+  #trackingSetup > summary { cursor: pointer; padding: 4px 0; color: #bdbdbd; font-size: 12px; }
+
+  /* options of a view: a gear in its corner, a pop-over under it */
+  .viewMenuButton {
+    position: absolute; top: 4px; z-index: 6; width: 24px; height: 22px; padding: 0; font-size: 14px; line-height: 20px;
+    color: #e6e6e6; background: rgba(30, 30, 30, 0.8); border: 1px solid #666; border-radius: 3px; cursor: pointer;
+  }
+  .viewMenuButton.right { right: 6px; }  .viewMenuButton.left { left: 6px; }
+  .viewMenuButton:hover, .viewMenuButton[aria-expanded="true"] { background: #3a3a3a; }
+  .viewMenu {
+    position: absolute; top: 30px; z-index: 7; box-sizing: border-box; width: min(300px, calc(100% - 12px));
+    max-height: calc(100% - 40px); overflow-y: auto; overflow-x: hidden; padding: 8px 10px;
+    color: #ddd; background: rgba(16, 16, 16, 0.94); border: 1px solid #555; border-radius: 4px; font: 12px/1.3 system-ui, sans-serif;
+  }
+  .viewMenu.right { right: 6px; }  .viewMenu.left { left: 6px; }
+  .viewMenu[hidden] { display: none; }
+  .viewMenuTitle { margin-bottom: 6px; font-weight: 600; color: #fff; }
+  .viewMenu .anaRow, .viewStrip .anaRow { display: flex; gap: 6px; align-items: center; margin: 4px 0; }
+  .viewMenu .anaRow input[type=range], .viewStrip .anaRow input[type=range] { flex: 1; min-width: 40px; }
+  .viewMenu select { flex: 1; min-width: 0; }
+  .viewMenu .anaChip { display: inline-block; margin: 2px 8px 2px 0; }
+  .viewMenu .anaNote { margin-top: 8px; color: #e0b050; line-height: 1.35; }
+  /* the controls used all the time: a strip along the bottom of the picture */
+  .viewStrip {
+    position: absolute; left: 6px; right: 6px; bottom: 6px; z-index: 5; display: flex; gap: 12px; align-items: center;
+    padding: 1px 8px; color: #e0e0e0; background: rgba(0, 0, 0, 0.6); border-radius: 3px; font: 11px/1.2 system-ui, sans-serif;
+  }
+  .viewStrip .anaRow { margin: 2px 0; white-space: nowrap; }
+  .viewStrip .anaRow:has(input[type=range]) { flex: 1; min-width: 0; }
+  .viewStrip output { min-width: 4.5em; text-align: right; color: #bbb; }
+  #secondaryView #imagingView figcaption { right: 36px; }
+</style>
+

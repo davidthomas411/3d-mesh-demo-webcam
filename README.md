@@ -528,9 +528,12 @@ python tools/fit_skeleton_to_mhr.py atlas/ct_subject atlas/atlas mhr_rest.npz mh
 
 ### Layout
 
-The panel under the video shows the imaging views (DRR X-ray and CT slice). The latency table and the projected overlay are behind
-the button in that panel's corner. The left column holds the reference panel and the anatomy panel, each scrolling on its own; the
-runtime parameters start collapsed ("Show parameters").
+The panel under the video shows the imaging views (DRR X-ray and CT slice). Controls live in the picture they act on: each
+view (DRR, CT, 3-D) has a gear in its corner that opens its options, and the controls used all the time sit in a strip along
+the bottom of the picture (DRR: CT-to-bones blend; CT: PET and slice position). The left column holds only the reference panel,
+with its regions and tolerances folded away. "Show parameters" and "Show latency" are in the top bar.
+
+`run_local.cmd` starts the server on http://127.0.0.1:8097; run it in a terminal of your own so that it stays up.
 
 ### Real CT, deformed live (`tools/build_ct_volume.py`, `anatomy/ctvol.js`)
 
