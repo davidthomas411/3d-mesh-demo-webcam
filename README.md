@@ -476,6 +476,21 @@ image, torso about 0.75 of the neutral body) 21.6% of the spine surface, 24.8% o
 - Not done: the femur still sits in the atlas acetabulum (24-26 mm from the MHR hip joint); forearm, lower-leg, hand and foot bones
   (the atlas has none); anisotropic scale; a per-frame collision test.
 
+### DRR X-ray inset and its reference
+
+The DRR inset (`anatomy/xray.js`) and the label CT slice are drawn in camera space: the picture centre is fixed when the first mesh
+arrives and each frame is placed with `pred_cam_t`, like the 3-D view. (They used to be drawn in the mesh's body-centred frame, whose
+origin moves with the estimated pose, so a shrug dropped the skull in the picture although the head was still.) **Capture reference**
+also stores the DRR of that moment; it is then shown in green under the live DRR in magenta, so agreement is grey and a shift shows
+as a green edge where the bone was and a magenta edge where it is. **Reset 3D camera** re-centres the insets and drops that reference.
+
+### SKEL as a reference (`tools/fit_skel_to_mhr.py`)
+
+SKEL (non-commercial research licence; model files are not in this repository) is fitted to the neutral MHR body through Meta's
+MHR-to-SMPL vertex map, without an SMPL model file: skin-to-skin distance mean 13.2 mm (male model). Its learned skeleton agrees with
+the fitted CT skeleton at the rib cage (SKEL 265 x 183 mm, ours 279 x 192 mm), the humeri and the skull, and places the pelvis further
+forward. It also has what the CT atlas lacks: forearms, lower legs, hands, feet and a separate jaw.
+
 ### Label CT slice
 
 `anatomy/ct.js` draws a slice of the posed atlas next to the DRR X-ray. It is a label image (one flat grey per tissue), not

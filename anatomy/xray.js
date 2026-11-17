@@ -21,13 +21,18 @@ export class XrayView {
       const specs = open ? [[THREE.DoubleSide, 1, openCm / 100]] : [[THREE.FrontSide, -1, 0], [THREE.BackSide, 1, 0]];
       for (const [side, sign, c] of specs) { const m = new THREE.Mesh(g, mk(side, sign, c)); m.frustumCulled = false; this.scene.add(m); this.meshes.push(m); }
     }
-    this.target = new THREE.WebGLRenderTarget(size, size, { type: THREE.HalfFloatType, format: THREE.RGBAFormat, depthBuffer: false, minFilter: THREE.LinearFilter, magFilter: THREE.LinearFilter });
+    const mkTarget = () => new THREE.WebGLRenderTarget(size, size, { type: THREE.HalfFloatType, format: THREE.RGBAFormat, depthBuffer: false, minFilter: THREE.LinearFilter, magFilter: THREE.LinearFilter });
+    this.target = mkTarget();
+    this.refTarget = mkTarget();                                             // bone thickness at the moment a reference was captured
+    this.hasReference = false; this._captureNext = false;
     this.cam = new THREE.OrthographicCamera(-this.half, this.half, this.half, -this.half, 0, 1.0);
     this.quadScene = new THREE.Scene(); this.quadCam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
     this.resolve = new THREE.ShaderMaterial({
-      depthTest: false, depthWrite: false, uniforms: { uT: { value: this.target.texture }, uK: { value: density * 100 / windowCm }, uG: { value: gamma } },
+      depthTest: false, depthWrite: false, uniforms: { uT: { value: this.target.texture }, uR: { value: this.refTarget.texture }, uRef: { value: 0 }, uK: { value: density * 100 / windowCm }, uG: { value: gamma } },
       vertexShader: "varying vec2 vUv; void main(){ vUv = uv; gl_Position = vec4(position.xy, 0.0, 1.0); }",
-      fragmentShader: "uniform sampler2D uT; uniform float uK; uniform float uG; varying vec2 vUv; void main(){ float t = max(texture2D(uT, vUv).r, 0.0); float v = pow(clamp(t * uK, 0.0, 1.0), uG); gl_FragColor = vec4(vec3(v), 1.0); }" });
+      // With a reference: reference in green, live in magenta. Where the two agree the pixel is grey; a shift shows as a green
+      // edge where the bone was and a magenta edge where it is now.
+      fragmentShader: "uniform sampler2D uT; uniform sampler2D uR; uniform float uRef; uniform float uK; uniform float uG; varying vec2 vUv; void main(){ float v = pow(clamp(max(texture2D(uT, vUv).r, 0.0) * uK, 0.0, 1.0), uG); float r = pow(clamp(max(texture2D(uR, vUv).r, 0.0) * uK, 0.0, 1.0), uG); gl_FragColor = vec4(mix(vec3(v), vec3(v, r, v), uRef), 1.0); }" });
     this.quadScene.add(new THREE.Mesh(new THREE.PlaneGeometry(2, 2), this.resolve));
     layer.xrayActive = true;
   }
@@ -42,9 +47,16 @@ export class XrayView {
     const prev = renderer.getRenderTarget(), pc = renderer.getClearColor(new THREE.Color()), pa = renderer.getClearAlpha(), autoClear = renderer.autoClear;
     renderer.setRenderTarget(this.target); renderer.setClearColor(0x000000, 0); renderer.clear(); renderer.autoClear = false;
     renderer.render(this.scene, cam);
+    if (this._captureNext) {                                                 // same view, same pose: this frame becomes the reference
+      renderer.setRenderTarget(this.refTarget); renderer.clear(); renderer.render(this.scene, cam);
+      this._captureNext = false; this.hasReference = true; this.resolve.uniforms.uRef.value = 1;
+    }
     renderer.setRenderTarget(prev); renderer.autoClear = autoClear; renderer.setClearColor(pc, pa);
     if (viewport) { renderer.setViewport(viewport.x, viewport.y, viewport.w, viewport.h); renderer.setScissor(viewport.x, viewport.y, viewport.w, viewport.h); renderer.setScissorTest(true); }
     renderer.render(this.quadScene, this.quadCam);
     if (viewport) renderer.setScissorTest(false);
   }
+  // Keep the next rendered frame as the reference radiograph (the view is fixed to the camera, so it records where the bones were).
+  captureReference() { this._captureNext = true; }
+  clearReference() { this._captureNext = false; this.hasReference = false; this.resolve.uniforms.uRef.value = 0; }
 }

@@ -633,6 +633,7 @@
     let ctOn = false;
     let ctOffsetM = -0.05;
     const insetLabels = {};
+    let insetCentreCam = null;      // picture centre of the insets in camera space (x, y), set from the first mesh
 
     function insetLabel(key, text, rightPx, bottomPx, widthPx, visible) {
       let el = insetLabels[key];
@@ -657,9 +658,25 @@
       const centre = [0, -1.3, 0];
       // right-most inset: AP radiograph; the CT slice sits to its left (or takes its place when the radiograph is off)
       const xrayX = size.x - s - 12, ctX = showX ? size.x - 2 * s - 24 : size.x - s - 12;
-      if (showX) xrayView.render("ap", centre, { x: xrayX, y: 12, w: s, h: s });
-      if (showC) ctView.render(centre, ctOffsetM, { x: ctX, y: 12, w: s, h: s });
-      insetLabel("xray", "DRR X-ray (atlas bones, camera view)", 12, 12 + s - 20, s, !!showX);
+      // The insets are drawn in CAMERA space, like the 3-D view. The mesh vertices are relative to the body's own origin, which the
+      // estimator moves whenever the pose changes (a shrug dropped the skull in a body-centred picture although the head was still);
+      // the body's place in the camera is pred_cam_t. The picture centre is fixed in camera space when the first mesh arrives
+      // ("Reset 3D camera" re-centres it), so a still head stays still and a captured reference shows real displacement.
+      if (!insetCentreCam && latestPredCamT) {
+        insetCentreCam = [centre[0] + latestPredCamT[0], centre[1] + latestPredCamT[1]];
+      }
+      const insetCentre = insetCentreCam && latestPredCamT
+        ? [insetCentreCam[0] - latestPredCamT[0], insetCentreCam[1] - latestPredCamT[1], 0]
+        : centre;
+      if (showX) xrayView.render("ap", insetCentre, { x: xrayX, y: 12, w: s, h: s });
+      if (showC) ctView.render(insetCentre, ctOffsetM, { x: ctX, y: 12, w: s, h: s });
+      insetLabel(
+        "xray",
+        showX && xrayView.hasReference
+          ? "DRR X-ray: reference green, live magenta"
+          : "DRR X-ray (atlas bones, camera view)",
+        12, 12 + s - 20, s, !!showX
+      );
       insetLabel("ct", "Label CT slice (atlas, not CT voxels)", size.x - ctX - s, 12 + s - 20, s, !!showC);
       if (showX || showC) renderer.setViewport(0, 0, size.x, size.y);
     }
@@ -2967,6 +2984,7 @@
     }
 
     captureReferenceButton.onclick = () => {
+      if (xrayView && latestVertices) xrayView.captureReference();     // the DRR inset keeps this pose as its green reference
       if (!latestVertices) {
         referenceStatus.textContent =
           "Reference unavailable: no mesh received";
@@ -3004,6 +3022,7 @@
     };
 
     clearReferenceButton.onclick = () => {
+      if (xrayView) xrayView.clearReference();
       referenceVertices = null;
       referencePredCamT = null;
       referenceCapturedAt = null;
@@ -3135,6 +3154,8 @@
     };
 
     resetMeshCamera.onclick = () => {
+      insetCentreCam = null;
+      if (xrayView) xrayView.clearReference();
       meshFramed = false;
     };
 
