@@ -15,20 +15,32 @@ export class XrayView {
       vertexShader: "varying float vD; void main(){ vec4 mv = modelViewMatrix * vec4(position,1.0); vD = -mv.z; gl_Position = projectionMatrix * mv; }",
       fragmentShader: "uniform float uSign; uniform float uConst; varying float vD; void main(){ gl_FragColor = vec4(uConst > 0.0 ? uConst : uSign * vD, 0.0, 0.0, 1.0); }" });
     // A structure marked shell_mm is a closed surface standing for a hollow bone (SKEL's skull has no cranial cavity): integrating
-    // the path through it would make the whole head solid bone. Each crossing of its surface adds the wall thickness instead,
-    // longer where the ray grazes the wall, which is what gives a real skull its bright rim.
-    const shell = (mm) => new THREE.ShaderMaterial({
-      side: THREE.DoubleSide, depthTest: false, depthWrite: false, transparent: true, blending: THREE.CustomBlending, blendEquation: THREE.AddEquation, blendSrc: THREE.OneFactor, blendDst: THREE.OneFactor,
-      uniforms: { uT: { value: mm / 1000 } },
-      vertexShader: "varying vec3 vN; void main(){ vN = normalize(normalMatrix * normal); gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0); }",
-      fragmentShader: "uniform float uT; varying vec3 vN; void main(){ gl_FragColor = vec4(uT / max(abs(normalize(vN).z), 0.22), 0.0, 0.0, 1.0); }" });
+    // the path through it would make the whole head solid bone. Its cavity is therefore subtracted: the same surface, shrunk
+    // about its centre by the wall thickness, is drawn with the opposite sign, so each ray gets the path through the wall only.
+    // That is a real path length, so the skull is as soft as the other bones (a fixed thickness per crossing looked jagged).
+    const hollow = (side, sign) => new THREE.ShaderMaterial({
+      side, depthTest: false, depthWrite: false, transparent: true, blending: THREE.CustomBlending, blendEquation: THREE.AddEquation, blendSrc: THREE.OneFactor, blendDst: THREE.OneFactor,
+      uniforms: { uSign: { value: sign }, uCentre: { value: new THREE.Vector3() }, uScale: { value: 1 } },
+      vertexShader: "uniform vec3 uCentre; uniform float uScale; varying float vD; void main(){ vec4 mv = modelViewMatrix * vec4(uCentre + uScale * (position - uCentre), 1.0); vD = -mv.z; gl_Position = projectionMatrix * mv; }",
+      fragmentShader: "uniform float uSign; varying float vD; void main(){ gl_FragColor = vec4(uSign * vD, 0.0, 0.0, 1.0); }" });
+    this.shells = [];
     const sources = [[layer, null], ...extra];
     for (const [src, keep] of sources) for (const e of src.entries) {
       const s = e.s;
       if (s.bind === "soft" || s.name === "brain" || (keep && !keep(s))) continue;
       e.forceUpdate = true;                                                  // keep this geometry posed even when the layer's own mesh is hidden
       const open = OPEN.test(s.name), g = e.mesh.geometry;
-      if (s.shell_mm) { const m = new THREE.Mesh(g, shell(s.shell_mm)); m.frustumCulled = false; this.scene.add(m); this.meshes.push(m); continue; }
+      if (s.shell_mm) {
+        // rest size of the bone -> how much to shrink the copy that stands for the cavity
+        let r = 0; const c0 = s.centroid, p0 = s.pos;
+        for (let i = 0; i < p0.length; i += 3) r += Math.hypot(p0[i] - c0[0], p0[i + 1] - c0[1], p0[i + 2] - c0[2]);
+        r /= p0.length / 3;
+        const inner = [hollow(THREE.FrontSide, 1), hollow(THREE.BackSide, -1)];
+        for (const m of inner) m.uniforms.uScale.value = Math.max(0.5, 1 - (s.shell_mm / 1000) / r);
+        for (const mat of [mk(THREE.FrontSide, -1, 0), mk(THREE.BackSide, 1, 0), ...inner]) { const m = new THREE.Mesh(g, mat); m.frustumCulled = false; this.scene.add(m); this.meshes.push(m); }
+        this.shells.push({ g, inner });
+        continue;
+      }
       const specs = open ? [[THREE.DoubleSide, 1, openCm / 100]] : [[THREE.FrontSide, -1, 0], [THREE.BackSide, 1, 0]];
       for (const [side, sign, c] of specs) { const m = new THREE.Mesh(g, mk(side, sign, c)); m.frustumCulled = false; this.scene.add(m); this.meshes.push(m); }
     }
@@ -39,11 +51,16 @@ export class XrayView {
     this.cam = new THREE.OrthographicCamera(-this.half, this.half, this.half, -this.half, 0, 1.0);
     this.quadScene = new THREE.Scene(); this.quadCam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
     this.resolve = new THREE.ShaderMaterial({
-      depthTest: false, depthWrite: false, uniforms: { uT: { value: this.target.texture }, uR: { value: this.refTarget.texture }, uRef: { value: 0 }, uK: { value: density * 100 / windowCm }, uG: { value: gamma } },
+      depthTest: false, depthWrite: false, uniforms: { uT: { value: this.target.texture }, uR: { value: this.refTarget.texture }, uRef: { value: 0 }, uK: { value: density * 100 / windowCm }, uG: { value: gamma }, uPx: { value: 1 / size } },
       vertexShader: "varying vec2 vUv; void main(){ vUv = uv; gl_Position = vec4(position.xy, 0.0, 1.0); }",
       // With a reference: reference in green, live in magenta. Where the two agree the pixel is grey; a shift shows as a green
       // edge where the bone was and a magenta edge where it is now.
-      fragmentShader: "uniform sampler2D uT; uniform sampler2D uR; uniform float uRef; uniform float uK; uniform float uG; varying vec2 vUv; void main(){ float v = pow(clamp(max(texture2D(uT, vUv).r, 0.0) * uK, 0.0, 1.0), uG); float r = pow(clamp(max(texture2D(uR, vUv).r, 0.0) * uK, 0.0, 1.0), uG); gl_FragColor = vec4(mix(vec3(v), vec3(v, r, v), uRef), 1.0); }" });
+      // The thickness image has hard polygon edges (no multisampling on a float target): it is read through a 13-tap blur, which
+      // is also closer to a radiograph's own blur.
+      fragmentShader: "uniform sampler2D uT; uniform sampler2D uR; uniform float uRef; uniform float uK; uniform float uG; uniform float uPx; varying vec2 vUv; "
+        + "float soft(sampler2D t){ float c = max(texture2D(t, vUv).r, 0.0) * 0.20; "
+        + "for (int i = 0; i < 4; i++) { float a = 1.5707963 * float(i); vec2 d = vec2(cos(a), sin(a)); c += max(texture2D(t, vUv + d * uPx).r, 0.0) * 0.12; c += max(texture2D(t, vUv + vec2(d.x - d.y, d.x + d.y) * uPx).r, 0.0) * 0.05; c += max(texture2D(t, vUv + d * 2.0 * uPx).r, 0.0) * 0.03; } return c; } "
+        + "void main(){ float v = pow(clamp(soft(uT) * uK, 0.0, 1.0), uG); float r = pow(clamp(soft(uR) * uK, 0.0, 1.0), uG); gl_FragColor = vec4(mix(vec3(v), vec3(v, r, v), uRef), 1.0); }" });
     this.quadScene.add(new THREE.Mesh(new THREE.PlaneGeometry(2, 2), this.resolve));
     for (const [src] of sources) src.xrayActive = true;
   }
@@ -54,6 +71,11 @@ export class XrayView {
     if (view === "ap") { cam.position.set(c[0], c[1], c[2] - d); cam.lookAt(c[0], c[1], c[2]); cam.left = -this.half; cam.right = this.half; }
     else { cam.position.set(c[0] + d, c[1], c[2]); cam.lookAt(c[0], c[1], c[2]); cam.left = -this.half; cam.right = this.half; }
     cam.near = 0; cam.far = 2 * d; cam.updateProjectionMatrix(); cam.updateMatrixWorld();
+    for (const sh of this.shells) {                                          // centre of each hollow bone in its current pose
+      const a = sh.g.attributes.position.array; let x = 0, y = 0, z = 0, n = 0;
+      for (let i = 0; i < a.length; i += 30) { x += a[i]; y += a[i + 1]; z += a[i + 2]; n++; }
+      for (const m of sh.inner) m.uniforms.uCentre.value.set(x / n, y / n, z / n);
+    }
     // depth along the view ray measured from the camera plane; thickness is a difference of depths, so the origin does not matter, but keep it near the body for precision
     const prev = renderer.getRenderTarget(), pc = renderer.getClearColor(new THREE.Color()), pa = renderer.getClearAlpha(), autoClear = renderer.autoClear;
     renderer.setRenderTarget(this.target); renderer.setClearColor(0x000000, 0); renderer.clear(); renderer.autoClear = false;
