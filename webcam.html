@@ -473,7 +473,7 @@
     import { RigStream } from "/anatomy/stream.js";
     import { XrayView } from "/anatomy/xray.js";
     import { CtSliceView } from "/anatomy/ct.js";
-    import { loadCtVolume, CtVolumeView } from "/anatomy/ctvol.js";
+    import { loadCtVolume, loadPetVolume, CtVolumeView } from "/anatomy/ctvol.js";
 
     const button = document.getElementById("start");
     const stopButton = document.getElementById("stop");
@@ -610,6 +610,7 @@
         }
         try {
           ctVolume = await loadCtVolume("/atlas/ct_volume.json", "/atlas/ct_volume.bin");
+          petVolume = await loadPetVolume("/atlas/ct_pet.json", "/atlas/ct_pet.bin");
           ctSource = "real";
         } catch (error) {
           ctVolume = null;            // no CT volume on this machine: label slice only
@@ -679,6 +680,9 @@
     let xrayOn = false;
     let ctView = null;                // label slice (flat grey per atlas structure)
     let ctVolume = null;              // the atlas subject's real CT in the rest frame (atlas/ct_volume.*, built locally), if there
+    let petVolume = null;             // PET in the same rest frame (atlas/ct_pet.*), if there
+    let petOn = false;
+    let drrSource = "surfaces";       // "surfaces" (the skeleton drawn in the mesh) | "ct" (ray-marched through the CT voxels)
     let ctVolView = null;             // real CT, deformed live
     let ctSource = "labels";          // "real" | "labels"
     let ctBodyAligned = true;         // real CT: slice plane carried by the trunk (stays coronal) or fixed to the camera
@@ -692,7 +696,7 @@
     const drrOrbit = { yaw: 0, pitch: 0 };
     {
       let drag = null;
-      const dropReference = () => { for (const v of Object.values(xrayViews)) v.clearReference(); };
+      const dropReference = () => { for (const v of Object.values(xrayViews)) v.clearReference(); if (ctVolView) ctVolView.clearReference("drr"); };
       drrCanvas.style.cursor = "grab";
       drrCanvas.addEventListener("pointerdown", (e) => {
         drag = { x: e.clientX, y: e.clientY, yaw: drrOrbit.yaw, pitch: drrOrbit.pitch };
@@ -724,7 +728,8 @@
     function xrayDraw() {
       if (!renderer) return;
       const real = ctSource === "real" && ctVolView;
-      const showX = xrayOn && xrayView, showC = ctOn && (real || ctView);
+      const voxelDrr = drrSource === "ct" && ctVolView;
+      const showX = xrayOn && (voxelDrr || xrayView), showC = ctOn && (real || ctView);
       drrFigure.style.display = showX ? "" : "none";
       ctFigure.style.display = showC ? "" : "none";
       if (!imagingVisible || !(showX || showC)) return;
@@ -749,29 +754,34 @@
       };
       if (showX) {
         const turned = drrOrbit.yaw !== 0 || drrOrbit.pitch !== 0;
-        xrayView.render("ap", insetCentre, { x: 0, y: 0, w: s, h: s }, turned ? drrOrbit : null);
+        if (voxelDrr) ctVolView.renderDrr(insetCentre, { x: 0, y: 0, w: s, h: s }, turned ? drrOrbit : null);
+        else xrayView.render("ap", insetCentre, { x: 0, y: 0, w: s, h: s }, turned ? drrOrbit : null);
         copyTo(drrCanvas);
-        const what = skeletonMode === "skel" && skelLayer ? "SKEL skeleton" : "CT atlas bones";
+        const what = voxelDrr ? "CT voxels, atlas subject" + (petOn ? " + PET MIP" : "")
+          : skeletonMode === "skel" && skelLayer ? "SKEL skeleton" : "CT atlas bones";
         const view = turned
           ? "turned " + Math.round(drrOrbit.yaw * 180 / Math.PI) + "° / " + Math.round(drrOrbit.pitch * 180 / Math.PI) + "°, double-click to reset"
           : "camera view, drag to turn";
-        drrCaption.textContent = xrayView.hasReference
+        drrCaption.textContent = (voxelDrr ? ctVolView.holdsReference("drr") : xrayView.hasReference)
           ? "DRR X-ray (" + what + "): reference green, live magenta"
           : "DRR X-ray (" + what + ", " + view + ")";
       }
       if (showC) {
-        if (real) ctVolView.render(insetCentre, ctOffsetM, { x: 0, y: 0, w: s, h: s }, ctBodyAligned);
+        // a reference only means something in a picture fixed to the camera: while one is held the slice is in the camera plane
+        const held = real && ctVolView.holdsReference("slice"), aligned = ctBodyAligned && !held;
+        if (real) ctVolView.render(insetCentre, ctOffsetM, { x: 0, y: 0, w: s, h: s }, aligned);
         else ctView.render(insetCentre, ctOffsetM, { x: 0, y: 0, w: s, h: s });
         copyTo(ctCanvas);
-        ctCaption.textContent = real
-          ? "CT, atlas subject, deformed live" + (ctBodyAligned ? ", coronal to the body" : ", camera plane") + " (not this person's CT)"
-          : "Label CT slice (atlas, not CT voxels)";
+        const petNote = petOn && petVolume ? (petVolume.meta.simulated ? " + PET (simulated uptake)" : " + PET") : "";
+        ctCaption.textContent = !real ? "Label CT slice (atlas, not CT voxels)"
+          : held ? "CT, camera plane: reference green, live magenta"
+          : "CT" + petNote + ", atlas subject, deformed live" + (aligned ? ", coronal to the body" : ", camera plane") + " (not this person's CT)";
       }
       renderer.setViewport(0, 0, size.x, size.y);
     }
 
     // Console/debug access to the live objects (used to check the views without a visible window).
-    window.demoDebug = () => ({ THREE, renderer, scene, camera, bodyMesh, anatomyLayer, skelLayer, xrayView, ctView, ctVolView, ctOffsetM });
+    window.demoDebug = () => ({ THREE, renderer, scene, camera, bodyMesh, anatomyLayer, skelLayer, xrayView, ctView, ctVolView, ctOffsetM, petVolume, drrSource });
 
     function anatomyTick() {
       if (!predictRig || !rigNeeded()) return;
@@ -879,7 +889,14 @@
             '<label class="anaRow">CT window <select id="anaCtWindow">' +
             '<option value="soft">Soft tissue</option><option value="bone">Bone</option><option value="lung">Lung</option></select></label>' +
             '<label class="anaRow"><input id="anaCtBody" type="checkbox" checked>' +
-            '<span>CT plane follows the body (off: fixed to the camera)</span></label>'
+            '<span>CT plane follows the body (off: fixed to the camera)</span></label>' +
+            '<label class="anaRow">DRR from <select id="anaDrrSource">' +
+            '<option value="ct">CT voxels (real CT, deformed)</option>' +
+            '<option value="surfaces">Skeleton surfaces (as in the 3-D view)</option></select></label>' +
+            (petVolume
+              ? '<label class="anaRow"><input id="anaPet" type="checkbox">' +
+                '<span>PET on the CT and DRR' + (petVolume.meta.simulated ? " (simulated uptake, not a measurement)" : "") + '</span></label>'
+              : '')
           : '') +
         '<label class="anaRow">CT slice position ' +
         '<input id="anaCtOffset" type="range" min="-0.16" max="0.08" step="0.005" value="-0.05">' +
@@ -935,9 +952,19 @@
         }
         applySkin();
       };
+      const ensureCtVolView = () => {
+        if (!ctVolView && ctVolume) {
+          ctVolView = new CtVolumeView(THREE, renderer, anatomyLayer, ctVolume, { pet: petVolume });
+          ctVolView.setPet(petOn);
+          const w = panel.querySelector("#anaCtWindow");
+          if (w) ctVolView.setWindow(...CT_WINDOWS[w.value]);
+        }
+        return ctVolView;
+      };
       const setXray = (on) => {
         try {
           xrayOn = on;
+          if (on && drrSource === "ct") { ensureCtVolView(); anatomyLayer.ctActive = true; }
           if (on) xrayView = xrayViewFor(skeletonMode === "skel" && skelLayer ? "skel" : "ct");
         } catch (error) {
           console.warn("X-ray view unavailable:", error);
@@ -948,11 +975,11 @@
       const setCt = (on) => {
         try {
           const real = ctSource === "real" && ctVolume;
-          if (on && real && !ctVolView) ctVolView = new CtVolumeView(THREE, renderer, anatomyLayer, ctVolume);
+          if (on && real) ensureCtVolView();
           if (on && !real && !ctView) ctView = new CtSliceView(THREE, renderer, anatomyLayer, bodyMesh.geometry, { size: 512 });
           // the label slice needs every structure posed each frame; the real CT only needs the rig's frames
           if (ctView) ctView.setActive(on && !real);
-          anatomyLayer.ctActive = on;
+          anatomyLayer.ctActive = on || (xrayOn && drrSource === "ct");
           ctOn = on;
         } catch (error) {
           console.warn("CT slice view unavailable:", error);
@@ -978,6 +1005,20 @@
           setCt(panel.querySelector("#anaCt").checked);
         });
         panel.querySelector("#anaCtBody").addEventListener("change", (e) => { ctBodyAligned = e.target.checked; });
+        const drrSelect = panel.querySelector("#anaDrrSource");
+        drrSource = drrSelect.value;
+        drrSelect.addEventListener("change", (e) => {
+          drrSource = e.target.value;
+          for (const v of Object.values(xrayViews)) v.clearReference();
+          if (ctVolView) ctVolView.clearReference("drr");
+          setXray(panel.querySelector("#anaXray").checked);
+          setCt(panel.querySelector("#anaCt").checked);
+        });
+        const petBox = panel.querySelector("#anaPet");
+        if (petBox) petBox.addEventListener("change", (e) => {
+          petOn = e.target.checked;
+          if (ensureCtVolView()) ctVolView.setPet(petOn);
+        });
         panel.querySelector("#anaCtWindow").addEventListener("change", (e) => {
           if (ctVolView) ctVolView.setWindow(...CT_WINDOWS[e.target.value]);
         });
@@ -3201,6 +3242,7 @@
 
     captureReferenceButton.onclick = () => {
       if (xrayView && latestVertices) xrayView.captureReference();     // the DRR inset keeps this pose as its green reference
+      if (ctVolView && latestVertices) ctVolView.captureReference();   // and so do the CT slice and the CT-voxel DRR
       if (!latestVertices) {
         referenceStatus.textContent =
           "Reference unavailable: no mesh received";
@@ -3239,6 +3281,7 @@
 
     clearReferenceButton.onclick = () => {
       if (xrayView) xrayView.clearReference();
+      if (ctVolView) ctVolView.clearReference();
       referenceVertices = null;
       referencePredCamT = null;
       referenceCapturedAt = null;
@@ -3372,6 +3415,7 @@
     resetMeshCamera.onclick = () => {
       insetCentreCam = null;
       if (xrayView) xrayView.clearReference();
+      if (ctVolView) ctVolView.clearReference();
       meshFramed = false;
     };
 

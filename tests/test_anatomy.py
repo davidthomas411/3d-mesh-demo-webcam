@@ -236,4 +236,5 @@ def test_shipped_atlas_bones_have_realistic_sizes_and_skull_is_seated():
     es = ext(by["skull"])
     # was 97 mm deep (squashed) when bones were warped. Upper limit 245 (was 230): the skull is now fitted to fill the neutral MHR
     # head, vertex under the scalp and orbits at eye height, which makes it 211 mm tall (236 mm along its longest axis)
-    assert 150 < es.max() < 245 and es.min() > 100
+    # 250 since the atlas is the CT itself (tools/build_ct_volume.py --align-atlas): the CT skull, one uniform scale onto the head
+    assert 150 < es.max() < 250 and es.min() > 100

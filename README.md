@@ -534,33 +534,47 @@ runtime parameters start collapsed ("Show parameters").
 
 ### Real CT, deformed live (`tools/build_ct_volume.py`, `anatomy/ctvol.js`)
 
-The CT slice in the page can show the atlas subject's real CT, carried by the rig, instead of flat labels. The CT and the volume
-built from it are not in this repository (`atlas/ct_volume.*` is git-ignored, 68 MB); without them the page shows the label slice.
+The page can show the atlas subject's real CT, carried by the rig: as a slice, and as a DRR ray-marched through the voxels. The CT
+and the volumes built from it are not in this repository (`atlas/ct_volume.*`, `atlas/ct_pet.*` are git-ignored); without them the
+page shows the label slice and the surface DRR.
 
 ```bash
 pip install remotezip
 python tools/fetch_ts_subject.py s1159 ../ct_data          # 63 MB out of the 23.6 GB TotalSegmentator archive, by range requests
-python tools/build_ct_volume.py ../ct_data/s1159 atlas/atlas atlas/ct_volume
+python tools/build_ct_volume.py ../ct_data/s1159 atlas/ct_subject atlas/ct_volume --fitted atlas/fitted --align-atlas atlas/atlas --pet-out atlas/ct_pet
+python tools/bind_mhr_joints.py atlas/atlas mhr_model.pt   # the aligned atlas needs its joint binding again
 ```
 
-- **Offline, once per CT.** Meshes regenerated from the CT segmentations have the same vertex order as the atlas, so every atlas
-  vertex has a known place in the CT (all 114 structures pair). The map from the rest frame to the CT is deliberately smooth: one
-  affine per 5 cm height level, fitted to the pairs near that level and blended between levels, with the re-seated limb bones left
-  out. The CT is resampled through it on a 2 mm rest-frame grid as half-float HU, with the couch removed.
-- **Why smooth.** A first version followed every pair locally. It tore and smeared the image, because the atlas is not a smooth
-  image of the CT: even the atlas as originally built leaves a 28 mm median residual against a single affine of the CT (bones were
-  each placed rigidly, organs were warped, the supine scan was made to stand). The offline renders on the project page look clean
-  for the same reason this version does: the CT is kept intact and only moved. The price is that the CT's own structures sit a
-  median 15-40 mm from the atlas meshes, so the CT view and the CT-bone overlay do not coincide.
-- **Live.** The rig moves soft tissue with the two spine-chain frames bracketing its rest height, and the thighs with their own
-  frames. For each pixel the fragment shader solves `y = sum w_k(y) F_k^-1 p` for the rest point `y` by fixed-point iteration (10
-  rounds) and samples the volume there. Checked against a NumPy reference: the rest point is recovered to under 0.5 mm for 95% of
-  points on the sample pose (the neck converges slowest).
-- **Slice plane.** By default the plane is a coronal plane of the rest body carried by the T8 frame, so it stays coronal when the
-  person turns; it can be fixed to the camera instead. Window presets: soft tissue, bone, lung.
-- **Limits.** It is the atlas subject's CT, not the person's. Bones follow the soft-tissue frames in this view, so the shoulder
-  girdle does not articulate. The arms are not in this CT. Skin and subcutaneous tissue are carried by the nearest segmented
-  structures. There is no DRR from the CT voxels yet; the DRR is still made from bone surfaces.
+- **Offline, once per CT.** Meshes regenerated from the CT segmentations have the same vertex order as the atlas as built from the
+  CT (`atlas/ct_subject.*`), so every atlas vertex has a known place in the CT (all 114 structures pair). The CT is un-posed with
+  the rig's own model: one similarity per spine-chain frame (pelvis, each vertebra, head), fitted to that bone's pairs and blended
+  by height exactly as the rig skins soft tissue. The trunk keeps the CT's own size (scale 0.987); the head is placed, with one
+  uniform scale, onto the skull of the atlas fitted to the body model (`atlas/fitted.*`), so the neck bends to bring the scan's
+  head into the model's head. The CT is resampled through that map on a 2 mm rest-frame grid as half-float HU, couch removed.
+- **The CT atlas is the CT.** `--align-atlas` rewrites `atlas/atlas.*` with every structure taken from the CT through the same
+  map, so the CT slice, the CT-voxel DRR and the CT-bone overlay are one coherent CT. Against the neutral body model: rib cage and
+  pelvis 0% outside the skin, spine 0.7%, skull 9.5%. The shoulder girdle and humeri stay where the scan had them (arms by the
+  side, 44% outside the A-pose rest skin): fitting bones to the body is the SKEL skeleton's job, and the two are never mixed.
+- **Maps that were tried and dropped.** Following every vertex pair tore the image (the atlas build moved neighbouring structures
+  differently). An affine per height level sheared it. A single similarity kept the CT intact but left the head where the scan's
+  pillow put it, 39% outside the model's head.
+- **Live.** The rig moves soft tissue with the two spine-chain frames bracketing its rest height. For each point the fragment
+  shader solves `y = sum w_k(y) F_k^-1 p` for the rest point `y` by fixed-point iteration and samples the volume there. A scan
+  that ends at the hips stays with the pelvis frame down to its end.
+- **Slice.** By default a coronal plane of the rest body carried by the T8 frame, so it stays coronal when the person turns; it
+  can be fixed to the camera instead. Window presets: soft tissue, bone, lung.
+- **DRR from the CT voxels.** "DRR from: CT voxels" marches an orthographic ray per pixel through the deformed volume (128 steps,
+  384 x 384, each step warm-started from the previous one), with the same camera as the surface DRR, so it can be dragged round.
+  Brightness is an attenuation line integral with bone weighted up, as at kV energies. "Skeleton surfaces" keeps the old DRR of
+  whichever skeleton the mesh shows.
+- **Reference.** "Capture reference" keeps the current slice and DRR; they are then drawn in green under the live picture in
+  magenta. A reference only means something in a camera-fixed picture, so the slice switches to the camera plane while one is held.
+- **PET.** A second volume in the same rest frame is fused in colour on the slice and as a maximum-intensity projection on the
+  DRR. `--pet FILE` takes a real PET (SUV, registered to the CT). Without one, `--pet-out` writes a SIMULATED uptake map from the
+  segmentation: a typical FDG SUV per organ, physiological only, no lesions. The page labels it as simulated. It is there to show
+  the display path, not to be read as PET.
+- **Limits.** It is the atlas subject's CT, not the person's. Bones follow the soft-tissue frames in these views, so the shoulder
+  girdle and arms do not articulate. The scan ends at the hips. Skin and subcutaneous tissue are carried by the nearest frames.
 
 ### Label CT slice
 
