@@ -101,12 +101,35 @@ def simulated_suv(hu, masks):
     return suv
 
 
+def skel_spine_targets(prefix):
+    """Where the SKEL skeleton fitted to the body model has each vertebra, the pelvis and the skull (rest frame, metres).
+    SKEL's cervical and lumbar vertebrae are separate structures; its thoracic vertebrae are the twelve midline pieces of the
+    one rigid thorax mesh (the sternum pieces are in front, the ribs to the sides)."""
+    from scipy.sparse import coo_matrix
+    from scipy.sparse.csgraph import connected_components
+    sk = {s["name"]: s for s in Atlas(prefix).structures}
+    tgt = {f"vertebrae_C{i}": sk[f"skel_cervical_{i}"]["pos"].mean(0) for i in range(1, 8)}
+    tgt.update({f"vertebrae_L{i}": sk[f"skel_lumbar_{i}"]["pos"].mean(0) for i in range(1, 6)})
+    th = sk["skel_thorax"]; P = th["pos"]; F = np.asarray(th["faces"]).reshape(-1, 3)
+    n, lab = connected_components(coo_matrix((np.ones(2 * len(F)), (np.r_[F[:, 0], F[:, 1]], np.r_[F[:, 1], F[:, 2]])), shape=(len(P), len(P))), directed=False)
+    spine_z = np.mean([tgt["vertebrae_C7"][2], tgt["vertebrae_L1"][2]])
+    cent = [P[lab == i].mean(0) for i in range(n)]
+    mid = sorted([c for c in cent if abs(c[0] - tgt["vertebrae_C7"][0]) < 0.02 and abs(c[2] - spine_z) < 0.05], key=lambda c: c[1])
+    if len(mid) != 12:
+        raise SystemExit(f"expected 12 thoracic vertebrae in the SKEL thorax, found {len(mid)}")
+    tgt.update({f"vertebrae_T{i + 1}": c for i, c in enumerate(mid)})
+    tgt["pelvis"] = sk["skel_pelvis"]["pos"].mean(0)
+    tgt["skull"] = (sk["skel_skull"]["pos"].mean(0), float(np.ptp(sk["skel_skull"]["pos"], 0).mean()))
+    return tgt
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("subject"); ap.add_argument("atlas"); ap.add_argument("out")
     ap.add_argument("--voxel-mm", type=float, default=2.0)
     ap.add_argument("--margin-mm", type=float, default=95.0)
     ap.add_argument("--fitted", default=None, help="atlas fitted to the body model (tools/fit_skeleton_to_mhr.py): where its skull is, is where the CT head goes")
+    ap.add_argument("--skel", default=None, help="SKEL atlas (atlas/skel): register the CT's spine, pelvis and head onto SKEL's, vertebra by vertebra")
     ap.add_argument("--pet-out", default=None, help="also write a PET volume (uint8 SUV) in the same rest frame, e.g. atlas/ct_pet")
     ap.add_argument("--pet", default=None, help="PET NIfTI in SUV, registered to the CT (a real PET-CT). Without it the PET is SIMULATED from the segmentation")
     ap.add_argument("--pet-voxel-mm", type=float, default=4.0)
@@ -171,6 +194,26 @@ def main():
 
     trunk = np.isin(G, ["spine", "ribcage", "pelvis_leg"]) & fit
     k_body, _, _ = umeyama(Y[trunk], X[trunk])                       # one size for the whole trunk (mm per m)
+    # ---- articulated registration onto the SKEL spine. The scan's own spinal curve (supine, a pillow under the head) is not the
+    # curve of the body model: against SKEL fitted to the same body, T1 was 40 mm forward and L5 44 mm back. Each vertebra's
+    # target is therefore moved onto SKEL's vertebra (centroid to centroid); the frames below are then fitted to those targets, so
+    # each vertebra moves rigidly, takes its tilt from its neighbours, and soft tissue is interpolated between them. Bones are
+    # not bent, which a free-form registration would do.
+    Y_ct = Y
+    pelvis_shift = np.zeros(3); skel_head = None
+    if a.skel:
+        tgt = skel_spine_targets(a.skel)
+        Y = Y.copy(); moved = []
+        for n in chain:
+            if n in tgt:
+                d = tgt[n] - np.asarray(by[n]["pos"]).mean(0); Y[names_fit == n] += d; moved.append(np.linalg.norm(d) * 1000)
+        pel = [n for n in ("hip_left", "hip_right", "sacrum") if n in by]
+        pelvis_shift = tgt["pelvis"] - np.vstack([by[n]["pos"] for n in pel]).mean(0)
+        for n in pel + ["vertebrae_S1"]:
+            Y[names_fit == n] += pelvis_shift
+        skel_head = tgt["skull"]
+        print(f"registered onto the SKEL spine: {len(moved)} vertebrae moved by {min(moved):.0f}-{max(moved):.0f} mm (median {np.median(moved):.0f}), "
+              f"pelvis by {np.linalg.norm(pelvis_shift) * 1000:.0f} mm")
     frames = []                                                      # (k, R, t) per frame: pelvis, vertebrae bottom to top, head
     ys, xs = pairs_of(["hip_left", "hip_right", "sacrum", "vertebrae_S1"])
     frames.append(umeyama(ys, xs, k_body))
@@ -184,10 +227,15 @@ def main():
         Yhead = Y.copy()
         m = names_fit == "skull"
         Yhead[m] = fby["skull"]["pos"][::max(1, len(fby["skull"]["pos"]) // 600)]
+        if skel_head is not None:                                    # centred and sized as SKEL's skull, orientation as fitted
+            fp = fby["skull"]["pos"]; c0 = fp.mean(0)
+            Yhead[m] = skel_head[0] + (Yhead[m] - c0) * min(1.0, skel_head[1] / float(np.ptp(fp, 0).mean()))
     ys, xs = pairs_of(["skull"], Yhead)
     frames.append(umeyama(ys, xs))
-    chain_y = [float(np.asarray(by[n]["centroid"])[1]) for n in chain]
-    levels = np.array([float(lv["pelvis"])] + chain_y + [chain_y[-1] - 0.045])
+    chain_y = [float(Y[names_fit == n][:, 1].mean()) for n in chain]      # rest heights of the frames (after the registration)
+    levels = np.array([float(lv["pelvis"]) + float(pelvis_shift[1])] + chain_y + [chain_y[-1] - 0.045])
+    if np.any(np.diff(levels) >= 0):
+        raise SystemExit("chain levels are not strictly ascending in height after the registration")
     Ms = np.array([np.vstack([kk * R.T, t]) for kk, R, t in frames])  # (L, 4, 3): x = [y, 1] M
     Mg = Ms[len(Ms) // 2]
     print(f"CT un-posed with {len(frames)} chain frames: trunk scale {k_body / 1000:.3f}, head scale {frames[-1][0] / 1000:.3f}")
@@ -205,7 +253,7 @@ def main():
         ph = np.hstack([pts, np.ones((len(pts), 1))])
         return np.einsum("nl,nla->na", level_weights(pts[:, 1]), np.einsum("nb,lba->nla", ph, Ms))
 
-    res = np.linalg.norm(to_ct_mm(Y) - X, axis=1)
+    res = np.linalg.norm(to_ct_mm(Y_ct) - X, axis=1)
     print("how far the CT's own structures are from the source atlas meshes under this placement (median / 95%, mm):")
     for g in sorted(set(G)):
         m = G == g
@@ -249,7 +297,6 @@ def main():
     # ---- how the rig moves the volume: soft tissue follows the two spine-chain frames bracketing its height (anatomy/rig.py)
     chain = atlas.meta.get("chain", [])
     lv = atlas.meta["spine_levels"]
-    chain_y = [float(np.asarray(by[n]["centroid"])[1]) for n in chain]
     levels_out = [float(v) for v in levels]
     meta = {"shape": shape.tolist(), "origin": [float(x) for x in lo], "voxel": v, "units": "HU, float16, x fastest",
             "levels_y": levels_out, "hip_y": float(lv["hip_y"]),

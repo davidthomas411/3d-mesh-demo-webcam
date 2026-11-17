@@ -541,7 +541,7 @@ page shows the label slice and the surface DRR.
 ```bash
 pip install remotezip
 python tools/fetch_ts_subject.py s1159 ../ct_data          # 63 MB out of the 23.6 GB TotalSegmentator archive, by range requests
-python tools/build_ct_volume.py ../ct_data/s1159 atlas/ct_subject atlas/ct_volume --fitted atlas/fitted --align-atlas atlas/atlas --pet-out atlas/ct_pet
+python tools/build_ct_volume.py ../ct_data/s1159 atlas/ct_subject atlas/ct_volume --fitted atlas/fitted --skel atlas/skel --align-atlas atlas/atlas --pet-out atlas/ct_pet
 python tools/bind_mhr_joints.py atlas/atlas mhr_model.pt   # the aligned atlas needs its joint binding again
 python tools/seat_limbs_on_mhr.py atlas/atlas mhr_rest.npz # the CT's arm and shoulder bones onto the model's joints
 ```
@@ -552,6 +552,13 @@ python tools/seat_limbs_on_mhr.py atlas/atlas mhr_rest.npz # the CT's arm and sh
   by height exactly as the rig skins soft tissue. The trunk keeps the CT's own size (scale 0.987); the head is placed, with one
   uniform scale, onto the skull of the atlas fitted to the body model (`atlas/fitted.*`), so the neck bends to bring the scan's
   head into the model's head. The CT is resampled through that map on a 2 mm rest-frame grid as half-float HU, couch removed.
+- **Registered onto the SKEL spine (`--skel`).** The scan's own spinal curve (supine, pillow) is not the body model's: against
+  SKEL fitted to the same body, T1 was 40 mm forward, L5 44 mm back, the pelvis 41 mm back. With `--skel` each vertebra's target
+  is moved onto SKEL's vertebra (SKEL's thoracic vertebrae are the twelve midline pieces of its thorax mesh), the pelvis onto
+  SKEL's pelvis and the skull onto SKEL's skull, before the chain frames are fitted. This is an articulated registration driven
+  by the spine: every vertebra moves rigidly and takes its tilt from its neighbours, soft tissue is interpolated between, and no
+  bone is bent (a free-form deformable registration would bend them). After it the CT's vertebrae are a median 1.6 mm (worst
+  7.5 mm) from SKEL's, so the CT voxels and the SKEL skeleton can be blended in one DRR.
 - **The CT atlas is the CT.** `--align-atlas` rewrites `atlas/atlas.*` with every structure taken from the CT through the same
   map, so the CT slice, the CT-voxel DRR and the CT-bone overlay are one coherent CT. Against the neutral body model: rib cage and
   pelvis 0% outside the skin, spine 0.7%, skull 9.5%. The scan has the arms by the side, so its humeri, scapulae and clavicles

@@ -262,7 +262,8 @@ export class CtVolumeView {
     const back = new THREE.Vector3(Math.sin(yaw) * cp, sp, -Math.cos(yaw) * cp);              // from the centre to the viewpoint
     const right = new THREE.Vector3(0, -1, 0).cross(back).normalize(), up = back.clone().cross(right);
     u.uRight.value.copy(right); u.uUp.value.copy(up); u.uFwd.value.copy(back).multiplyScalar(-1);
-    u.uCentre.value.set(centre[0], centre[1], this.anchorZ());                               // turn about the trunk, not the body origin
+    // the same centre as the surface DRR (xray.js), so that the two coincide from every direction and can be blended
+    u.uCentre.value.set(centre[0], centre[1], centre[2] || 0); u.uDepth.value = 0.6;
     this._draw("drr", this.drrMat, viewport, true);
   }
 }
