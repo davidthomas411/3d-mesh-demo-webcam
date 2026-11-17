@@ -15,6 +15,7 @@ if (c.joints) {                                            // float32: n*3 joint
   mhrJoints = { pos: jv.subarray(0, n * 3), rot: jv.subarray(n * 3) };
 }
 const fr = computeFrames(atlas, skin, c.breath, c.depth, c.spine || "skin", 1, mhrJoints);
+fr.jawRad = (c.jawDeg || 0) * Math.PI / 180;                 // jaw hinge opening (structures with a "jaw" entry)
 let off = 0, worst = 0, worstName = "";
 for (const s of atlas.structures) {
   const P = new Float64Array(s.pos.length);

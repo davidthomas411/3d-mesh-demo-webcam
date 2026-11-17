@@ -484,12 +484,53 @@ origin moves with the estimated pose, so a shrug dropped the skull in the pictur
 also stores the DRR of that moment; it is then shown in green under the live DRR in magenta, so agreement is grey and a shift shows
 as a green edge where the bone was and a magenta edge where it is. **Reset 3D camera** re-centres the insets and drops that reference.
 
-### SKEL as a reference (`tools/fit_skel_to_mhr.py`)
+### SKEL: learned skeleton, missing limbs, jaw
 
-SKEL (non-commercial research licence; model files are not in this repository) is fitted to the neutral MHR body through Meta's
-MHR-to-SMPL vertex map, without an SMPL model file: skin-to-skin distance mean 13.2 mm (male model). Its learned skeleton agrees with
-the fitted CT skeleton at the rib cage (SKEL 265 x 183 mm, ours 279 x 192 mm), the humeri and the skull, and places the pelvis further
-forward. It also has what the CT atlas lacks: forearms, lower legs, hands, feet and a separate jaw.
+SKEL (Keller et al. 2023) is a biomechanical skeleton inside an SMPL-topology skin, with bone sizes and positions learned from data.
+It is under a non-commercial research licence: the model files and `atlas/skel.*` built from them are **not in this repository**
+(`atlas/skel.*` is git-ignored). Without them the page falls back to the CT bones alone.
+
+```bash
+# SKEL models from https://skel.is.tue.mpg.de (login), unzipped to ../body_models/skel_models_v1.1
+# ../body_models/mhr2smpl_mapping.npz from https://github.com/facebookresearch/MHR (tools/mhr_smpl_conversion/assets)
+pip install git+https://github.com/MarilynKeller/SKEL --no-deps
+python tools/fit_skel_to_mhr.py mhr_rest.npz ../body_models/mhr2smpl_mapping.npz ../body_models/skel_models_v1.1 ../body_models/skel_fit_mhr_rest.npz
+python tools/build_skel_atlas.py ../body_models/skel_fit_mhr_rest.npz atlas/atlas mhr_model.pt mhr_rest.npz atlas/skel
+python tools/fit_skeleton_to_mhr.py atlas/ct_subject atlas/atlas mhr_rest.npz mhr_model.pt --skel ../body_models/skel_fit_mhr_rest.npz
+```
+
+- **Fit.** SKEL is fitted to the neutral MHR body through Meta's MHR-to-SMPL vertex map, with no SMPL model file: skin-to-skin
+  distance mean 13.2 mm (male model).
+- **SKEL skeleton in the page** (`atlas/skel.*`, 36 bones). Trunk and head bones are rigid with the rig's skin-anchored segments
+  (blended along the neck and the lumbar spine); limb bones use a new bind, `"mhr"`: rigid with a joint of the MHR skeleton
+  (shoulder, elbow, wrist, hip, knee, ankle, toes), scaled by the joint-to-joint length. This adds what the CT atlas lacks:
+  forearms, hands, femora, lower legs and feet.
+- **Limbs defined on the body model's joints.** SKEL's own fit leaves the extremities outside the MHR skin at rest (feet 35-53%,
+  toes 40%, hands 17-25%, ulnae 16-19%). Each long bone's SKEL joint segment (hip-knee, elbow-wrist, ...) is mapped onto the matching
+  MHR joint segment; the hand is split into its 27 bones and every metacarpal and phalanx is seated on its own MHR finger segment, so
+  fingers articulate with the mesh's fingers; the foot is fitted under the foot skin and its bones go with the MHR foot joint that
+  carries the skin next to them. After seating: hands 1-3% outside, feet 0%, ulnae 2%, tibiae 6-7%.
+- **Limb bone size.** Length along the bone follows the joint-to-joint distance; thickness follows the limb's girth, measured on a
+  sample of the limb's skin (`girth_idx`). On the slim sample image this took the ulna from 32% to 12% outside; femur (14%) and tibia
+  (19%) are still poor in that pose.
+- **Skull in the DRR.** SKEL's skull is one closed surface with no cranial cavity, so the radiograph treats it as a 6.5 mm shell
+  (`shell_mm`) instead of integrating through it.
+- **Skeleton switch** (Anatomy panel): *SKEL* shows the whole learned skeleton; *CT atlas bones* shows only the CT bones (no forearms,
+  hands, lower legs or feet). The two are never mixed. Both are posed by the same rig; the DRR follows the choice.
+- **SKEL as the size reference for the CT fit** (`--skel`): the rib cage is sized to SKEL's in this body (265 x 183 mm) instead of
+  from an assumed soft-tissue thickness: x1.011 side to side, x1.052 front to back. The CT rib cage was 262 mm wide to begin with,
+  so the CT subject's thorax was already close to the right size for this body; mostly its centring changes.
+- **Jaw.** The estimator does not move the jaw (its face parameters are switched off; the jaw joint rotates 0.00 degrees in real
+  output), and the mandible cannot be separated from the CT skull mesh. The jaw shown is SKEL's, hinged about the line through its
+  condyles, and its opening comes from a face tracker that runs in the browser on the same video (MediaPipe Face Landmarker,
+  `jawOpen` blendshape, CPU; the library and its model are loaded from jsdelivr and Google storage on first use). 24 degrees at
+  `jawOpen` = 1 is an assumed mapping, not a calibrated one.
+
+### Layout
+
+The panel under the video shows the imaging views (DRR X-ray and CT slice). The latency table and the projected overlay are behind
+the button in that panel's corner. The left column holds the reference panel and the anatomy panel, each scrolling on its own; the
+runtime parameters start collapsed ("Show parameters").
 
 ### Label CT slice
 

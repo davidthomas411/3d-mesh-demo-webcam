@@ -297,6 +297,7 @@ export function computeFrames(atlas, skin, breath = 0, depth = 1, spine = "skin"
     const r = weightedRigid(rest, idx, null, skin);
     return { q: r.q, R: r.R, c: r.cs, cp: r.cd, s: bodyScale ? segmentScale(g, skin) : 1 };
   });
+  if (SEG.head !== undefined) T[SEG.head] = craniumFrame(atlas, skin, T[SEG.head], bodyScale);   // head: placed and sized by the rigid cranium skin
   const chain = atlas.chain, n = chain.length, cf = [];
   if (n) {
     const q = [], c = [], sp = [], kc = [];                      // kc: size of each vertebra's level
@@ -336,7 +337,7 @@ export function computeFrames(atlas, skin, breath = 0, depth = 1, spine = "skin"
       cf.push({ q: q[i], R: quatToR(q[i]), c: c[i], cp: [cp[i][0] + out[0], cp[i][1] + out[1], cp[i][2] + out[2]], s: kc[i] });
     }
   }
-  const F = jointFrames(atlas, T, cf, SEG, breath, depth, mhr ? mhrJoints : null, craniumFrame(atlas, skin, T[SEG.head], bodyScale));
+  const F = jointFrames(atlas, T, cf, SEG, breath, depth, mhr ? mhrJoints : null, T[SEG.head]);
   if (mhr && mhr.limbs) {                                      // limb bones sized to this person's bone lengths
     const P = mhrJoints.pos;
     for (const bone in mhr.limbs) {
@@ -347,7 +348,37 @@ export function computeFrames(atlas, skin, breath = 0, depth = 1, spine = "skin"
     }
   }
   const soft = [T[SEG.pelvis], ...cf, T[SEG.head], T[SEG.uparm_l], T[SEG.uparm_r], T[SEG.thigh_l], T[SEG.thigh_r]];
-  return { T, cf, soft, F };
+  return { T, cf, soft, F, mhr: mhrJoints && atlas.mhr ? { meta: atlas.mhr, joints: mhrJoints, scale: bodyScale, cache: {}, skin } : null, jawRad: 0 };
+}
+
+// Frame of a bone that is rigid with an MHR joint ("mhr" bind): it keeps its rest place relative to the joint, turns with it and is
+// scaled by the joint-to-child length. Mirrors Atlas.mhr_frame in runtime.py. null without joints.
+function mhrFrame(fr, bind) {
+  const m = fr.mhr;
+  if (!m) return null;
+  const key = bind.joint + ":" + (bind.child ?? "");
+  if (m.cache[key]) return m.cache[key];
+  const j = bind.joint, Rr = m.meta.rest_rot[j], L = m.joints.rot, P = m.joints.pos, o = j * 9, M = new Float64Array(9);
+  for (let a = 0; a < 3; a++) for (let b = 0; b < 3; b++) M[a * 3 + b] = L[o + a * 3] * Rr[b * 3] + L[o + a * 3 + 1] * Rr[b * 3 + 1] + L[o + a * 3 + 2] * Rr[b * 3 + 2];
+  const q0 = matToQuat(M), n = Math.hypot(q0[0], q0[1], q0[2], q0[3]) || 1, R = quatToR([q0[0] / n, q0[1] / n, q0[2] / n, q0[3] / n]);
+  let s = 1, ax = null, sl = 1;
+  if (bind.child !== undefined && m.scale) {
+    const c = bind.child * 3, a = j * 3, d = [P[c] - P[a], P[c + 1] - P[a + 1], P[c + 2] - P[a + 2]], len = Math.hypot(d[0], d[1], d[2]);
+    s = Math.min(1.25, Math.max(0.8, len / bind.rest_len));
+    if (bind.girth_idx && len > 1e-6) {
+      // length along the bone from the joints, thickness from the limb's skin: a long thin limb gets a long thin bone
+      const u = [d[0] / len, d[1] / len, d[2] / len], skin = m.skin; let sum = 0;
+      for (const vi of bind.girth_idx) {
+        const x = skin[vi * 3] - P[a], y = skin[vi * 3 + 1] - P[a + 1], z = skin[vi * 3 + 2] - P[a + 2], t = x * u[0] + y * u[1] + z * u[2];
+        const rx = x - t * u[0], ry = y - t * u[1], rz = z - t * u[2];
+        sum += rx * rx + ry * ry + rz * rz;
+      }
+      const kg = Math.min(1.3, Math.max(0.6, Math.sqrt(sum / bind.girth_idx.length) / bind.girth_rest));
+      const rj = m.meta.rest_pos[j], rc = m.meta.rest_pos[bind.child], r = [rc[0] - rj[0], rc[1] - rj[1], rc[2] - rj[2]], rn = Math.hypot(r[0], r[1], r[2]);
+      ax = [r[0] / rn, r[1] / rn, r[2] / rn]; sl = s; s = kg;
+    }
+  }
+  return (m.cache[key] = { R, c: m.meta.rest_pos[j], cp: [P[j * 3], P[j * 3 + 1], P[j * 3 + 2]], s, ax, sl });
 }
 
 // Body frames {q,R,c,cp} (x' = R (x - c) + cp) for every joint-driven bone. Mirrors _joint_frames in runtime.py.
@@ -492,8 +523,19 @@ export function transformStructure(s, fr, P, N, rn, f = 1) {
     }
     return;
   }
-  let R, c, cp, k = 1;                                // k: uniform scale about the frame's joint centre (skull only)
+  let R, c, cp, k = 1;                                // k: uniform scale about the frame's centre
+  let axis = null, kAxis = 1;                         // a different scale along one rest-frame axis (limb length vs thickness)
+  let jaw = null;                                     // jaw hinge: rotation about the line through the condyles, before the frame
+  if (s.jaw && fr.jawRad) {
+    const ax = s.jaw.axis, M = rodrigues(ax, fr.jawRad);
+    jaw = { M, p: s.jaw.pivot };
+  }
   switch (s.bind) {
+    case "mhr": {
+      const fj = mhrFrame(fr, s.mhr);
+      if (!fj) { P.set(p); if (N) N.set(rn); if (f !== 1) for (let v = 0; v < p.length; v += 3) { P[v + 1] *= f; P[v + 2] *= f; if (N) { N[v + 1] *= f; N[v + 2] *= f; } } return; }
+      R = fj.R; c = fj.c; cp = fj.cp; k = fj.s; if (fj.ax) { axis = fj.ax; kAxis = fj.sl; } break;
+    }
     case "joint": { const fr_ = F[s.name]; R = fr_.R; c = fr_.c; cp = fr_.cp; k = fr_.s || 1; break; }
     case "frame": { const fr_ = F[s.frame]; R = fr_.R; c = fr_.c; cp = fr_.cp; k = fr_.s || 1; break; }
     case "attach_ribs": { const t = rigidFromFrames(s.attach_ribs.filter(([r]) => F[r]).map(([r, w]) => [F[r], w]), s.centroid); R = t.R; c = s.centroid; cp = t.cp; k = t.s; break; }
@@ -502,7 +544,16 @@ export function transformStructure(s, fr, P, N, rn, f = 1) {
     default: { const t = rigidFromFrames(s.bone_w.map(([sg, w]) => [T[sg], w]), s.centroid); R = t.R; c = s.centroid; cp = t.cp; k = t.s; }
   }
   for (let v = 0; v < p.length; v += 3) {
-    const x = k * (p[v] - c[0]), y = k * (p[v + 1] - c[1]), z = k * (p[v + 2] - c[2]);
+    let px = p[v], py = p[v + 1], pz = p[v + 2];
+    if (jaw) {
+      const M = jaw.M, a = px - jaw.p[0], b = py - jaw.p[1], d = pz - jaw.p[2];
+      px = jaw.p[0] + M[0] * a + M[1] * b + M[2] * d; py = jaw.p[1] + M[3] * a + M[4] * b + M[5] * d; pz = jaw.p[2] + M[6] * a + M[7] * b + M[8] * d;
+    }
+    let x = k * (px - c[0]), y = k * (py - c[1]), z = k * (pz - c[2]);
+    if (axis) {
+      const d = (kAxis - k) * ((px - c[0]) * axis[0] + (py - c[1]) * axis[1] + (pz - c[2]) * axis[2]);
+      x += d * axis[0]; y += d * axis[1]; z += d * axis[2];
+    }
     P[v] = R[0] * x + R[1] * y + R[2] * z + cp[0];
     P[v + 1] = f * (R[3] * x + R[4] * y + R[5] * z + cp[1]);
     P[v + 2] = f * (R[6] * x + R[7] * y + R[8] * z + cp[2]);
@@ -559,7 +610,7 @@ export class AnatomyLayer {
   setGroupVisible(name, on) { on ? this.visibleGroups.add(name) : this.visibleGroups.delete(name); this._applyVisibility(); }
   setOpacity(a) { for (const { mesh } of this.entries) { mesh.material.opacity = a; mesh.material.transparent = a < 1; mesh.material.needsUpdate = true; } }
   setEnabled(on) { this.group.visible = on; }
-  _applyVisibility() { for (const { s, mesh } of this.entries) mesh.visible = this.visibleGroups.has(s.group); }
+  _applyVisibility() { for (const { s, mesh } of this.entries) mesh.visible = this.visibleGroups.has(s.group) && !(this._undriven && s.bind === "mhr"); }
 
   // skin: Float32Array(V*3) live MHR vertices in the raw frame (metres), same layout as the mesh.
   // breath: 0..1 respiratory state (ribs, sternum and the structures they carry), depth: 1 = quiet breathing.
@@ -567,7 +618,11 @@ export class AnatomyLayer {
   update(skin, breath = 0, depth = 1, mhrJoints = null) {
     if ((!this.group.visible && !this.xrayActive && !this.ctActive) || !skin) return;
     const fr = computeFrames(this.atlas, skin, breath, depth, this.spine, this.supportStride, this.useJoints === false ? null : mhrJoints, this.bodyScale !== false), f = this.flipYZ ? -1 : 1;
+    fr.jawRad = (this.jawDeg || 0) * Math.PI / 180;        // jaw opening from the face tracker (degrees), 0 = closed
+    const undriven = !fr.mhr;                              // bones bound to MHR joints cannot be placed without the joints
+    if (undriven !== this._undriven) { this._undriven = undriven; this._applyVisibility(); }
     for (const e of this.entries) {
+      if (undriven && e.s.bind === "mhr") continue;
       if (!(e.mesh.visible && this.group.visible) && !e.forceUpdate && !e.ctForce) continue;
       const g = e.mesh.geometry;
       transformStructure(e.s, fr, g.attributes.position.array, g.attributes.normal.array, e.restN, f);

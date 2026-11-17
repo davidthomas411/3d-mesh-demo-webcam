@@ -5,7 +5,8 @@
 const OPEN = /^(scapula_|costal_cartilages)/;
 
 export class XrayView {
-  constructor(THREE, renderer, layer, { size = 512, density = 1.7, windowCm = 10, gamma = 0.75, openCm = 0.5, halfExtentM = 0.55 } = {}) {
+  // extra: more bones from other layers, as [[layer, (structure) => boolean], ...] (e.g. the limb bones another atlas has)
+  constructor(THREE, renderer, layer, { size = 512, density = 1.7, windowCm = 10, gamma = 0.75, openCm = 0.5, halfExtentM = 0.55, extra = [] } = {}) {
     this.THREE = THREE; this.renderer = renderer; this.layer = layer; this.size = size; this.density = density; this.windowCm = windowCm; this.gamma = gamma; this.half = halfExtentM;
     this.scene = new THREE.Scene(); this.meshes = [];
     const mk = (side, sign, constant) => new THREE.ShaderMaterial({
@@ -13,11 +14,21 @@ export class XrayView {
       uniforms: { uSign: { value: sign }, uConst: { value: constant } },
       vertexShader: "varying float vD; void main(){ vec4 mv = modelViewMatrix * vec4(position,1.0); vD = -mv.z; gl_Position = projectionMatrix * mv; }",
       fragmentShader: "uniform float uSign; uniform float uConst; varying float vD; void main(){ gl_FragColor = vec4(uConst > 0.0 ? uConst : uSign * vD, 0.0, 0.0, 1.0); }" });
-    for (const e of layer.entries) {
+    // A structure marked shell_mm is a closed surface standing for a hollow bone (SKEL's skull has no cranial cavity): integrating
+    // the path through it would make the whole head solid bone. Each crossing of its surface adds the wall thickness instead,
+    // longer where the ray grazes the wall, which is what gives a real skull its bright rim.
+    const shell = (mm) => new THREE.ShaderMaterial({
+      side: THREE.DoubleSide, depthTest: false, depthWrite: false, transparent: true, blending: THREE.CustomBlending, blendEquation: THREE.AddEquation, blendSrc: THREE.OneFactor, blendDst: THREE.OneFactor,
+      uniforms: { uT: { value: mm / 1000 } },
+      vertexShader: "varying vec3 vN; void main(){ vN = normalize(normalMatrix * normal); gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0); }",
+      fragmentShader: "uniform float uT; varying vec3 vN; void main(){ gl_FragColor = vec4(uT / max(abs(normalize(vN).z), 0.22), 0.0, 0.0, 1.0); }" });
+    const sources = [[layer, null], ...extra];
+    for (const [src, keep] of sources) for (const e of src.entries) {
       const s = e.s;
-      if (s.bind === "soft" || s.name === "brain") continue;
+      if (s.bind === "soft" || s.name === "brain" || (keep && !keep(s))) continue;
       e.forceUpdate = true;                                                  // keep this geometry posed even when the layer's own mesh is hidden
       const open = OPEN.test(s.name), g = e.mesh.geometry;
+      if (s.shell_mm) { const m = new THREE.Mesh(g, shell(s.shell_mm)); m.frustumCulled = false; this.scene.add(m); this.meshes.push(m); continue; }
       const specs = open ? [[THREE.DoubleSide, 1, openCm / 100]] : [[THREE.FrontSide, -1, 0], [THREE.BackSide, 1, 0]];
       for (const [side, sign, c] of specs) { const m = new THREE.Mesh(g, mk(side, sign, c)); m.frustumCulled = false; this.scene.add(m); this.meshes.push(m); }
     }
@@ -34,7 +45,7 @@ export class XrayView {
       // edge where the bone was and a magenta edge where it is now.
       fragmentShader: "uniform sampler2D uT; uniform sampler2D uR; uniform float uRef; uniform float uK; uniform float uG; varying vec2 vUv; void main(){ float v = pow(clamp(max(texture2D(uT, vUv).r, 0.0) * uK, 0.0, 1.0), uG); float r = pow(clamp(max(texture2D(uR, vUv).r, 0.0) * uK, 0.0, 1.0), uG); gl_FragColor = vec4(mix(vec3(v), vec3(v, r, v), uRef), 1.0); }" });
     this.quadScene.add(new THREE.Mesh(new THREE.PlaneGeometry(2, 2), this.resolve));
-    layer.xrayActive = true;
+    for (const [src] of sources) src.xrayActive = true;
   }
   // view: "ap" (from the front) or "lateral" (from the person's left, face to the left of the image). centre: [x, y, z] of the picture centre in the raw MHR frame (metres).
   render(view = "ap", centre = [0, -1.3, 0], viewport = null) {

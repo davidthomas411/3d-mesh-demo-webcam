@@ -103,7 +103,14 @@ class Atlas:
                 continue
             R, cs, cd = kabsch(sg["rest"], skin[sg["idx"]])
             out.append((rot_to_quat(R), R, cs, cd))
-        return [f + (self.segment_scale(i, None, skin) if body_scale else 1.0,) for i, f in enumerate(out)]
+        out = [f + (self.segment_scale(i, None, skin) if body_scale else 1.0,) for i, f in enumerate(out)]
+        # the head segment is placed and sized by the skin that is rigid with the head joint (no neck, no jaw), when the atlas has it
+        from . import rig
+        self._scale_on = bool(body_scale)
+        hi = rig.SEG["head"]
+        if hi < len(out):
+            out[hi] = self._cranium_frame(skin, out[hi])
+        return out
 
     def frames(self, skin, breath=0.0, depth=1.0, joints=True, spine="skin", mhr_joints=None, body_scale=True):
         """-> (segment_frames, chain_frames, soft_frames). A frame is (q, R, c_rest, c_live, k): x -> k R (x - c_rest) + c_live.
@@ -306,7 +313,32 @@ class Atlas:
             out[m] = (1 - w[m, None]) * _apply(F[r], s["pos"][m]) + w[m, None] * xs[m]
         return out
 
-    def pose(self, skin, breath=0.0, depth=1.0, joints=True, spine="skin", mhr_joints=None, body_scale=True):
+    def mhr_frame(self, bind, mhr_joints):  # noqa: C901
+        """Frame of a bone that is rigid with an MHR joint ("mhr" bind): it keeps its rest place relative to the joint, turns with
+        it and is scaled by the joint-to-child length. None without joints."""
+        m = self.meta.get("mhr")
+        if mhr_joints is None or not m:
+            return None
+        j = bind["joint"]
+        R = np.asarray(mhr_joints[1][j], np.float64) @ np.asarray(m["rest_rot"][str(j)]).reshape(3, 3).T
+        q = rot_to_quat(R); R = quat_to_rot(q / np.linalg.norm(q))
+        k = 1.0
+        frame = (rot_to_quat(R), R, np.asarray(m["rest_pos"][str(j)]), np.asarray(mhr_joints[0][j], np.float64))
+        if "child" in bind and self._scale_on:
+            pj, pc = np.asarray(mhr_joints[0][j], np.float64), np.asarray(mhr_joints[0][bind["child"]], np.float64)
+            n = np.linalg.norm(pc - pj)
+            k = float(np.clip(n / bind["rest_len"], 0.8, 1.25))
+            if "girth_idx" in bind and self._skin is not None and n > 1e-6:
+                # length along the bone from the joints, thickness from the limb's skin: a long thin limb gets a long thin bone
+                ax = (pc - pj) / n
+                rel = np.asarray(self._skin)[np.asarray(bind["girth_idx"])] - pj
+                rad = rel - np.outer(rel @ ax, ax)
+                kg = float(np.clip(np.sqrt((rad ** 2).sum(1).mean()) / bind["girth_rest"], 0.6, 1.3))
+                rest_ax = np.asarray(m["rest_pos"][str(bind["child"])]) - np.asarray(m["rest_pos"][str(j)])
+                return frame + (kg, rest_ax / np.linalg.norm(rest_ax), k)
+        return frame + (k,)
+
+    def pose(self, skin, breath=0.0, depth=1.0, joints=True, spine="skin", mhr_joints=None, body_scale=True, jaw_deg=0.0):
         """skin: (V,3) live MHR vertices in the rest frame/units (metres). breath: 0 (end-expiration) .. 1
         (end-inspiration), depth: 1 = quiet breathing. joints=False reproduces the model stage before joint rules;
         spine="physio" distributes trunk rotation by in-vivo per-level data (numpy only; the browser port is pending).
@@ -315,6 +347,14 @@ class Atlas:
         out = {}
         for s in self.structures:
             b = s["bind"]
+            if b == "mhr":
+                f = self.mhr_frame(s["mhr"], mhr_joints)
+                out[s["name"]] = _apply(f, s["pos"]) if f is not None else s["pos"].copy()
+                continue
+            if s.get("jaw") and jaw_deg:                    # hinge about the line through the condyles, then carried like any bone
+                from scipy.spatial.transform import Rotation as Rot
+                pv = np.asarray(s["jaw"]["pivot"]); Rj = Rot.from_rotvec(np.asarray(s["jaw"]["axis"]) * np.radians(jaw_deg)).as_matrix()
+                s = dict(s, pos=pv + (s["pos"] - pv) @ Rj.T)
             if b == "joint":
                 out[s["name"]] = _apply(F[s["name"]], s["pos"])
             elif b == "frame":                               # rigid with another body's frame (brain with the skull)
@@ -398,7 +438,11 @@ def _apply(Tk, x):
     """Rigid frame (q, R, c_rest, c_live); an optional fifth entry is a uniform scale about c_rest (the skull)."""
     _, R, cs, cd = Tk[:4]
     k = Tk[4] if len(Tk) > 4 else 1.0
-    return k * (x - cs) @ R.T + cd
+    rel = k * (x - cs)
+    if len(Tk) > 6:                                       # a different scale along an axis (rest frame): Tk[5] axis, Tk[6] scale along it
+        a = Tk[5]
+        rel = rel + (Tk[6] - k) * np.outer((x - cs) @ a, a)
+    return rel @ R.T + cd
 
 
 def _rigid(pos, c, weighted_frames):

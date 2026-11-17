@@ -97,7 +97,16 @@ def report_chest(tag, t):
           f"front {((t[:, 7] - t[:, 3]) * 1000).min():.0f}-{((t[:, 7] - t[:, 3]) * 1000).max():.0f} mm, back {((t[:, 4] - t[:, 8]) * 1000).min():.0f}-{((t[:, 4] - t[:, 8]) * 1000).max():.0f} mm")
 
 
-def fit_trunk(atlas, depth):
+def skel_thorax_size(skel_fit):
+    """Width and depth (m) of SKEL's rib cage in its fit to this body (tools/fit_skel_to_mhr.py)."""
+    z = np.load(skel_fit, allow_pickle=True)
+    names = [str(n) for n in z["bone_names"]]
+    a, e = z["bone_verts_indices"][names.index("thorax")]
+    t = z["skel_verts"][a:e]
+    return float(np.ptp(t[:, 0])), float(np.ptp(t[:, 2]))
+
+
+def fit_trunk(atlas, depth, skel_fit=None):
     mesh = depth.mesh
     t = chest_table(atlas, mesh, THORAX_LEVELS)
     report_chest("before", t)
@@ -107,6 +116,14 @@ def fit_trunk(atlas, depth):
     sx = float(np.clip(np.percentile((skin_w - 2 * TISSUE["thorax_lateral"]) / rib_w, 10), 1.0, 1.3))
     back = t[:, 4] - t[:, 8]                                   # the posterior line is kept, so the back tissue stays as it is
     sz = float(np.clip(np.percentile((skin_d - TISSUE["thorax_anterior"] - np.maximum(back, TISSUE["thorax_posterior"])) / bone_d, 10), 1.0, 1.3))
+    source = "assumed soft-tissue thickness"
+    if skel_fit:
+        # a learned reference is available: size the rib cage as SKEL's is in this body, instead of from assumed tissue thickness
+        ribs_all = np.vstack([atlas.get(n) for n in atlas.by if n.startswith("rib_")])
+        w, d = skel_thorax_size(skel_fit)
+        sx = float(np.clip(w / np.ptp(ribs_all[:, 0]), 0.85, 1.25))
+        sz = float(np.clip(d / np.ptp(ribs_all[:, 2]), 0.85, 1.25))
+        source = f"SKEL rib cage {w * 1000:.0f} x {d * 1000:.0f} mm"
     xm = float(np.median((t[:, 5] + t[:, 6]) / 2))             # rib-cage midline now
     xm_new = float(np.median((t[:, 1] + t[:, 2]) / 2))         # chest midline
     # posterior line of the bones (most posterior point per level), smooth in y; scaling front-back is done about it
@@ -140,8 +157,8 @@ def fit_trunk(atlas, depth):
             e["center"] = [round(float(v), 5) for v in warp(ec)[0]]
             e["radii"] = [round(float(v), 5) for v in np.asarray(e["radii"]) * np.array([1 + ae * (sx - 1), 1.0, 1 + ae * (sz - 1)])]
     report_chest("after ", chest_table(atlas, mesh, THORAX_LEVELS))
-    print(f"  thorax scaled x{sx:.3f} side to side and x{sz:.3f} front to back, shifted {(xm_new - xm) * 1000:+.0f} mm sideways; pelvis and neck unchanged")
-    return {"lateral": round(sx, 4), "anteroposterior": round(sz, 4), "shift_mm": round((xm_new - xm) * 1000, 1)}
+    print(f"  thorax scaled x{sx:.3f} side to side and x{sz:.3f} front to back ({source}), shifted {(xm_new - xm) * 1000:+.0f} mm sideways; pelvis and neck unchanged")
+    return {"lateral": round(sx, 4), "anteroposterior": round(sz, 4), "shift_mm": round((xm_new - xm) * 1000, 1), "size_from": source}
 
 
 def head_landmarks(mhr_path):
@@ -259,6 +276,7 @@ def main():
     ap.add_argument("out", help="fitted atlas prefix (atlas/atlas)")
     ap.add_argument("rest", help="mhr_rest.npz: neutral MHR mesh (verts, faces)")
     ap.add_argument("mhr", help="mhr_model.pt")
+    ap.add_argument("--skel", default=None, help="SKEL fitted to this body (tools/fit_skel_to_mhr.py): used as the size reference for the rib cage")
     a = ap.parse_args()
     for ext in (".json", ".bin"):
         shutil.copyfile(a.source + ext, a.out + ext)
@@ -266,7 +284,7 @@ def main():
     depth = SkinDepth(np.asarray(rest["verts"], np.float64), np.asarray(rest["faces"]).reshape(-1, 3))
     atlas = AtlasFile(a.out)
     print("1 TRUNK")
-    trunk = fit_trunk(atlas, depth)
+    trunk = fit_trunk(atlas, depth, a.skel)
     print("2 SKULL")
     skull = fit_skull(atlas, depth, head_landmarks(a.mhr))
     atlas.meta["fit"] = {"tool": "tools/fit_skeleton_to_mhr.py", "source": os.path.basename(a.source), "tissue_m": TISSUE, "thorax": trunk, "skull": skull}

@@ -4,3 +4,5 @@ output/
 latest.jpg
 *.bak
 .pytest_cache/
+atlas/skel.json
+atlas/skel.bin

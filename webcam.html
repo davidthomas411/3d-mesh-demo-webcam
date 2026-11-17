@@ -409,6 +409,16 @@
           Show overlay
         </button>
 
+        <div id="imagingView">
+          <figure id="drrFigure">
+            <figcaption id="drrCaption">DRR X-ray</figcaption>
+            <canvas id="drrCanvas" width="640" height="640"></canvas>
+          </figure>
+          <figure id="ctFigure">
+            <figcaption id="ctCaption">Label CT slice (atlas, not CT voxels)</figcaption>
+            <canvas id="ctCanvas" width="640" height="640"></canvas>
+          </figure>
+        </div>
         <pre id="latencyHud">Latency HUD: waiting for data</pre>
         <canvas id="overlay"></canvas>
       </div>
@@ -557,6 +567,25 @@
      */
     let anatomyLayer = null;
 
+    /*
+     * Two skeletons can be shown in the body mesh:
+     *   SKEL  the learned skeleton of SKEL fitted to the body model (atlas/skel.*, built locally by tools/build_skel_atlas.py):
+     *         whole skeleton including forearms, hands, legs, feet and a separate jaw
+     *   CT    the bones of the CT atlas (atlas/atlas.*), which has no forearms, hands, lower legs or feet
+     * Both are posed by the same rig from the same mesh and joints. The CT atlas also supplies the organs and the label CT slice.
+     */
+    let skelLayer = null;
+    let skeletonMode = "ct";          // "skel" | "ct"
+    let anatomyShown = true;
+    const CT_BONE_GROUPS = ["skull", "spine", "ribcage", "shoulder", "pelvis_leg"];
+    const SKEL_GROUPS = ["skel_axial", "skel_arm", "skel_limbs"];
+    const drrCanvas = document.getElementById("drrCanvas");
+    const ctCanvas = document.getElementById("ctCanvas");
+    const drrCaption = document.getElementById("drrCaption");
+    const drrFigure = document.getElementById("drrFigure");
+    const ctFigure = document.getElementById("ctFigure");
+    const imagingView = document.getElementById("imagingView");
+
     async function initAnatomy() {
       try {
         const atlas = await loadAtlas(
@@ -566,11 +595,17 @@
         // Bones are drawn opaque so the depth buffer orders them correctly under the translucent skin
         // (two translucent layers are sorted per object, which made bones inside the body look as if they were in front of it).
         anatomyLayer = new AnatomyLayer(THREE, atlas, { flipYZ: false, opacity: 1 });
-        // Default view: just the skeleton inside the body mesh.
-        anatomyLayer.visibleGroups = new Set(["skull", "spine", "ribcage", "shoulder", "pelvis_leg"]);
+        anatomyLayer.visibleGroups = new Set(CT_BONE_GROUPS);
         anatomyLayer._applyVisibility();
-        anatomyLayer.setEnabled(true);
         bodyMesh.add(anatomyLayer.group);
+        try {
+          const skel = await loadAtlas("/atlas/skel.json", "/atlas/skel.bin");
+          skelLayer = new AnatomyLayer(THREE, skel, { flipYZ: false, opacity: 1 });
+          bodyMesh.add(skelLayer.group);
+          skeletonMode = "skel";
+        } catch (error) {
+          skelLayer = null;           // no SKEL atlas on this machine: CT bones only
+        }
         buildAnatomyPanel(atlas);
       } catch (error) {
         console.warn("Anatomy atlas unavailable:", error);
@@ -585,7 +620,7 @@
      * when a mesh arrives, as before. See anatomy/stream.js and tests/js/stream_sim.mjs.
      */
     // The server appends the MHR skeleton to each mesh (127 joint positions, then 127 rotation matrices). The rig is
-    // driven by those joints when present ("Drive bones from MHR joints"), and the stream carries mesh + joints together.
+    // driven by those joints when present, and the stream carries mesh + joints together.
     const N_SKIN = 18439 * 3;
     let rigStream = new RigStream(N_SKIN, { horizonMs: 120, gain: 1.0, smoothMs: 0 });
     let predictRig = true;
@@ -603,10 +638,17 @@
     function rigUpdate(values) {
       const { skin, joints } = splitRigInput(values);
       anatomyLayer.update(skin, 0, 1, joints);
+      if (skelLayer) skelLayer.update(skin, 0, 1, joints);
+    }
+
+    function rigNeeded() {
+      return anatomyLayer && (
+        anatomyLayer.group.visible || (skelLayer && skelLayer.group.visible) || xrayOn || ctOn
+      );
     }
 
     function anatomyUpdate(vertexValues, captureTimestampMs) {
-      if (!anatomyLayer || !(anatomyLayer.group.visible || xrayOn || ctOn)) return;
+      if (!rigNeeded()) return;
       const values = latestRigInput && latestRigInput.length >= N_SKIN ? latestRigInput : vertexValues;
       if (predictRig && Number.isFinite(captureTimestampMs)) {
         if (rigStream.n !== values.length) {
@@ -619,46 +661,40 @@
     }
 
     /*
-     * Live DRR-style radiograph of the posed rig as seen from the camera (anterior view only when the person faces it), drawn into the corner of
-     * the canvas every frame from the same bone meshes the rig just posed. Off by default.
+     * Imaging panel (under the video): a live DRR-style radiograph of the posed skeleton as seen from the camera, and a
+     * CT-style slice of the posed CT atlas (flat grey per labelled tissue, not CT voxels; see anatomy/ct.js). Both are
+     * rendered by the 3-D view's own WebGL context into a corner of its canvas BEFORE the scene is drawn, copied to the
+     * panel's 2-D canvases, and then overwritten by the scene.
      */
     let xrayView = null;
+    const xrayViews = {};             // one per skeleton mode
     let xrayOn = false;
-
-    /*
-     * CT-style coronal slice of the posed atlas (flat grey per labelled tissue, not CT voxels; see anatomy/ct.js),
-     * drawn next to the AP radiograph. Its front-to-back position follows the thoracic spine plus the slider offset.
-     */
     let ctView = null;
     let ctOn = false;
     let ctOffsetM = -0.05;
-    const insetLabels = {};
-    let insetCentreCam = null;      // picture centre of the insets in camera space (x, y), set from the first mesh
+    let imagingVisible = true;
+    let insetCentreCam = null;        // picture centre in camera space (x, y), set from the first mesh
 
-    function insetLabel(key, text, rightPx, bottomPx, widthPx, visible) {
-      let el = insetLabels[key];
-      if (!el) {
-        el = insetLabels[key] = document.createElement("div");
-        el.className = "insetLabel";
-        meshView.appendChild(el);
+    function xrayViewFor(mode) {
+      if (!xrayViews[mode]) {
+        xrayViews[mode] = mode === "skel" && skelLayer
+          ? new XrayView(THREE, renderer, skelLayer, { size: 512 })
+          : new XrayView(THREE, renderer, anatomyLayer, { size: 512 });
       }
-      el.style.display = visible ? "block" : "none";
-      if (!visible) return;
-      el.textContent = text;
-      el.style.right = rightPx + "px";
-      el.style.bottom = bottomPx + "px";
-      el.style.width = widthPx + "px";
+      return xrayViews[mode];
     }
 
     function xrayDraw() {
       if (!renderer) return;
       const showX = xrayOn && xrayView, showC = ctOn && ctView;
+      drrFigure.style.display = showX ? "" : "none";
+      ctFigure.style.display = showC ? "" : "none";
+      if (!imagingVisible || !(showX || showC)) return;
       const size = renderer.getSize(new THREE.Vector2());
-      const s = Math.round(Math.min(300, size.y / 2.4));
+      const s = Math.floor(Math.min(640, size.x, size.y));
+      if (s < 32) return;
       const centre = [0, -1.3, 0];
-      // right-most inset: AP radiograph; the CT slice sits to its left (or takes its place when the radiograph is off)
-      const xrayX = size.x - s - 12, ctX = showX ? size.x - 2 * s - 24 : size.x - s - 12;
-      // The insets are drawn in CAMERA space, like the 3-D view. The mesh vertices are relative to the body's own origin, which the
+      // The pictures are in CAMERA space, like the 3-D view. The mesh vertices are relative to the body's own origin, which the
       // estimator moves whenever the pose changes (a shrug dropped the skull in a body-centred picture although the head was still);
       // the body's place in the camera is pred_cam_t. The picture centre is fixed in camera space when the first mesh arrives
       // ("Reset 3D camera" re-centres it), so a still head stays still and a captured reference shows real displacement.
@@ -668,36 +704,118 @@
       const insetCentre = insetCentreCam && latestPredCamT
         ? [insetCentreCam[0] - latestPredCamT[0], insetCentreCam[1] - latestPredCamT[1], 0]
         : centre;
-      if (showX) xrayView.render("ap", insetCentre, { x: xrayX, y: 12, w: s, h: s });
-      if (showC) ctView.render(insetCentre, ctOffsetM, { x: ctX, y: 12, w: s, h: s });
-      insetLabel(
-        "xray",
-        showX && xrayView.hasReference
-          ? "DRR X-ray: reference green, live magenta"
-          : "DRR X-ray (atlas bones, camera view)",
-        12, 12 + s - 20, s, !!showX
-      );
-      insetLabel("ct", "Label CT slice (atlas, not CT voxels)", size.x - ctX - s, 12 + s - 20, s, !!showC);
-      if (showX || showC) renderer.setViewport(0, 0, size.x, size.y);
+      const dpr = renderer.getPixelRatio(), source = renderer.domElement;
+      const copyTo = (canvas) => {
+        const g = canvas.getContext("2d");
+        g.drawImage(source, 0, (size.y - s) * dpr, s * dpr, s * dpr, 0, 0, canvas.width, canvas.height);
+      };
+      if (showX) {
+        xrayView.render("ap", insetCentre, { x: 0, y: 0, w: s, h: s });
+        copyTo(drrCanvas);
+        const what = skeletonMode === "skel" && skelLayer ? "SKEL skeleton" : "CT atlas bones";
+        drrCaption.textContent = xrayView.hasReference
+          ? "DRR X-ray (" + what + "): reference green, live magenta"
+          : "DRR X-ray (" + what + ", camera view)";
+      }
+      if (showC) {
+        ctView.render(insetCentre, ctOffsetM, { x: 0, y: 0, w: s, h: s });
+        copyTo(ctCanvas);
+      }
+      renderer.setViewport(0, 0, size.x, size.y);
     }
 
-    // Console/debug access to the live objects (used to check the inset views without a visible window).
-    window.demoDebug = () => ({ THREE, renderer, scene, camera, bodyMesh, anatomyLayer, xrayView, ctView, ctOffsetM });
+    // Console/debug access to the live objects (used to check the views without a visible window).
+    window.demoDebug = () => ({ THREE, renderer, scene, camera, bodyMesh, anatomyLayer, skelLayer, xrayView, ctView, ctOffsetM });
 
     function anatomyTick() {
-      if (!predictRig || !anatomyLayer || !(anatomyLayer.group.visible || xrayOn || ctOn)) return;
+      if (!predictRig || !rigNeeded()) return;
       const sample = rigStream.sample(performance.now());
       if (sample) rigUpdate(sample);
+    }
+
+    /*
+     * Jaw: the estimator does not move the jaw (its face parameters are switched off), so the opening comes from a face
+     * tracker running in the browser on the same video (MediaPipe Face Landmarker, "jawOpen" blendshape, CPU so it does not
+     * compete with the estimator for the GPU). It drives the hinge of the SKEL jaw.
+     */
+    let faceLandmarker = null;
+    let jawTracking = false;
+    let jawTimer = null;
+    let jawSmoothed = 0;
+    const JAW_MAX_DEG = 24;           // jaw opening at jawOpen = 1
+
+    async function startJawTracking(statusEl) {
+      jawTracking = true;
+      try {
+        if (!faceLandmarker) {
+          statusEl.textContent = "loading face tracker...";
+          const base = "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14";
+          const vision = await import(base + "/vision_bundle.mjs");
+          const files = await vision.FilesetResolver.forVisionTasks(base + "/wasm");
+          faceLandmarker = await vision.FaceLandmarker.createFromOptions(files, {
+            baseOptions: {
+              modelAssetPath: "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task",
+              delegate: "CPU"
+            },
+            outputFaceBlendshapes: true,
+            runningMode: "VIDEO",
+            numFaces: 1
+          });
+        }
+      } catch (error) {
+        jawTracking = false;
+        statusEl.textContent = "face tracker unavailable (" + error.message + ")";
+        return;
+      }
+      if (jawTimer) return;
+      jawTimer = window.setInterval(() => {
+        if (!jawTracking || !faceLandmarker || !video.videoWidth || video.paused) return;
+        let open = null;
+        try {
+          const result = faceLandmarker.detectForVideo(video, performance.now());
+          const shapes = result.faceBlendshapes && result.faceBlendshapes[0];
+          if (shapes) {
+            const jaw = shapes.categories.find((c) => c.categoryName === "jawOpen");
+            if (jaw) open = jaw.score;
+          }
+        } catch (error) {
+          statusEl.textContent = "face tracker error (" + error.message + ")";
+          return;
+        }
+        if (open === null) {
+          statusEl.textContent = "no face found";
+          jawSmoothed *= 0.8;
+        } else {
+          jawSmoothed += 0.5 * (open - jawSmoothed);
+          statusEl.textContent = "jaw open " + (jawSmoothed * JAW_MAX_DEG).toFixed(0) + "°";
+        }
+        if (skelLayer) skelLayer.jawDeg = jawSmoothed * JAW_MAX_DEG;
+      }, 66);
+    }
+
+    function stopJawTracking(statusEl) {
+      jawTracking = false;
+      jawSmoothed = 0;
+      if (skelLayer) skelLayer.jawDeg = 0;
+      statusEl.textContent = "off";
     }
 
     function buildAnatomyPanel(atlas) {
       const panel = document.createElement("div");
       panel.id = "anatomyPanel";
       panel.innerHTML =
-        '<div class="panelTitle">Anatomy (atlas)</div>' +
+        '<div class="panelTitle">Anatomy</div>' +
         '<label class="anaRow"><input id="anaEnable" type="checkbox" checked>' +
-        '<span>Show atlas anatomy in the mesh (bones by default, ' + atlas.structures.length +
-        ' structures available)</span></label>' +
+        '<span>Show the skeleton in the mesh</span></label>' +
+        '<label class="anaRow">Skeleton ' +
+        '<select id="anaSkeleton">' +
+        (skelLayer ? '<option value="skel">SKEL (learned, whole skeleton)</option>' : '') +
+        '<option value="ct">CT atlas bones</option>' +
+        '</select></label>' +
+        (skelLayer
+          ? '<label class="anaRow"><input id="anaJaw" type="checkbox" checked>' +
+            '<span>Track the jaw (face tracker) <output id="anaJawStatus">off</output></span></label>'
+          : '') +
         '<label class="anaRow"><input id="anaJoints" type="checkbox" checked>' +
         '<span>Bone rotations from MHR joints (off: fit to skin patches)</span></label>' +
         '<label class="anaRow"><input id="anaScale" type="checkbox" checked>' +
@@ -715,10 +833,12 @@
         '<input id="anaOpacity" type="range" min="0.2" max="1" step="0.05" value="1"></label>' +
         '<label class="anaRow">Skin opacity ' +
         '<input id="anaSkin" type="range" min="0.05" max="1" step="0.05" value="0.25"></label>' +
+        '<div class="anaNote">CT atlas structures (shown with the CT skeleton):</div>' +
         '<div id="anaGroups"></div>' +
         '<div class="anaNote">' + DISCLAIMER + " Source: " +
         atlas.meta.source.dataset + ", subject " +
-        atlas.meta.source.subject + ".</div>";
+        atlas.meta.source.subject +
+        (skelLayer ? ". SKEL skeleton: " + skelLayer.atlas.meta.source.dataset : "") + ".</div>";
       const anchor =
         document.getElementById("referencePanel") || runtimePanel;
       anchor.insertAdjacentElement("afterend", panel);
@@ -738,17 +858,32 @@
 
       const skinMaterial = bodyMesh.material;
       const applySkin = () => {
-        const on = panel.querySelector("#anaEnable").checked;
+        const on = anatomyShown;
         const a = Number(panel.querySelector("#anaSkin").value);
         skinMaterial.transparent = on && a < 1;
         skinMaterial.opacity = on ? a : 1;
         skinMaterial.depthWrite = !(on && a < 1);
         skinMaterial.needsUpdate = true;
       };
+      // Which bones are drawn in the mesh, and which skeleton the DRR is made from.
+      const applySkeleton = () => {
+        const skel = skeletonMode === "skel" && skelLayer;
+        anatomyLayer.setEnabled(anatomyShown && !skel);
+        if (skelLayer) {
+          skelLayer.visibleGroups = new Set(SKEL_GROUPS);
+          skelLayer._applyVisibility();
+          skelLayer.setEnabled(anatomyShown && !!skel);    // the two skeletons are never mixed
+        }
+        if (xrayOn) {
+          for (const v of Object.values(xrayViews)) v.clearReference();
+          xrayView = xrayViewFor(skel ? "skel" : "ct");
+        }
+        applySkin();
+      };
       const setXray = (on) => {
         try {
-          if (on && !xrayView) xrayView = new XrayView(THREE, renderer, anatomyLayer, { size: 512 });
           xrayOn = on;
+          if (on) xrayView = xrayViewFor(skeletonMode === "skel" && skelLayer ? "skel" : "ct");
         } catch (error) {
           console.warn("X-ray view unavailable:", error);
           panel.querySelector("#anaXray").checked = false;
@@ -777,25 +912,39 @@
       showCtOffset();
       panel.querySelector("#anaXray").addEventListener("change", (e) => setXray(e.target.checked));
       panel.querySelector("#anaCt").addEventListener("change", (e) => setCt(e.target.checked));
+      panel.querySelector("#anaSkeleton").value = skeletonMode;
+      panel.querySelector("#anaSkeleton").addEventListener("change", (e) => {
+        skeletonMode = e.target.value;
+        applySkeleton();
+      });
       setXray(true);
       setCt(true);
+      applySkeleton();
+      const eachLayer = (fn) => { fn(anatomyLayer); if (skelLayer) fn(skelLayer); };
       panel.querySelector("#anaJoints").addEventListener("change", (e) => {
-        anatomyLayer.useJoints = e.target.checked;
+        eachLayer((layer) => { layer.useJoints = e.target.checked; });
       });
       panel.querySelector("#anaScale").addEventListener("change", (e) => {
-        anatomyLayer.bodyScale = e.target.checked;
+        eachLayer((layer) => { layer.bodyScale = e.target.checked; });
       });
       panel.querySelector("#anaPredict").addEventListener("change", (e) => {
         predictRig = e.target.checked;
       });
       panel.querySelector("#anaEnable").addEventListener("change", (e) => {
-        anatomyLayer.setEnabled(e.target.checked);
-        applySkin();
+        anatomyShown = e.target.checked;
+        applySkeleton();
       });
       panel.querySelector("#anaOpacity").addEventListener("input", (e) =>
-        anatomyLayer.setOpacity(Number(e.target.value)));
+        eachLayer((layer) => layer.setOpacity(Number(e.target.value))));
       panel.querySelector("#anaSkin").addEventListener("input", applySkin);
-      applySkin();
+      const jawBox = panel.querySelector("#anaJaw");
+      if (jawBox) {
+        const jawStatus = panel.querySelector("#anaJawStatus");
+        jawBox.addEventListener("change", (e) => {
+          if (e.target.checked) startJawTracking(jawStatus); else stopJawTracking(jawStatus);
+        });
+        startJawTracking(jawStatus);
+      }
     }
     let referenceMesh = null;
     let topology;
@@ -940,8 +1089,8 @@
         requestAnimationFrame(animate);
         anatomyTick();
         controls.update();
-        renderer.render(scene, camera);
         xrayDraw();
+        renderer.render(scene, camera);
       }
 
       animate();
@@ -2915,30 +3064,30 @@
     };
 
     /*
-     * Parameters are visible initially.
+     * Parameters start collapsed ("Show parameters"), so the reference and anatomy panels fit in the left column.
      */
-    setRuntimePanelVisible(true);
+    setRuntimePanelVisible(false);
 
-    function setSecondaryView(showProjectedOverlay) {
-      overlayCanvas.style.display =
-        showProjectedOverlay ? "block" : "none";
+    // The panel under the video shows one of: the imaging views (DRR, CT), the latency table, the projected overlay.
+    const SECONDARY_MODES = ["imaging", "latency", "overlay"];
+    let secondaryMode = "imaging";
 
-      latencyHud.style.display =
-        showProjectedOverlay ? "none" : "block";
+    function setSecondaryView(mode) {
+      if (mode === true) mode = "overlay";
+      if (mode === false || !SECONDARY_MODES.includes(mode)) mode = "imaging";
+      secondaryMode = mode;
+      imagingVisible = mode === "imaging";
+      imagingView.style.display = mode === "imaging" ? "flex" : "none";
+      latencyHud.style.display = mode === "latency" ? "block" : "none";
+      overlayCanvas.style.display = mode === "overlay" ? "block" : "none";
 
-      toggleSecondaryView.textContent =
-        showProjectedOverlay
-          ? "Show latency"
-          : "Show overlay";
+      const next = SECONDARY_MODES[(SECONDARY_MODES.indexOf(mode) + 1) % SECONDARY_MODES.length];
+      toggleSecondaryView.textContent = "Show " + next;
+      toggleSecondaryView.setAttribute("aria-pressed", String(mode !== "imaging"));
 
-      toggleSecondaryView.setAttribute(
-        "aria-pressed",
-        String(showProjectedOverlay)
-      );
+      showOverlay.checked = mode === "overlay";
 
-      showOverlay.checked = showProjectedOverlay;
-
-      if (!showProjectedOverlay) {
+      if (mode !== "overlay") {
         overlayContext.clearRect(
           0,
           0,
@@ -2949,16 +3098,13 @@
     }
 
     toggleSecondaryView.onclick = () => {
-      const overlayIsVisible =
-        overlayCanvas.style.display !== "none";
-
-      setSecondaryView(!overlayIsVisible);
+      setSecondaryView(SECONDARY_MODES[(SECONDARY_MODES.indexOf(secondaryMode) + 1) % SECONDARY_MODES.length]);
     };
 
     /*
-     * Default secondary pane: latency.
+     * Default: the imaging views. The latency table is one click away.
      */
-    setSecondaryView(false);
+    setSecondaryView("imaging");
 
     function clearTrackingReadout() {
       resetTrackingFilters();
@@ -4565,18 +4711,51 @@
     }
   }
 
+  /* bottom-left cell of the dashboard (where the latency table used to be); scrolls when the cell is short */
   #anatomyPanel {
-    margin-top: 10px; padding: 10px; border: 1px solid #333; border-radius: 6px;
-    background: rgba(20,20,20,0.85); color: #ddd; font-size: 12px; max-width: 280px;
+    grid-column: 1; grid-row: 4; min-width: 0; min-height: 0; margin: 0; padding: 10px; box-sizing: border-box;
+    overflow-y: auto; overflow-x: hidden; border: 1px solid #333; border-radius: 6px;
+    background: rgba(20,20,20,0.85); color: #ddd; font-size: 12px;
   }
   #anatomyPanel .panelTitle { font-weight: 600; margin-bottom: 6px; }
   #anatomyPanel .anaRow { display: flex; gap: 6px; align-items: center; margin: 4px 0; }
   #anatomyPanel .anaRow input[type=range] { flex: 1; }
   #anatomyPanel .anaChip { display: inline-block; margin: 2px 8px 2px 0; }
+  #anatomyPanel select { flex: 1; min-width: 0; }
+  #secondaryView #imagingView {
+    position: absolute; inset: 0; display: flex; gap: 8px; padding: 8px; box-sizing: border-box;
+    align-items: center; justify-content: center; background: #0c0c0c;
+  }
+  #secondaryView #imagingView figure {
+    position: relative; margin: 0; height: 100%; aspect-ratio: 1 / 1; max-width: calc(50% - 4px); min-width: 0;
+  }
+  #secondaryView #imagingView canvas {
+    display: block; width: 100%; height: 100%; object-fit: contain; background: #000; border: 1px solid #333;
+  }
+  #secondaryView #imagingView figcaption {
+    position: absolute; top: 4px; left: 6px; right: 6px; z-index: 2; padding: 2px 6px; pointer-events: none;
+    font: 11px/16px system-ui, sans-serif; color: #d8d8d8; background: rgba(0, 0, 0, 0.55);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
   #mesh .insetLabel {
     position: absolute; z-index: 3; box-sizing: border-box; padding: 2px 6px; pointer-events: none;
     font: 11px/16px system-ui, sans-serif; color: #d8d8d8; background: rgba(0, 0, 0, 0.55);
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   }
   #anatomyPanel .anaNote { margin-top: 8px; color: #e0b050; line-height: 1.35; }
+</style>
+
+<style id="leftColumnLayout">
+  /*
+   * Left column, last word on the layout: toggle, runtime parameters (collapsible), then the reference panel and the
+   * anatomy panel sharing whatever height is left, each scrolling on its own. The video/imaging column and the 3-D view
+   * span all four rows.
+   */
+  #views { grid-template-rows: auto auto minmax(0, 1fr) minmax(0, 1fr); }
+  #toggleRuntimePanel { grid-column: 1; grid-row: 1; }
+  #runtimePanel { grid-column: 1; grid-row: 2; }
+  #referencePanel { grid-column: 1; grid-row: 3; min-height: 0; margin: 0; overflow-y: auto; overflow-x: hidden; }
+  #anatomyPanel { grid-column: 1; grid-row: 4; min-height: 0; margin: 0; overflow-y: auto; overflow-x: hidden; }
+  #leftViews { grid-column: 2; grid-row: 1 / 5; }
+  #mesh { grid-column: 3; grid-row: 1 / 5; }
 </style>

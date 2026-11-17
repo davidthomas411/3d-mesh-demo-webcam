@@ -46,7 +46,7 @@ def anatomy_js(name):
 
 @app.get("/atlas/<name>")
 def atlas_file(name):
-    if name not in ("atlas.json", "atlas.bin"):
+    if name not in ("atlas.json", "atlas.bin", "skel.json", "skel.bin"):
         return Response("Not found", status=404)
     return send_from_directory(os.path.join(ROOT, "atlas"), name)
 
