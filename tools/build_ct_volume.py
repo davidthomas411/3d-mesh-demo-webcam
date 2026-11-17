@@ -1,24 +1,21 @@
 """Bring the atlas subject's REAL CT into the rig's rest frame, as a volume the page can deform live.
 
-The fitted atlas (atlas/atlas.*) holds the CT subject's structures as surfaces, moved and resized to sit in the MHR body. Their
-vertices are in the same order as meshes regenerated from the CT segmentations, so every atlas vertex has a known place in the CT.
-Those pairs give a dense map from the rest frame back to the CT:
+The CT has to be laid into the rest pose of the body model before the rig can move it. The fitted atlas (atlas/atlas.*) holds the
+CT subject's structures as surfaces placed in that body, with vertices in the same order as meshes regenerated from the CT
+segmentations, so every atlas vertex has a known place in the CT. Those pairs define the map from the rest frame back to the CT.
 
-    for a rest-frame point y, take the nearest paired vertices y_i (rest) <-> x_i (CT); each proposes x_i + A_s (y - y_i), where A_s
-    is the linear part of the best affine map rest -> CT of the structure the vertex belongs to; the proposals are averaged with
-    Gaussian weights over the 24 nearest pairs.
+The map is deliberately SMOOTH: one affine map per height level along the body, fitted to the pairs near that level and blended
+between levels. The image is then the original CT, gently stretched to the body, with nothing torn. (A first version followed every
+pair locally, vertex by vertex. Because the skeleton fit moved neighbouring structures differently, that tore and smeared the image:
+the offline renders on the project page looked far better because they keep the CT in its own frame and only apply motion to it.)
 
-It is close to exact at the paired vertices and smooth in between (structures the fit moved differently are blended over a couple of centimetres). The CT is resampled through it on a regular rest-frame grid and written
-as half-float Hounsfield units; the page then only has to undo the live pose (anatomy/ctvol.js).
+The price of smoothness: the CT's own bones do not land exactly on the atlas bone meshes (reported below per group), and the limb
+bones the fit re-seated (humerus, scapula, clavicle, femur) are left out of the fit altogether.
 
-What it is not: tissue far from any segmented structure (subcutaneous fat, skin) is carried by the nearest structures; the arms are
-not in this CT; and it is the CT of the atlas subject, not of the person in front of the camera.
-
-usage: python tools/build_ct_volume.py SUBJECT_DIR atlas/atlas atlas/ct_volume [--voxel-mm 2.5]"""
+usage: python tools/build_ct_volume.py SUBJECT_DIR atlas/atlas atlas/ct_volume [--voxel-mm 2.0]"""
 import argparse, json, os, sys
 import numpy as np
 from scipy import ndimage as ndi
-from scipy.spatial import cKDTree
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 from anatomy import atlas_build as ab  # noqa: E402
@@ -28,7 +25,8 @@ from anatomy.runtime import Atlas  # noqa: E402
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("subject"); ap.add_argument("atlas"); ap.add_argument("out")
-    ap.add_argument("--voxel-mm", type=float, default=2.5)
+    ap.add_argument("--voxel-mm", type=float, default=2.0)
+    ap.add_argument("--level-mm", type=float, default=50.0, help="spacing of the height levels of the smooth map")
     ap.add_argument("--margin-mm", type=float, default=70.0)
     a = ap.parse_args()
 
@@ -43,8 +41,9 @@ def main():
     vol = {n: m.sum() for n, (m, _) in masks.items()}
     wts = {n: max(v, 1) ** (2 / 3) for n, v in vol.items()}
     tot = sum(wts.values())
-    X, Y, Lin = [], [], []
+    X, Y, G = [], [], []
     used, skipped = 0, []
+    RESEATED = ("humerus_", "scapula_", "clavicula_", "femur_")      # placed on the body model's joints, not where the CT has them
     for name in sorted(masks):
         if name not in by:
             continue
@@ -53,43 +52,64 @@ def main():
             skipped.append(name)
             continue
         x, y = mesh[0], by[name]["pos"]
-        # affine rest -> CT for this structure (least squares); its linear part carries the neighbourhood
-        Yh = np.hstack([y - y.mean(0), np.ones((len(y), 1))])
-        M, *_ = np.linalg.lstsq(Yh, x - x.mean(0), rcond=None)
-        L = M[:3].T
         step = max(1, len(x) // 600)
-        X.append(x[::step]); Y.append(y[::step]); Lin.append(np.repeat(L[None], len(x[::step]), 0))
+        X.append(x[::step]); Y.append(y[::step]); G.append(np.full(len(x[::step]), by[name]["group"]))
         used += 1
-    X, Y, Lin = np.vstack(X), np.vstack(Y), np.vstack(Lin)
-    print(f"structures paired with the CT: {used} ({len(X)} vertex pairs); not paired: {skipped if skipped else 'none'}")
+    X, Y, G = np.vstack(X), np.vstack(Y), np.concatenate(G)
+    fit = ~np.isin(G, ["shoulder"]) & ~np.array([False] * len(G))
+    names_all = np.concatenate([np.full(len(by[n]["pos"][::max(1, len(by[n]["pos"]) // 600)]), n) for n in sorted(masks) if n in by and n not in skipped])
+    fit = np.array([not str(n).startswith(RESEATED) for n in names_all])
+    print(f"structures paired with the CT: {used} ({len(X)} vertex pairs, {int(fit.sum())} used for the map); not paired: {skipped if skipped else 'none'}")
+
+    # ---- smooth map rest -> CT: an affine per height level, blended along the body
+    sig = a.level_mm / 1000.0
+    y_levels = np.arange(Y[fit, 1].min(), Y[fit, 1].max() + sig, sig)
+    Yh = np.hstack([Y, np.ones((len(Y), 1))])
+    Mg, *_ = np.linalg.lstsq(Yh[fit], X[fit], rcond=None)             # global affine: what sparse levels fall back to
+    Ms = []
+    for yl in y_levels:
+        w = np.exp(-0.5 * ((Y[fit, 1] - yl) / sig) ** 2)
+        sw = np.sqrt(w)[:, None]
+        lam = 0.02 * w.sum() + 1e-6                                   # mild pull towards the global map
+        Aw = np.vstack([Yh[fit] * sw, np.sqrt(lam) * np.eye(4)])
+        Bw = np.vstack([X[fit] * sw, np.sqrt(lam) * Mg])
+        M, *_ = np.linalg.lstsq(Aw, Bw, rcond=None)
+        Ms.append(M)
+    Ms = np.array(Ms)                                                # (L, 4, 3)
+
+    def to_ct_mm(pts):
+        wl = np.exp(-0.5 * ((pts[:, 1:2] - y_levels[None]) / sig) ** 2) + 1e-12
+        wl /= wl.sum(1, keepdims=True)
+        ph = np.hstack([pts, np.ones((len(pts), 1))])
+        return np.einsum("nl,nla->na", wl, np.einsum("nb,lba->nla", ph, Ms))
+
+    res = np.linalg.norm(to_ct_mm(Y) - X, axis=1)
+    print("how far the CT's own structures are from the atlas meshes under the smooth map (median / 95%, mm):")
+    for g in sorted(set(G)):
+        m = G == g
+        print(f"    {g:11s} {np.median(res[m]):5.1f} / {np.percentile(res[m], 95):5.1f}")
+
+    # ---- the scanned body only: the couch and anything else outside the largest connected body is air
+    body = ndi.binary_opening(hu > -350, iterations=2)
+    lab, n_lab = ndi.label(body)
+    if n_lab > 1:
+        body = lab == (1 + int(np.argmax(ndi.sum(body, lab, range(1, n_lab + 1)))))
+    body = ndi.binary_dilation(body, iterations=2)
+    hu = np.where(body, hu, -1000.0).astype(np.float32)
 
     # ---- rest-frame grid around the atlas
     v = a.voxel_mm / 1000.0
-    P = np.vstack([s["pos"] for s in atlas.structures])
-    lo, hi = P.min(0) - a.margin_mm / 1000, P.max(0) + a.margin_mm / 1000
+    lo, hi = Y[fit].min(0) - a.margin_mm / 1000, Y[fit].max(0) + a.margin_mm / 1000
     shape = np.ceil((hi - lo) / v).astype(int)
     print(f"rest-frame grid {shape.tolist()} at {a.voxel_mm} mm ({shape.prod() / 1e6:.1f} M voxels)")
-    tree = cKDTree(Y)
     out = np.full(shape, -1000.0, np.float32)
     gx = lo[0] + (np.arange(shape[0]) + 0.5) * v
     gy = lo[1] + (np.arange(shape[1]) + 0.5) * v
     gz = lo[2] + (np.arange(shape[2]) + 0.5) * v
-    K = 24
     for i in range(shape[0]):                                   # one sagittal slab at a time
         pts = np.stack(np.meshgrid([gx[i]], gy, gz, indexing="ij"), -1).reshape(-1, 3)
-        d, idx = tree.query(pts, k=K)
-        # Gaussian weights over a neighbourhood that widens away from the structures: neighbouring structures that the skeleton fit
-        # moved differently are blended over a couple of centimetres instead of meeting at a tear
-        sig = np.maximum(1.5 * d[:, :1], 0.018)
-        w = np.exp(-0.5 * (d / sig) ** 2) + 1e-9; w /= w.sum(1, keepdims=True)
-        prop = X[idx] + np.einsum("nkab,nkb->nka", Lin[idx], pts[:, None, :] - Y[idx])     # each neighbour's proposal (mm)
-        x_mm = (w[..., None] * prop).sum(1)
-        vox = (x_mm - b) @ Ainv.T
-        val = ndi.map_coordinates(hu, vox.T, order=1, mode="constant", cval=-1000.0)
-        val[d[:, 0] > 0.09] = -1000.0                           # nothing segmented within 9 cm: outside the scanned body
-        out[i] = val.reshape(shape[1], shape[2])
-        if i % 40 == 0:
-            print(f"  slab {i}/{shape[0]}", flush=True)
+        vox = (to_ct_mm(pts) - b) @ Ainv.T
+        out[i] = ndi.map_coordinates(hu, vox.T, order=1, mode="constant", cval=-1000.0).reshape(shape[1], shape[2])
     out = np.clip(out, -1024, 3071)
 
     # ---- how the rig moves the volume: soft tissue follows the two spine-chain frames bracketing its height (anatomy/rig.py)
