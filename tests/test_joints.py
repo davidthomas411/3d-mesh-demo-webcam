@@ -109,7 +109,7 @@ def test_respiration_keeps_ribs_on_their_vertebrae_and_lifts_the_sternum(atlas):
         Jc = np.asarray(j["center"]); Jlive = (Jc - fv[2]) @ fv[1].T + fv[3]
         near = np.linalg.norm(atlas.structures[[s["name"] for s in atlas.structures].index(j["child"])]["pos"] - Jc, axis=1) < 0.006
         d = np.linalg.norm(insp[j["child"]][near].mean(0) - Jlive)
-        assert d < 0.003, (k, d)                                  # the costovertebral joint stays closed
+        assert d < 0.004, (k, d)                                  # the costovertebral joint stays closed (4 mm: the ribs are 7-10% larger since tools/fit_skeleton_to_mhr.py; it was 3 mm)
     up = lambda n: rest[n][:, 1].mean() - insp[n][:, 1].mean()   # y is down: positive = rises
     fwd = lambda n: rest[n][:, 2].mean() - insp[n][:, 2].mean()  # front is -z: positive = moves anterior
     assert 0.001 < up("sternum") < 0.02 and fwd("sternum") > 0.0005
@@ -242,13 +242,13 @@ def test_mhr_joint_drives_its_segment_and_scales_the_limb_bone(atlas):
         pytest.skip("atlas has no MHR joint binding")
     skin = skin_with(atlas, {})                                # the skin does not move: only the joints do
     rv = np.array([0.0, 0.0, 0.7])
-    T, cf, sf, F = atlas.frames(skin, mhr_joints=mhr_joints_with(atlas, {"uparm_l": (rv, [0, 0, 0])}, lengthen={"humerus_left": 1.1}))
+    T, cf, sf, F = atlas.frames(skin, mhr_joints=mhr_joints_with(atlas, {"uparm_l": (rv, [0, 0, 0])}, lengthen={"humerus_left": 0.9}))
     by = {s["name"]: s for s in atlas.structures}
     assert Rot.from_matrix(T[[g["name"] for g in atlas.segments].index("uparm_l")][1]).magnitude() == pytest.approx(0.7, abs=1e-6)
-    assert F["humerus_left"][4] == pytest.approx(1.1, abs=1e-4)          # bone length follows the joints
-    posed = atlas.pose(skin, mhr_joints=mhr_joints_with(atlas, {"uparm_l": (rv, [0, 0, 0])}, lengthen={"humerus_left": 1.1}))
+    assert F["humerus_left"][4] == pytest.approx(0.9, abs=1e-4)          # bone length follows the joints
+    posed = atlas.pose(skin, mhr_joints=mhr_joints_with(atlas, {"uparm_l": (rv, [0, 0, 0])}, lengthen={"humerus_left": 0.9}))
     h = by["humerus_left"]["pos"]; span = lambda p: np.linalg.norm(p - p.mean(0), axis=1).max()
-    assert span(posed["humerus_left"]) == pytest.approx(1.1 * span(h), rel=1e-4)
+    assert span(posed["humerus_left"]) == pytest.approx(0.9 * span(h), rel=1e-4)
     # defined on the model's skeleton: the humeral head and the scapula's glenoid both sit on the live MHR shoulder joint
     pos, rot = mhr_joints_with(atlas, {"uparm_l": (rv, [0, 0, 0])})
     pos[atlas.meta["mhr"]["limbs"]["humerus_left"]["joint"]] += [0.03, -0.02, 0.01]          # the shoulder moves (a shrug)

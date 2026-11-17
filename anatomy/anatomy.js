@@ -342,7 +342,8 @@ export function computeFrames(atlas, skin, breath = 0, depth = 1, spine = "skin"
     for (const bone in mhr.limbs) {
       if (!F[bone]) continue;
       const lb = mhr.limbs[bone], a = lb.joint * 3, b = lb.child * 3;
-      F[bone].s = Math.min(1.25, Math.max(0.8, Math.hypot(P[b] - P[a], P[b + 1] - P[a + 1], P[b + 2] - P[a + 2]) / lb.rest_len));
+      // uniform scale: the smaller of the length ratio and the limb's girth ratio, so a long thin arm does not get a thick bone
+      F[bone].s = Math.min(F[bone].s || 1, Math.min(1.25, Math.max(0.8, Math.hypot(P[b] - P[a], P[b + 1] - P[a + 1], P[b + 2] - P[a + 2]) / lb.rest_len)));
     }
   }
   const soft = [T[SEG.pelvis], ...cf, T[SEG.head], T[SEG.uparm_l], T[SEG.uparm_r], T[SEG.thigh_l], T[SEG.thigh_r]];
@@ -434,7 +435,7 @@ function jointFrames(atlas, T, cf, SEG, breath, depth, mhrJoints = null) {
   const ao = J.ao;
   if (ao && chain.includes(ao.parent)) {                       // skull on C1
     const c1 = cf[chain.indexOf(ao.parent)], Rh = T[SEG.head].R;
-    F.skull = mkFrame(mul3(c1.R, limitRotation(mul3(tr3(c1.R), Rh), ao.limit_deg)), ao.center, mapPoint(c1, ao.center), T[SEG.head].s || 1);
+    F.skull = mkFrame(mul3(c1.R, limitRotation(mul3(tr3(c1.R), Rh), ao.limit_deg)), ao.center, mapPoint(T[SEG.head], ao.center), T[SEG.head].s || 1);   // the skull rides the head frame, not C1 (see runtime.py)
   }
   return F;
 }

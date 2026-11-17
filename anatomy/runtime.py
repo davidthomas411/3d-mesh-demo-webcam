@@ -148,7 +148,9 @@ class Atlas:
             for bone, lb in self.meta["mhr"].get("limbs", {}).items():
                 if bone in F:
                     n = np.linalg.norm(np.asarray(mhr_joints[0][lb["child"]], np.float64) - np.asarray(mhr_joints[0][lb["joint"]], np.float64))
-                    F[bone] = F[bone][:4] + (float(np.clip(n / lb["rest_len"], 0.8, 1.25)),)
+                    # the scale is uniform, so a bone lengthened for a long thin arm would also get thicker and leave the skin:
+                    # take the smaller of the length ratio and the limb's girth ratio (the frame's own scale)
+                    F[bone] = F[bone][:4] + (min(float(np.clip(n / lb["rest_len"], 0.8, 1.25)), _k(F[bone])),)
         return T, cf, sf, F
 
     def segment_scale(self, seg, T, skin, lo=0.65, hi=1.35):
@@ -263,7 +265,10 @@ class Atlas:
         if "ao" in J and J["ao"]["parent"] in chain:           # skull on C1
             c1 = cf[chain.index(J["ao"]["parent"])]; Jao = np.asarray(J["ao"]["center"])
             Rh = T[SEG["head"]][1]
-            F["skull"] = mk(c1[1] @ rig.limit_rotation(c1[1].T @ Rh, J["ao"]["limit_deg"]), Jao, _apply(c1, Jao), _k(T[SEG["head"]]))
+            # The skull rides the head: it turns with it (within the joint's range on C1) and is carried by the head frame itself,
+            # the same rule as the humerus on its joint. Pinning it to C1 instead let the spine's smoothing drag it off the head.
+            Th = T[SEG["head"]]
+            F["skull"] = mk(c1[1] @ rig.limit_rotation(c1[1].T @ Rh, J["ao"]["limit_deg"]), Jao, _apply(Th, Jao), _k(Th))
         return F
 
     def _cartilage(self, s, F):

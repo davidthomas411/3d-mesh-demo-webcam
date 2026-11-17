@@ -72,6 +72,13 @@ def main():
         tip = hum[np.argmax(np.linalg.norm(hum - Jgh, axis=1))]
         scale_h = (np.linalg.norm(elbow - shoulder) + ELBOW_OVERSHOOT_M) / np.linalg.norm(tip - Jgh)
         R_h = shortest_arc(tip - Jgh, elbow - shoulder)
+        # the shaft direction leaves the roll about the shaft free. The CT bone came with its own roll, so stay within 30 degrees
+        # of it and take the roll that keeps the bone deepest under the arm skin (a free search flipped one humerus front to back)
+        axis = (elbow - shoulder) / np.linalg.norm(elbow - shoulder)
+        s_hum = sample(hum, 500)
+        rolls = [Rot.from_rotvec(axis * np.radians(d)).as_matrix() @ R_h for d in range(-30, 31, 5)]
+        cost = [float((hinge(depth(shoulder + scale_h * (s_hum - Jgh) @ R.T), 0.008) ** 2).sum()) for R in rolls]
+        R_h = rolls[int(np.argmin(cost))]
         hum2 = shoulder + scale_h * (hum - Jgh) @ R_h.T
 
         # ---- scapula: glenoid on the shoulder joint; rotation about it and size are free. Clavicle: follows from the scapula.

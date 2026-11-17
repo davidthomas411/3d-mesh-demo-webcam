@@ -405,7 +405,33 @@ How it is built (`python -m anatomy.atlas_build <subject_dir> mhr_rest.npz atlas
 7. The rig (`anatomy/rig.py`) is bound: nine rigid segments, a vertebra chain, rib and girdle
    attachments, and soft-tissue skinning weights.
 
-### Containment at rest and head size (added after the first live run)
+### One skeleton-to-body fit (`tools/fit_skeleton_to_mhr.py`)
+
+`atlas/ct_subject.*` is the atlas as built from the CT (the CT subject's own size and proportions). `atlas/atlas.*` is produced from
+it by one tool, so the rest pose has a single definition instead of a fix-up per bone:
+
+```bash
+python tools/fit_skeleton_to_mhr.py atlas/ct_subject atlas/atlas mhr_rest.npz mhr_model.pt
+```
+
+1. **Trunk.** One in-plane scale for the thorax, the largest that still leaves the chosen soft tissue at the tightest level (x1.065
+   side to side, x1.102 front to back), about the spine's posterior line, plus a 12 mm lateral shift that centres the rib cage. It is
+   a smooth warp of space, so ribs, vertebrae, sternum, heart, lungs and vessels move together. It fades out through the neck and the
+   abdomen; the pelvis keeps its size. Rib cage 262 x 184 mm -> 279 x 203 mm; tissue in front of it 41-75 mm -> 22-57 mm.
+2. **Skull.** Rotation, translation and three scales so its outer surface lies a scalp thickness under the head skin (width x0.99,
+   height x0.95, depth x0.99); outside the head 6.9% -> 1.4%. At run time the skull is carried by the head frame, not by C1.
+3. **Joints.** Segments bound to MHR joints (`tools/bind_mhr_joints.py`).
+4. **Arms.** Humeral head on the MHR shoulder joint, shaft on the shoulder-elbow line, girdle sized to meet it
+   (`tools/seat_limbs_on_mhr.py`).
+
+Assumed, not measured: the soft-tissue thicknesses in the tool (20 mm beside the ribs, 25 mm in front, 30 mm behind, 7 mm scalp). The
+neutral MHR body has no anatomy inside it to check them against. Open questions the fit does not settle: whether the trunk skeleton
+sits at the right height in this body (the MHR shoulder joints are level with C7, where a humeral head is normally 4-5 cm lower), the
+hips (atlas hip centres are 24-26 mm from the MHR hip joints), and the clavicle, which has to be 36-41% longer than the CT subject's
+to reach the MHR shoulder. A skeleton model with learned anatomy for this body (SKEL fitted through MHR-to-SMPL) is the reference that
+would settle them. `tools/reseat_bones.py` is no longer part of the pipeline; its helpers are still used.
+
+### Containment at rest and head size (superseded by the fit above; kept for the measurements)
 
 The first live run showed arm and shoulder bones outside the body. The cause was in the atlas, not in the motion: against the neutral
 MHR rest skin the humeri were 90% outside (up to 10 cm), the clavicles 40-58%, the scapulae 15-20% and the skull 7%; ribs, spine and
