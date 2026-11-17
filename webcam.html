@@ -682,11 +682,11 @@
     let ctVolume = null;              // the atlas subject's real CT in the rest frame (atlas/ct_volume.*, built locally), if there
     let petVolume = null;             // PET in the same rest frame (atlas/ct_pet.*), if there
     let petOn = false;
-    // What the DRR is made from: "ct" (ray-marched through the CT voxels; trunk and head only move, the arms do not articulate),
-    // "atlas" (the CT atlas bone surfaces, fully articulated), "blend" (the two mixed by drrBlend), "surfaces" (the skeleton
-    // drawn in the mesh, SKEL or CT atlas).
+    // The DRR is a blend of two pictures: the CT voxels (ray-marched; trunk and head move, the arms do not articulate) and a bone
+    // surface DRR (fully articulated). drrBlend is the share of the bones: 0 = CT voxels only, 1 = bones only. drrSource says
+    // which bones: "surfaces" (the skeleton drawn in the 3-D view, SKEL or CT atlas) or "atlas" (always the CT atlas bones).
     let drrSource = "surfaces";
-    let drrBlend = 0.5;               // share of the atlas-bone DRR in "blend"
+    let drrBlend = 0.5;
     let ctVolView = null;             // real CT, deformed live
     let ctSource = "labels";          // "real" | "labels"
     let ctBodyAligned = true;         // real CT: slice plane carried by the trunk (stays coronal) or fixed to the camera
@@ -732,10 +732,9 @@
     function xrayDraw() {
       if (!renderer) return;
       const real = ctSource === "real" && ctVolView;
-      const voxelDrr = (drrSource === "ct" || drrSource === "blend") && ctVolView;
-      const surfaceDrr = !xrayOn ? null
-        : (drrSource === "atlas" || drrSource === "blend") ? xrayViewFor("ct")
-        : (drrSource === "surfaces" || !ctVolView) ? xrayView : null;
+      const voxelDrr = drrBlend < 1 && ctVolView;
+      const surfaceDrr = !xrayOn || (voxelDrr && drrBlend <= 0) ? null
+        : drrSource === "atlas" ? xrayViewFor("ct") : xrayView;
       const showX = xrayOn && (voxelDrr || surfaceDrr), showC = ctOn && (real || ctView);
       drrFigure.style.display = showX ? "" : "none";
       ctFigure.style.display = showC ? "" : "none";
@@ -771,10 +770,10 @@
           surfaceDrr.render("ap", insetCentre, { x: 0, y: 0, w: s, h: s }, turned ? drrOrbit : null);
           copyTo(drrCanvas, voxelDrr ? drrBlend : 1);
         }
-        const what = voxelDrr && surfaceDrr ? "CT voxels + " + Math.round(drrBlend * 100) + "% articulated atlas bones" + (petOn ? " + PET MIP" : "")
+        const bones = drrSource === "atlas" || !(skeletonMode === "skel" && skelLayer) ? "CT atlas bones" : "SKEL skeleton";
+        const what = voxelDrr && surfaceDrr ? "CT voxels + " + Math.round(drrBlend * 100) + "% " + bones + (petOn ? " + PET MIP" : "")
           : voxelDrr ? "CT voxels, atlas subject" + (petOn ? " + PET MIP" : "")
-          : drrSource === "atlas" || drrSource === "blend" ? "CT atlas bones, articulated"
-          : skeletonMode === "skel" && skelLayer ? "SKEL skeleton" : "CT atlas bones";
+          : bones;
         const view = turned
           ? "turned " + Math.round(drrOrbit.yaw * 180 / Math.PI) + "° / " + Math.round(drrOrbit.pitch * 180 / Math.PI) + "°, double-click to reset"
           : "camera view, drag to turn";
@@ -906,13 +905,11 @@
             '<option value="soft">Soft tissue</option><option value="bone">Bone</option><option value="lung">Lung</option></select></label>' +
             '<label class="anaRow"><input id="anaCtBody" type="checkbox" checked>' +
             '<span>CT plane follows the body (off: fixed to the camera)</span></label>' +
-            '<label class="anaRow">DRR from <select id="anaDrrSource">' +
-            '<option value="blend">CT voxels + articulated atlas bones (blend)</option>' +
-            '<option value="ct">CT voxels only (arms do not articulate)</option>' +
-            '<option value="atlas">CT atlas bones only (articulated)</option>' +
-            '<option value="surfaces">Skeleton shown in the 3-D view</option></select></label>' +
-            '<label class="anaRow">DRR blend <input id="anaDrrBlend" type="range" min="0" max="1" step="0.05" value="0.5">' +
+            '<label class="anaRow">DRR: CT voxels <input id="anaDrrBlend" type="range" min="0" max="1" step="0.05" value="0.5"> bones' +
             '<output id="anaDrrBlendValue"></output></label>' +
+            '<label class="anaRow">DRR bones <select id="anaDrrSource">' +
+            '<option value="surfaces">Skeleton shown in the 3-D view</option>' +
+            '<option value="atlas">CT atlas bones</option></select></label>' +
             (petVolume
               ? '<label class="anaRow"><input id="anaPet" type="checkbox">' +
                 '<span>PET on the CT and DRR' + (petVolume.meta.simulated ? " (simulated uptake, not a measurement)" : "") + '</span></label>'
@@ -984,7 +981,7 @@
       const setXray = (on) => {
         try {
           xrayOn = on;
-          if (on && (drrSource === "ct" || drrSource === "blend")) { ensureCtVolView(); anatomyLayer.ctActive = true; }
+          if (on && ctVolume) { ensureCtVolView(); anatomyLayer.ctActive = true; }
           if (on) xrayView = xrayViewFor(skeletonMode === "skel" && skelLayer ? "skel" : "ct");
         } catch (error) {
           console.warn("X-ray view unavailable:", error);
@@ -999,7 +996,7 @@
           if (on && !real && !ctView) ctView = new CtSliceView(THREE, renderer, anatomyLayer, bodyMesh.geometry, { size: 512 });
           // the label slice needs every structure posed each frame; the real CT only needs the rig's frames
           if (ctView) ctView.setActive(on && !real);
-          anatomyLayer.ctActive = on || (xrayOn && (drrSource === "ct" || drrSource === "blend"));
+          anatomyLayer.ctActive = on || (xrayOn && !!ctVolume);
           ctOn = on;
         } catch (error) {
           console.warn("CT slice view unavailable:", error);
@@ -1037,8 +1034,8 @@
         const blendInput = panel.querySelector("#anaDrrBlend");
         const showBlend = () => {
           drrBlend = Number(blendInput.value);
-          blendInput.disabled = drrSource !== "blend";
-          panel.querySelector("#anaDrrBlendValue").textContent = Math.round(drrBlend * 100) + "% bones";
+          panel.querySelector("#anaDrrBlendValue").textContent =
+            drrBlend <= 0 ? "CT voxels only" : drrBlend >= 1 ? "bones only" : Math.round(drrBlend * 100) + "% bones";
         };
         blendInput.addEventListener("input", showBlend);
         drrSelect.addEventListener("change", showBlend);

@@ -565,11 +565,11 @@ python tools/seat_limbs_on_mhr.py atlas/atlas mhr_rest.npz # the CT's arm and sh
   that ends at the hips stays with the pelvis frame down to its end.
 - **Slice.** By default a coronal plane of the rest body carried by the T8 frame, so it stays coronal when the person turns; it
   can be fixed to the camera instead. Window presets: soft tissue, bone, lung.
-- **DRR.** "DRR from" chooses what the radiograph is made of. *CT voxels*: an orthographic ray per pixel marched through the
-  deformed volume (128 steps, 384 x 384, each step warm-started from the previous one), brightness an attenuation line integral
-  with bone weighted up, as at kV energies; the arms in it do not articulate. *CT atlas bones*: the surface DRR of the atlas
-  bones, fully articulated (shoulders, arms). *Blend* (default): the two mixed by the "DRR blend" slider. *Skeleton shown in the
-  3-D view*: the surface DRR of whichever skeleton the mesh shows. All share one camera, so all can be dragged round.
+- **DRR.** One slider blends two radiographs that share a camera (so both can be dragged round). At one end, *CT voxels*: an
+  orthographic ray per pixel marched through the deformed volume (128 steps, 384 x 384, each step warm-started from the previous
+  one), brightness an attenuation line integral with bone weighted up, as at kV energies; the arms in it do not articulate. At
+  the other end, *bones*: the surface DRR, fully articulated (shoulders, arms). "DRR bones" chooses which bones: the skeleton
+  shown in the 3-D view (SKEL or CT atlas) or always the CT atlas bones. At 0% or 100% only one of the two is drawn.
 - **Reference.** "Capture reference" keeps the current slice and DRR; they are then drawn in green under the live picture in
   magenta. A reference only means something in a camera-fixed picture, so the slice switches to the camera plane while one is held.
 - **PET.** A second volume in the same rest frame is fused in colour on the slice and as a maximum-intensity projection on the
