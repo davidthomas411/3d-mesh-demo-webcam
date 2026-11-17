@@ -1,0 +1,1 @@
+{"name": "autopet", "shape": [135, 285, 122], "step_mm": 3.0, "has": {"suv": true}, "origin_mm": [-188.84160740822693, 454.8994647359016, -406.98571619696986], "units": "HU float16, SUV*16 uint8, MRI/p99*255 uint8; arrays x-fastest"}

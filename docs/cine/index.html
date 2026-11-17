@@ -1,0 +1,366 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Real-time cinematic rendering</title>
+<style>
+:root { --bg:#0a0e13; --ink:#e5ecf2; --muted:#93a3b0; --line:#24313d; --accent:#f0a53d; --surface:#131b23; }
+* { box-sizing: border-box; }
+body { margin:0; background:var(--bg); color:var(--ink); font:14px/1.5 Inter, "Segoe UI", system-ui, sans-serif; }
+.wrap { display:grid; grid-template-columns: minmax(0,1fr) 300px; gap:16px; padding:16px; max-width:1300px; margin:0 auto; }
+@media (max-width: 860px) { .wrap { grid-template-columns: 1fr; } }
+canvas { width:auto; height:auto; max-width:100%; max-height:86vh; background:#05080c; border:1px solid var(--line); border-radius:6px; touch-action:none; cursor:grab; display:block; margin:0 auto; }
+h1 { font-size:20px; margin:0 0 4px; } p { color:var(--muted); margin:4px 0 10px; }
+.panel { background:var(--surface); border:1px solid var(--line); border-radius:6px; padding:12px 14px; display:flex; flex-direction:column; gap:10px; }
+label { display:flex; flex-direction:column; gap:2px; font-size:12px; color:var(--muted); }
+label.row { flex-direction:row; align-items:center; gap:8px; }
+input[type=range] { width:100%; accent-color:var(--accent); }
+select, button { background:#0d141b; color:var(--ink); border:1px solid var(--line); border-radius:4px; padding:6px 8px; font:inherit; }
+button { cursor:pointer; } button:hover { border-color:var(--accent); }
+#hud { font:12px ui-monospace, Menlo, monospace; color:var(--accent); }
+#err { color:#ff8a7a; font-size:13px; white-space:pre-wrap; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div>
+    <canvas id="cv" width="540" height="810"></canvas>
+  </div>
+  <div class="panel">
+    <div><h1>Real-time cinematic rendering</h1><p>Volumetric Monte Carlo path tracing on your GPU, refined progressively. Drag to orbit, wheel to zoom, shift-drag to pan. Research visualisation, not for clinical use.</p></div>
+    <label>Volume
+      <select id="vol"><option value="autopet">autoPET patient: CT + FDG PET</option></select></label>
+    <label class="row"><input type="checkbox" id="pet" checked> Show PET uptake (glow)</label>
+    <label>Soft-tissue opacity <input type="range" id="tissue" min="0.1" max="3" step="0.05" value="1"></label>
+    <label>Skin opacity <input type="range" id="skin" min="0" max="3" step="0.05" value="1"></label>
+    <label>Exposure <input type="range" id="exp" min="0.3" max="2.5" step="0.05" value="1"></label>
+    <label>Rays per pixel per frame <input type="range" id="spp" min="1" max="8" step="1" value="1"></label>
+    <label>Light bounces <input type="range" id="bounces" min="1" max="6" step="1" value="4"></label>
+    <label>Render scale <select id="scale"><option value="1">100% (540x810)</option><option value="0.75">75%</option><option value="0.5">50%</option><option value="1.5">150% (810x1215)</option></select></label>
+    <label class="row"><input type="checkbox" id="dn" checked> Denoise (edge-aware)</label>
+    <label class="row"><input type="checkbox" id="spin"> Slow turntable</label>
+    <button id="reset">Restart accumulation</button>
+    <div id="hud">loading...</div>
+    <div id="err"></div>
+  </div>
+</div>
+<script type="module">
+const cv = document.getElementById("cv");
+const hud = document.getElementById("hud"), errEl = document.getElementById("err");
+const $ = (id) => document.getElementById(id);
+const fail = (m) => { errEl.textContent = m; hud.textContent = ""; throw new Error(m); };
+
+const gl = cv.getContext("webgl2", { antialias: false, preserveDrawingBuffer: false });
+if (!gl) fail("WebGL2 is not available in this browser.");
+if (!gl.getExtension("EXT_color_buffer_float")) fail("EXT_color_buffer_float is required (float render targets).");
+gl.getExtension("OES_texture_float_linear");
+
+// ------------------------------------------------------------------ transfer function (mirrors tools/cinematic.py)
+const TF = [
+  [-1000, 0.0000, .50, .40, .40], [-700, 0.0002, .70, .45, .45], [-450, 0.0006, .70, .45, .42],
+  [-250, 0.0020, .85, .62, .50], [-100, 0.0030, .80, .62, .42], [-20, 0.0030, .78, .60, .42],
+  [10, 0.0075, .52, .17, .15], [70, 0.0105, .58, .16, .12], [140, 0.0240, .80, .22, .10], [260, 0.0450, .90, .50, .30],
+  [330, 0.1500, .95, .90, .80], [700, 0.3000, .98, .95, .86], [1500, 0.4000, 1.0, .99, .96], [3000, 0.5000, .80, .82, .86],
+];
+const HU0 = -1000, HU1 = 3000, LUTN = 4096;
+function buildLUT(step, tissue, skin) {
+  const d = new Float32Array(LUTN * 4); let smax = 0;
+  for (let i = 0; i < LUTN; i++) {
+    const hu = HU0 + (HU1 - HU0) * i / (LUTN - 1);
+    let k = 0; while (k < TF.length - 2 && hu > TF[k + 1][0]) k++;
+    const a = TF[k], b = TF[k + 1], t = Math.min(Math.max((hu - a[0]) / (b[0] - a[0]), 0), 1);
+    let s = a[1] + (b[1] - a[1]) * t;
+    if (hu > -450 && hu < -150) s = (a[1] + (b[1] - a[1]) * t) * skin;          // skin / subcutaneous interface
+    if (hu < 250) s *= (hu < -450 ? 1 : tissue);                                // everything softer than bone scales with tissue opacity
+    s *= step;
+    d[i * 4] = s; d[i * 4 + 1] = a[2] + (b[2] - a[2]) * t; d[i * 4 + 2] = a[3] + (b[3] - a[3]) * t; d[i * 4 + 3] = a[4] + (b[4] - a[4]) * t;
+    smax = Math.max(smax, s);
+  }
+  return { d, smax };
+}
+
+// ------------------------------------------------------------------ shaders
+const VS = `#version 300 es
+in vec2 p; void main(){ gl_Position = vec4(p, 0., 1.); }`;
+
+const FS_TRACE = `#version 300 es
+precision highp float; precision highp int; precision highp sampler3D;
+uniform sampler3D uHU; uniform sampler3D uSUV; uniform sampler2D uLUT; uniform sampler2D uPrev;
+uniform vec3 uDims; uniform float uSmax; uniform float uStepMM;
+uniform vec3 uCam, uFwd, uRight, uUp; uniform float uFovs; uniform vec2 uRes;
+uniform int uFrame, uSpp, uBounces, uHasSUV; uniform float uPET, uG0;
+uniform vec3 uLdir[3]; uniform vec3 uLcol[3]; uniform float uLcone[3];
+out vec4 outColor;
+
+uint rs;
+uint pcg(uint v){ uint s = v * 747796405u + 2891336453u; uint w = ((s >> ((s >> 28u) + 4u)) ^ s) * 277803737u; return (w >> 22u) ^ w; }
+float rnd(){ rs = pcg(rs); return float(rs >> 8) * (1.0 / 16777216.0); }
+
+float huAt(vec3 p){ return texture(uHU, (p + 0.5) / uDims).r; }
+float suvAt(vec3 p){ return uHasSUV == 1 ? texture(uSUV, (p + 0.5) / uDims).r * 16.0 : 0.0; }
+vec4 lut(float hu){ return texture(uLUT, vec2(clamp((hu - (-1000.0)) / 4000.0, 0.0, 1.0), 0.5)); }
+// sigma per voxel-length at p; PET adds a faint density where uptake is high
+float sigmaAt(vec3 p){
+  float hu = huAt(p); float s = lut(hu).r;
+  if (uHasSUV == 1 && uPET > 0.5){ float mx = clamp((suvAt(p) - 1.5) / 2.0, 0.0, 1.0); if (hu > -400.0) s = max(s, 0.03 * uStepMM * mx); }
+  return s;
+}
+bool inside(vec3 p){ return all(greaterThanEqual(p, vec3(0.0))) && all(lessThanEqual(p, uDims - 1.0)); }
+vec2 box(vec3 o, vec3 d){
+  vec3 hi = uDims - 1.0; vec3 inv = 1.0 / (d + vec3(1e-9) * sign(d + vec3(1e-12)));
+  vec3 a = (vec3(0.0) - o) * inv, b = (hi - o) * inv; vec3 t0 = min(a, b), t1 = max(a, b);
+  return vec2(max(max(t0.x, t0.y), max(t0.z, 0.0)), min(min(t1.x, t1.y), t1.z));
+}
+float shadowT(vec3 p, vec3 d){
+  vec2 tb = box(p, d); if (tb.y <= tb.x) return 1.0;
+  float t = 0.0, T = 1.0;
+  for (int i = 0; i < 160; i++){
+    t += -log(1.0 - rnd()) / uSmax; if (t >= tb.y) return T;
+    T *= 1.0 - sigmaAt(p + d * t) / uSmax; if (T < 0.02) return 0.0;
+  }
+  return T * 0.5;
+}
+vec3 gradN(vec3 p, out float gm){
+  float e = 1.0;
+  vec3 g = vec3(huAt(p + vec3(e,0,0)) - huAt(p - vec3(e,0,0)), huAt(p + vec3(0,e,0)) - huAt(p - vec3(0,e,0)), huAt(p + vec3(0,0,e)) - huAt(p - vec3(0,0,e))) * 0.5;
+  // clamp very dense metal/bone gradients so one bright voxel cannot dominate
+  gm = length(g); return gm > 1e-4 ? -g / gm : vec3(0.0, 1.0, 0.0);
+}
+vec3 ortho(vec3 n){ return normalize(abs(n.y) < 0.9 ? cross(n, vec3(0,1,0)) : cross(n, vec3(1,0,0))); }
+
+vec3 trace(vec3 o, vec3 d){
+  vec3 thr = vec3(1.0), L = vec3(0.0);
+  for (int bounce = 0; bounce < 8; bounce++){
+    if (bounce >= uBounces) break;
+    vec2 tb = box(o, d); if (tb.y <= tb.x) { if (bounce == 0) { float v = 0.5 - 0.5 * d.y; float bg = 0.002 + 0.016 * (1.0 - abs(v - 0.5) * 1.6); L += thr * vec3(bg * 0.8, bg * 0.95, bg * 1.25);} break; }
+    float t = max(tb.x, 0.0); bool hit = false; vec3 p;
+    for (int i = 0; i < 400; i++){
+      t += -log(1.0 - rnd()) / uSmax; if (t >= tb.y) break;
+      p = o + d * t; float s = sigmaAt(p);
+      if (rnd() < s / uSmax){ hit = true; break; }
+    }
+    if (!hit){
+      if (bounce == 0){ float v = 0.5 - 0.5 * d.y; float bg = 0.002 + 0.016 * (1.0 - abs(v - 0.5) * 1.6); L += thr * vec3(bg * 0.8, bg * 0.95, bg * 1.25); }
+      else { float up = -d.y; float e = 0.10 + 0.14 * max(up, 0.0) + 0.04 * max(-up, 0.0); L += thr * vec3(e * 0.85, e * 0.95, e * 1.15); }
+      break;
+    }
+    float hu = huAt(p); vec4 lc = lut(hu); vec3 c = lc.gba; float sg = lc.r;
+    float suv = suvAt(p);
+    if (uHasSUV == 1 && uPET > 0.5){
+      float tt = clamp((suv - 2.0) / 6.0, 0.0, 1.0);
+      vec3 hot = vec3(clamp(3.0 * tt, 0.0, 1.0), clamp(3.0 * tt - 1.0, 0.0, 1.0), clamp(3.0 * tt - 2.0, 0.0, 1.0));
+      float mx = clamp((suv - 1.5) / 2.0, 0.0, 1.0);
+      c = c * (1.0 - 0.8 * mx) + hot * 0.8 * mx;
+      L += thr * hot * pow(clamp((suv - 2.5) / 5.0, 0.0, 1.0), 1.2) * 1.6;
+    }
+    float gm; vec3 n = gradN(p, gm);
+    float ps = gm / (gm + uG0) * 0.9 * min(1.0, sg * 14.0 / uStepMM);
+    bool surf = rnd() < ps;
+    if (surf && dot(n, d) > 0.0) n = -n;
+    // next-event estimation toward one soft light
+    int li = int(floor(rnd() * 3.0)) % 3; vec3 ld = uLdir[li];
+    float r1 = rnd(), r2 = rnd(); float a1 = sqrt(r1) * uLcone[li], ph = 6.2831853 * r2;
+    vec3 ax = ortho(ld), bx = cross(ld, ax);
+    vec3 wl = normalize(ld + (ax * cos(ph) + bx * sin(ph)) * a1);
+    float Ts = shadowT(p, wl);
+    if (Ts > 0.0){
+      if (surf){
+        float cs = dot(n, wl);
+        if (cs > 0.0){ vec3 h = normalize(wl - d); float nh = max(dot(n, h), 0.0);
+          float fs = 0.35 * pow(nh, 40.0) * (48.0 / 25.1327);
+          L += thr * Ts * uLcol[li] * 3.0 * cs * (c / 3.14159265 + fs); }
+      } else {
+        float cl = dot(d, wl); float g = 0.35;
+        float phs = (1.0 - g * g) / (4.0 * 3.14159265 * pow(1.0 + g * g - 2.0 * g * cl, 1.5));
+        L += thr * Ts * uLcol[li] * 3.0 * phs * c;
+      }
+    }
+    thr *= c;
+    vec3 nd;
+    if (surf){
+      float q1 = rnd(), q2 = rnd(); float rr = sqrt(q1), pp = 6.2831853 * q2;
+      vec3 u = ortho(n), v = cross(n, u); nd = normalize(u * (rr * cos(pp)) + v * (rr * sin(pp)) + n * sqrt(max(1.0 - q1, 0.0)));
+      o = p + n * 0.6;
+    } else {
+      float g = 0.35; float q1 = rnd(), q2 = rnd();
+      float cth = (1.0 + g * g - pow((1.0 - g * g) / (1.0 - g + 2.0 * g * q1), 2.0)) / (2.0 * g);
+      float sth = sqrt(max(1.0 - cth * cth, 0.0)), pp = 6.2831853 * q2;
+      vec3 u = ortho(d), v = cross(d, u); nd = normalize(u * (sth * cos(pp)) + v * (sth * sin(pp)) + d * cth);
+      o = p + nd * 0.01;
+    }
+    d = nd;
+    if (bounce >= 2){ float q = min(max(thr.r, max(thr.g, thr.b)), 0.95); if (rnd() > q) break; thr /= q; }
+  }
+  return L;
+}
+
+void main(){
+  ivec2 px = ivec2(gl_FragCoord.xy);
+  rs = pcg(uint(px.x) + pcg(uint(px.y) + pcg(uint(uFrame) * 9781u + 17u)));
+  vec3 acc = vec3(0.0);
+  for (int s = 0; s < 8; s++){
+    if (s >= uSpp) break;
+    vec2 uv = (gl_FragCoord.xy + vec2(rnd(), rnd())) / uRes;
+    float u = (uv.x - 0.5) * 2.0, v = (uv.y - 0.5) * 2.0;
+    vec3 d = normalize(uFwd + uRight * (u * uFovs * uRes.x / uRes.y) + uUp * (v * uFovs));
+    vec3 c = trace(uCam, d);
+    acc += min(c, vec3(20.0));                              // firefly clamp
+  }
+  acc /= float(uSpp);
+  vec4 prev = texelFetch(uPrev, px, 0);
+  float n = prev.a;                                         // samples so far (frames)
+  outColor = vec4((prev.rgb * n + acc) / (n + 1.0), n + 1.0);
+}`;
+
+const FS_SHOW = `#version 300 es
+precision highp float; uniform sampler2D uAcc; uniform float uExp; uniform int uDn; uniform vec2 uRes; out vec4 outColor;
+vec3 aces(vec3 x){ return clamp((x * (2.51 * x + 0.03)) / (x * (2.43 * x + 0.59) + 0.14), 0.0, 1.0); }
+void main(){
+  ivec2 px = ivec2(gl_FragCoord.xy); vec4 c0 = texelFetch(uAcc, px, 0); vec3 col = c0.rgb;
+  if (uDn == 1){
+    // edge-aware blur whose strength falls as samples accumulate (n frames): a joint bilateral on colour distance
+    float n = c0.a; float rad = clamp(3.0 / (1.0 + n * 0.15), 0.0, 3.0); float sg = 0.05 + 0.5 / (1.0 + n * 0.5);
+    vec3 sum = vec3(0.0); float ws = 0.0;
+    for (int j = -2; j <= 2; j++) for (int i = -2; i <= 2; i++){
+      vec3 c = texelFetch(uAcc, clamp(px + ivec2(i, j), ivec2(0), ivec2(uRes) - 1), 0).rgb;
+      float w = exp(-float(i * i + j * j) / (2.0 * max(rad * rad, 0.05))) * exp(-dot(c - col, c - col) / (sg * sg + 1e-4));
+      sum += c * w; ws += w;
+    }
+    col = sum / max(ws, 1e-5);
+  }
+  col = aces(col * uExp); float l = dot(col, vec3(0.333)); col = clamp(vec3(l) + (col - l) * 1.08, 0.0, 1.0);
+  outColor = vec4(pow(col, vec3(1.0 / 2.2)), 1.0);
+}`;
+
+function sh(type, src) { const s = gl.createShader(type); gl.shaderSource(s, src); gl.compileShader(s); if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) fail(gl.getShaderInfoLog(s)); return s; }
+function prog(fs) { const p = gl.createProgram(); gl.attachShader(p, sh(gl.VERTEX_SHADER, VS)); gl.attachShader(p, sh(gl.FRAGMENT_SHADER, fs)); gl.linkProgram(p); if (!gl.getProgramParameter(p, gl.LINK_STATUS)) fail(gl.getProgramInfoLog(p)); return p; }
+const pT = prog(FS_TRACE), pS = prog(FS_SHOW);
+const quad = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, quad); gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1]), gl.STATIC_DRAW);
+const vao = gl.createVertexArray(); gl.bindVertexArray(vao); gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+gl.bindAttribLocation(pT, 0, "p"); gl.bindAttribLocation(pS, 0, "p"); gl.linkProgram(pT); gl.linkProgram(pS);
+
+// ------------------------------------------------------------------ data
+let meta = null, texHU, texSUV, texLUT, dims = [1, 1, 1], hasSUV = 0;
+async function gunzip(url) {
+  const r = await fetch(url); if (!r.ok) fail("Could not load " + url);
+  const ds = new DecompressionStream("gzip"); const buf = await new Response(r.body.pipeThrough(ds)).arrayBuffer(); return buf;
+}
+function tex3D(internal, format, type, w, h, d, data, filter) {
+  const t = gl.createTexture(); gl.bindTexture(gl.TEXTURE_3D, t);
+  gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+  gl.texImage3D(gl.TEXTURE_3D, 0, internal, w, h, d, 0, format, type, data);
+  gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_MIN_FILTER, filter); gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_MAG_FILTER, filter);
+  for (const a of [gl.TEXTURE_WRAP_S, gl.TEXTURE_WRAP_T, gl.TEXTURE_WRAP_R]) gl.texParameteri(gl.TEXTURE_3D, a, gl.CLAMP_TO_EDGE);
+  return t;
+}
+async function loadVolume(name) {
+  hud.textContent = "loading volume...";
+  meta = await (await fetch(name + ".json")).json();
+  const buf = await gunzip(name + ".bin.gz"); const [nx, ny, nz] = meta.shape; dims = [nx, ny, nz]; const n = nx * ny * nz;
+  const hu = new Uint16Array(buf, 0, n);                         // float16 bit patterns
+  if (texHU) gl.deleteTexture(texHU);
+  texHU = tex3D(gl.R16F, gl.RED, gl.HALF_FLOAT, nx, ny, nz, hu, gl.LINEAR);
+  hasSUV = meta.has.suv ? 1 : 0;
+  if (texSUV) gl.deleteTexture(texSUV);
+  texSUV = tex3D(gl.R8, gl.RED, gl.UNSIGNED_BYTE, hasSUV ? nx : 1, hasSUV ? ny : 1, hasSUV ? nz : 1, hasSUV ? new Uint8Array(buf, n * 2, n) : new Uint8Array(1), gl.LINEAR);
+  cam.target = [nx / 2, ny / 2, nz / 2]; cam.hh = 0.5 * ny * 1.08; cam.dist = 2200 / meta.step_mm;
+}
+
+// ------------------------------------------------------------------ camera, targets
+const cam = { az: 0, el: 0, zoom: 1, target: [0, 0, 0], hh: 100, dist: 700, pan: [0, 0, 0] };
+let scale = 1, W = 540, H = 810, accA, accB, fbA, fbB, frame = 0, dirty = true;
+function makeAcc() {
+  const mk = () => { const t = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, t); gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, W, H, 0, gl.RGBA, gl.FLOAT, null);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    const f = gl.createFramebuffer(); gl.bindFramebuffer(gl.FRAMEBUFFER, f); gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, t, 0); return [t, f]; };
+  if (accA) { gl.deleteTexture(accA); gl.deleteFramebuffer(fbA); gl.deleteTexture(accB); gl.deleteFramebuffer(fbB); }
+  [accA, fbA] = mk(); [accB, fbB] = mk(); frame = 0; dirty = true;
+}
+function resize() { scale = parseFloat($("scale").value); W = Math.round(540 * scale); H = Math.round(810 * scale); cv.width = W; cv.height = H; makeAcc(); }
+
+function cross(a, b) { return [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]]; }
+function norm(a) { const l = Math.hypot(...a); return a.map(x => x / l); }
+function lights() {   // mirrors tools/cinematic.py default_lights, rotated by the camera azimuth
+  const L = [[-0.55, -0.60, -0.65, 1.0, 0.94, 0.86, 0.22, 4.2], [0.80, -0.20, -0.45, 0.72, 0.82, 1.0, 0.40, 1.3], [0.10, -0.55, 0.85, 1, 1, 1, 0.18, 2.4]];
+  const c = Math.cos(cam.az), s = Math.sin(cam.az); const dirs = [], cols = [], cones = [];
+  for (const l of L) { const d = norm([l[0], l[1], l[2]]); dirs.push(...[d[0] * c + d[2] * s, d[1], -d[0] * s + d[2] * c]); cols.push(l[3] * l[7], l[4] * l[7], l[5] * l[7]); cones.push(l[6]); }
+  return { dirs, cols, cones };      // the shader multiplies by 3 (one of three lights is chosen at random), as the CPU renderer does
+}
+
+function draw() {
+  const t0 = performance.now();
+  const quality = parseInt($("spp").value), bounces = parseInt($("bounces").value);
+  const lut = buildLUT.cache;
+  const caz = Math.cos(cam.az) * Math.cos(cam.el), fwd = norm([Math.sin(cam.az) * Math.cos(cam.el), Math.sin(cam.el), caz]);
+  const tg = cam.target.map((v, i) => v + cam.pan[i]);
+  const dist = cam.dist;
+  const eye = tg.map((v, i) => v - fwd[i] * dist);
+  const right = norm(cross(fwd, [0, -1, 0])), up = cross(right, fwd);
+  const lg = lights();
+  gl.viewport(0, 0, W, H);
+  // accumulate pass: write B from A, then swap
+  gl.useProgram(pT);
+  gl.bindFramebuffer(gl.FRAMEBUFFER, fbB);
+  gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_3D, texHU); gl.uniform1i(gl.getUniformLocation(pT, "uHU"), 0);
+  gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_3D, texSUV); gl.uniform1i(gl.getUniformLocation(pT, "uSUV"), 1);
+  gl.activeTexture(gl.TEXTURE2); gl.bindTexture(gl.TEXTURE_2D, texLUT); gl.uniform1i(gl.getUniformLocation(pT, "uLUT"), 2);
+  gl.activeTexture(gl.TEXTURE3); gl.bindTexture(gl.TEXTURE_2D, accA); gl.uniform1i(gl.getUniformLocation(pT, "uPrev"), 3);
+  const U = (n) => gl.getUniformLocation(pT, n);
+  gl.uniform3f(U("uDims"), ...dims); gl.uniform1f(U("uSmax"), lut.smax); gl.uniform1f(U("uStepMM"), meta.step_mm);
+  gl.uniform3f(U("uCam"), ...eye); gl.uniform3f(U("uFwd"), ...fwd); gl.uniform3f(U("uRight"), ...right); gl.uniform3f(U("uUp"), ...up);
+  gl.uniform1f(U("uFovs"), (cam.hh / cam.zoom) / dist); gl.uniform2f(U("uRes"), W, H);
+  gl.uniform1i(U("uFrame"), frame); gl.uniform1i(U("uSpp"), quality); gl.uniform1i(U("uBounces"), bounces);
+  gl.uniform1i(U("uHasSUV"), hasSUV); gl.uniform1f(U("uPET"), $("pet").checked ? 1 : 0); gl.uniform1f(U("uG0"), 40.0);
+  gl.uniform3fv(U("uLdir"), lg.dirs); gl.uniform3fv(U("uLcol"), lg.cols); gl.uniform1fv(U("uLcone"), lg.cones);
+  gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+  [accA, accB] = [accB, accA]; [fbA, fbB] = [fbB, fbA];
+  // display pass
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null); gl.useProgram(pS);
+  gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, accA); gl.uniform1i(gl.getUniformLocation(pS, "uAcc"), 0);
+  gl.uniform1f(gl.getUniformLocation(pS, "uExp"), parseFloat($("exp").value)); gl.uniform1i(gl.getUniformLocation(pS, "uDn"), $("dn").checked ? 1 : 0);
+  gl.uniform2f(gl.getUniformLocation(pS, "uRes"), W, H);
+  gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+  frame++;
+  return t0;
+}
+
+function rebuildLUT() { const l = buildLUT(meta.step_mm, parseFloat($("tissue").value), parseFloat($("skin").value)); buildLUT.cache = l;
+  if (texLUT) gl.deleteTexture(texLUT); texLUT = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, texLUT);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, LUTN, 1, 0, gl.RGBA, gl.FLOAT, l.d);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE); }
+
+// ------------------------------------------------------------------ interaction
+let drag = null;
+cv.addEventListener("pointerdown", (e) => { cv.setPointerCapture(e.pointerId); drag = { x: e.clientX, y: e.clientY, pan: e.shiftKey || e.button === 2 }; cv.style.cursor = "grabbing"; });
+cv.addEventListener("pointerup", () => { drag = null; cv.style.cursor = "grab"; });
+cv.addEventListener("pointermove", (e) => {
+  if (!drag) return; const dx = e.clientX - drag.x, dy = e.clientY - drag.y; drag.x = e.clientX; drag.y = e.clientY;
+  if (drag.pan) { const k = cam.hh * 2 / cv.clientHeight / cam.zoom; cam.pan[0] -= dx * k * Math.cos(cam.az); cam.pan[2] += dx * k * Math.sin(cam.az); cam.pan[1] += dy * k; }
+  else { cam.az -= dx * 0.008; cam.el = Math.max(-1.2, Math.min(1.2, cam.el + dy * 0.008)); }
+  dirty = true;
+});
+cv.addEventListener("wheel", (e) => { e.preventDefault(); cam.zoom = Math.max(0.5, Math.min(4, cam.zoom * Math.exp(-e.deltaY * 0.001))); dirty = true; }, { passive: false });
+cv.addEventListener("contextmenu", (e) => e.preventDefault());
+for (const id of ["pet", "tissue", "skin", "bounces"]) $(id).addEventListener("input", () => { if (id === "tissue" || id === "skin") rebuildLUT(); dirty = true; });
+for (const id of ["exp", "spp", "dn", "spin"]) $(id).addEventListener("input", () => { if (id !== "spin") { /* display-only settings do not reset */ } });
+$("scale").addEventListener("change", resize); $("reset").addEventListener("click", () => { dirty = true; });
+
+// ------------------------------------------------------------------ loop
+const MAXFRAMES = 600; let last = performance.now(), fpsS = 0;
+function loop() {
+  if ($("spin").checked) { cam.az += 0.004; dirty = true; }
+  if (dirty) { frame = 0; gl.bindFramebuffer(gl.FRAMEBUFFER, fbA); gl.clearColor(0, 0, 0, 0); gl.clear(gl.COLOR_BUFFER_BIT); dirty = false; }
+  if (frame < MAXFRAMES) {
+    draw(); const now = performance.now(); fpsS = fpsS * 0.9 + (1000 / (now - last)) * 0.1; last = now;
+    hud.textContent = `${W}x${H}  ${fpsS.toFixed(1)} fps  ${frame * parseInt($("spp").value)} rays/pixel` + (frame >= MAXFRAMES ? " (converged)" : "");
+  }
+  requestAnimationFrame(loop);
+}
+await loadVolume("autopet"); rebuildLUT(); resize(); loop();
+window.__cine = { cam, get frame() { return frame; }, gl, draw, W: () => W, H: () => H };
+</script>
+</body>
+</html>

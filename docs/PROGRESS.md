@@ -3,6 +3,12 @@
 Newest first. Each entry says what changed, what was measured, and what is still wrong. Commit hashes are in this repo's `claude/femto-bolt-mesh-anatomy-x2x9wl`
 branch (the mobile repo carries the shipped atlas and `anatomy.js`). Evidence and numbers live in `docs/BENCHMARK.md`; the plan is `docs/PATIENT_RIG_PLAN.md`.
 
+## 2026-11-17 Real-time cinematic rendering in the browser (step 1)
+- `docs/cine/index.html`: WebGL2 volumetric path tracer (same algorithm as `tools/cinematic.py`: delta tracking, hybrid phase/gradient-surface shading, ratio-tracked shadows to key/fill/rim lights, multiple scattering, ACES) with progressive accumulation (float framebuffers), orbit/zoom/pan, PET glow toggle, tissue/skin opacity, rays per frame, bounces, render scale, edge-aware denoise.
+- `tools/export_cine_volume.py` writes the rest-pose volume (float16 HU, uint8 SUV) as `docs/cine/autopet.{json,bin.gz}` (3.8 MB, 3 mm voxels).
+- Checked only in headless Chromium with software WebGL2 (no errors, correct image, 2.8 fps at 270x405): GPU speed and visual tuning are untested.
+- Next: GPU warp from the rig's bone matrices (precomputed skinning weights) so the volume follows the live pose; clip player; PET/MRI/trio volumes.
+
 ## 2026-11-17 Cinematic rendering
 - `tools/cinematic.py`: Monte Carlo volumetric path tracer (numba, CPU): delta-tracked free flight, density/colour transfer function (translucent fat and soft tissue, dense ivory bone, orange contrast vessels), hybrid phase / gradient-surface shading, next-event estimation with ratio-tracked shadows to soft key, fill and rim lights, multiple scattering with Russian roulette, ACES filmic tone map, non-local-means denoise. PET SUV is emission (glowing uptake); MRI replaces the CT transfer function inside the MR box.
 - Stand-alone MRI has no HU, so its bone/organ colour comes from the warped TotalSegmentator labels and intensity only modulates density (stated on the page). Skull stand-in and humeri are left out of the MRI view (they float free).
