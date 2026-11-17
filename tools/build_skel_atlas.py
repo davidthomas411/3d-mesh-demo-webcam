@@ -132,13 +132,14 @@ def main():
     low = [m for m in front if m is not skull and m.vertices[:, 1].mean() > skull.vertices[:, 1].mean()]
     jaw = max(low, key=lambda m: len(m.vertices))
     jaw_parts, skull_parts, neck = [jaw], [skull], []
+    teeth_up, teeth_low = [], []                             # small separate pieces in the face: the teeth
     for m in comps:
         if m is skull or m is jaw:
             continue
         c = m.vertices.mean(0)
         if c[2] < -0.03:                                     # teeth and small pieces: with whichever of the two they are nearer
             dj = np.linalg.norm(jaw.vertices - c, axis=1).min(); ds = np.linalg.norm(skull.vertices - c, axis=1).min()
-            (jaw_parts if dj < ds else skull_parts).append(m)
+            (teeth_low if dj < ds else teeth_up).append(m)
         else:
             neck.append(m)
     skull_m = trimesh.util.concatenate(skull_parts); jaw_m = trimesh.util.concatenate(jaw_parts)
@@ -152,6 +153,14 @@ def main():
     axis = (cond[0] - cond[1]) / np.linalg.norm(cond[0] - cond[1])
     add("skel_jaw", jv, jf, "skel_axial", "bone", bone_w=[[seg["head"], 1.0]],
         jaw={"pivot": [round(float(x), 5) for x in (cond[0] + cond[1]) / 2], "axis": [round(float(x), 5) for x in axis]})
+    # teeth are their own structures: stacked along a ray they would otherwise saturate a radiograph (xray_gain tones them down)
+    jaw_hinge = {"pivot": [round(float(x), 5) for x in (cond[0] + cond[1]) / 2], "axis": [round(float(x), 5) for x in axis]}
+    if teeth_up:
+        t = trimesh.util.concatenate(teeth_up); v, f = decimate(t, 1500)
+        add("skel_teeth_upper", v, f, "skel_axial", "bone", bone_w=[[seg["head"], 1.0]], xray_gain=0.3)
+    if teeth_low:
+        t = trimesh.util.concatenate(teeth_low); v, f = decimate(t, 1500)
+        add("skel_teeth_lower", v, f, "skel_axial", "bone", bone_w=[[seg["head"], 1.0]], jaw=jaw_hinge, xray_gain=0.3)
     neck = sorted([m for m in neck if len(m.vertices) > 30], key=lambda m: m.vertices[:, 1].mean())
     y_top, y_bot = (neck[0].vertices[:, 1].mean(), neck[-1].vertices[:, 1].mean()) if neck else (0, 1)
     for i, m in enumerate(neck):                             # top (C1) rides the head, bottom rides the upper thorax
@@ -322,7 +331,7 @@ def main():
         e = {"name": s["name"], "display": s["name"].replace("skel_", "").replace("_", " "), "group": s["group"], "color": BONE_COLOR, "uncertainty_mm": 15,
              "n_verts": int(len(v)), "n_tris": int(len(f)), "volume_ml": 0.0, "centroid": [round(float(x), 5) for x in v.mean(0)],
              "pos": put(v.astype("<f4")), "idx_type": "u16" if u16 else "u32", "idx": put(f.astype("<u2" if u16 else "<u4")), "bind": s["bind"]}
-        for k in ("bone_w", "mhr", "jaw", "shell_mm"):
+        for k in ("bone_w", "mhr", "jaw", "shell_mm", "xray_gain"):
             if k in s:
                 e[k] = s[k]
         out_structs.append(e)

@@ -41,7 +41,8 @@ export class XrayView {
         this.shells.push({ g, inner });
         continue;
       }
-      const specs = open ? [[THREE.DoubleSide, 1, openCm / 100]] : [[THREE.FrontSide, -1, 0], [THREE.BackSide, 1, 0]];
+      const gain = s.xray_gain ?? 1;                                           // < 1 for small dense pieces that stack along a ray (teeth)
+      const specs = open ? [[THREE.DoubleSide, 1, gain * openCm / 100]] : [[THREE.FrontSide, -gain, 0], [THREE.BackSide, gain, 0]];
       for (const [side, sign, c] of specs) { const m = new THREE.Mesh(g, mk(side, sign, c)); m.frustumCulled = false; this.scene.add(m); this.meshes.push(m); }
     }
     const mkTarget = () => new THREE.WebGLRenderTarget(size, size, { type: THREE.HalfFloatType, format: THREE.RGBAFormat, depthBuffer: false, minFilter: THREE.LinearFilter, magFilter: THREE.LinearFilter });
@@ -60,15 +61,23 @@ export class XrayView {
       fragmentShader: "uniform sampler2D uT; uniform sampler2D uR; uniform float uRef; uniform float uK; uniform float uG; uniform float uPx; varying vec2 vUv; "
         + "float soft(sampler2D t){ float c = max(texture2D(t, vUv).r, 0.0) * 0.20; "
         + "for (int i = 0; i < 4; i++) { float a = 1.5707963 * float(i); vec2 d = vec2(cos(a), sin(a)); c += max(texture2D(t, vUv + d * uPx).r, 0.0) * 0.12; c += max(texture2D(t, vUv + vec2(d.x - d.y, d.x + d.y) * uPx).r, 0.0) * 0.05; c += max(texture2D(t, vUv + d * 2.0 * uPx).r, 0.0) * 0.03; } return c; } "
-        + "void main(){ float v = pow(clamp(soft(uT) * uK, 0.0, 1.0), uG); float r = pow(clamp(soft(uR) * uK, 0.0, 1.0), uG); gl_FragColor = vec4(mix(vec3(v), vec3(v, r, v), uRef), 1.0); }" });
+        // brightness follows attenuation, 1 - exp(-mu t), as in a radiograph: thick bone approaches white smoothly instead of
+        // clipping to a flat white patch (the solid facial block of a generic skull did)
+        + "float tone(float t){ return pow(1.0 - exp(-1.6 * t * uK), uG); } "
+        + "void main(){ float v = tone(soft(uT)); float r = tone(soft(uR)); gl_FragColor = vec4(mix(vec3(v), vec3(v, r, v), uRef), 1.0); }" });
     this.quadScene.add(new THREE.Mesh(new THREE.PlaneGeometry(2, 2), this.resolve));
     for (const [src] of sources) src.xrayActive = true;
   }
   // view: "ap" (from the front) or "lateral" (from the person's left, face to the left of the image). centre: [x, y, z] of the picture centre in the raw MHR frame (metres).
-  render(view = "ap", centre = [0, -1.3, 0], viewport = null) {
+  // orbit: optional { yaw, pitch } in radians, turning the viewpoint about the centre (0, 0 = the "ap" view).
+  render(view = "ap", centre = [0, -1.3, 0], viewport = null, orbit = null) {
     const { THREE, renderer, cam } = this, c = centre, d = 0.6;
     cam.up.set(0, -1, 0);                                                    // MHR y points down
-    if (view === "ap") { cam.position.set(c[0], c[1], c[2] - d); cam.lookAt(c[0], c[1], c[2]); cam.left = -this.half; cam.right = this.half; }
+    if (orbit) {
+      const cp = Math.cos(orbit.pitch), sp = Math.sin(orbit.pitch);
+      cam.position.set(c[0] + d * Math.sin(orbit.yaw) * cp, c[1] + d * sp, c[2] - d * Math.cos(orbit.yaw) * cp);
+      cam.lookAt(c[0], c[1], c[2]); cam.left = -this.half; cam.right = this.half;
+    } else if (view === "ap") { cam.position.set(c[0], c[1], c[2] - d); cam.lookAt(c[0], c[1], c[2]); cam.left = -this.half; cam.right = this.half; }
     else { cam.position.set(c[0] + d, c[1], c[2]); cam.lookAt(c[0], c[1], c[2]); cam.left = -this.half; cam.right = this.half; }
     cam.near = 0; cam.far = 2 * d; cam.updateProjectionMatrix(); cam.updateMatrixWorld();
     for (const sh of this.shells) {                                          // centre of each hollow bone in its current pose

@@ -674,6 +674,30 @@
     let ctOffsetM = -0.05;
     let imagingVisible = true;
     let insetCentreCam = null;        // picture centre in camera space (x, y), set from the first mesh
+    // The DRR can be turned like the 3-D view: drag on it to orbit about the body, double-click to go back to the camera's view.
+    // A captured DRR reference belongs to one viewpoint, so turning drops it.
+    const drrOrbit = { yaw: 0, pitch: 0 };
+    {
+      let drag = null;
+      const dropReference = () => { for (const v of Object.values(xrayViews)) v.clearReference(); };
+      drrCanvas.style.cursor = "grab";
+      drrCanvas.addEventListener("pointerdown", (e) => {
+        drag = { x: e.clientX, y: e.clientY, yaw: drrOrbit.yaw, pitch: drrOrbit.pitch };
+        drrCanvas.setPointerCapture(e.pointerId);
+        drrCanvas.style.cursor = "grabbing";
+      });
+      drrCanvas.addEventListener("pointermove", (e) => {
+        if (!drag) return;
+        const k = Math.PI / drrCanvas.clientWidth;            // a drag across the picture is half a turn
+        drrOrbit.yaw = drag.yaw - (e.clientX - drag.x) * k;
+        drrOrbit.pitch = Math.max(-1.45, Math.min(1.45, drag.pitch - (e.clientY - drag.y) * k));
+        dropReference();
+      });
+      const end = () => { drag = null; drrCanvas.style.cursor = "grab"; };
+      drrCanvas.addEventListener("pointerup", end);
+      drrCanvas.addEventListener("pointercancel", end);
+      drrCanvas.addEventListener("dblclick", () => { drrOrbit.yaw = 0; drrOrbit.pitch = 0; dropReference(); });
+    }
 
     function xrayViewFor(mode) {
       if (!xrayViews[mode]) {
@@ -710,12 +734,16 @@
         g.drawImage(source, 0, (size.y - s) * dpr, s * dpr, s * dpr, 0, 0, canvas.width, canvas.height);
       };
       if (showX) {
-        xrayView.render("ap", insetCentre, { x: 0, y: 0, w: s, h: s });
+        const turned = drrOrbit.yaw !== 0 || drrOrbit.pitch !== 0;
+        xrayView.render("ap", insetCentre, { x: 0, y: 0, w: s, h: s }, turned ? drrOrbit : null);
         copyTo(drrCanvas);
         const what = skeletonMode === "skel" && skelLayer ? "SKEL skeleton" : "CT atlas bones";
+        const view = turned
+          ? "turned " + Math.round(drrOrbit.yaw * 180 / Math.PI) + "° / " + Math.round(drrOrbit.pitch * 180 / Math.PI) + "°, double-click to reset"
+          : "camera view, drag to turn";
         drrCaption.textContent = xrayView.hasReference
           ? "DRR X-ray (" + what + "): reference green, live magenta"
-          : "DRR X-ray (" + what + ", camera view)";
+          : "DRR X-ray (" + what + ", " + view + ")";
       }
       if (showC) {
         ctView.render(insetCentre, ctOffsetM, { x: 0, y: 0, w: s, h: s });
