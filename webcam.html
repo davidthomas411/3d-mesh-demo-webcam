@@ -49,14 +49,14 @@
     /* Teams-friendly demo layout */
     #controls {
       display: grid;
-      grid-template-columns: auto auto 1fr;
+      grid-template-columns: auto auto auto 1fr;
       gap: 10px;
       align-items: start;
       padding: 12px 16px;
     }
 
     #status {
-      grid-column: 3;
+      grid-column: 4;
       margin: 0;
       font-size: 18px;
       font-weight: 600;
@@ -111,7 +111,9 @@
 <body>
   <div id="controls">
     <button id="start">Start webcam and inference</button>
-    <button id="stop" disabled>Stop webcam</button>
+    <button id="startVideo" type="button">Use a video file</button>
+    <input id="videoFile" type="file" accept="video/*" hidden>
+    <button id="stop" disabled>Stop</button>
     <div id="status">Waiting to start</div>
   </div>
 
@@ -460,9 +462,15 @@
       "/anatomy/anatomy.js";
     import { RigStream } from "/anatomy/stream.js";
     import { XrayView } from "/anatomy/xray.js";
+    import { CtSliceView } from "/anatomy/ct.js";
 
     const button = document.getElementById("start");
     const stopButton = document.getElementById("stop");
+    const videoButton = document.getElementById("startVideo");
+    const videoFileInput = document.getElementById("videoFile");
+    let sourceLabel = "Camera";       // "Camera" or "Video", shown in the status line
+    let lastSourceKey = null;         // which camera/file the focal calibration belongs to
+    let videoObjectUrl = null;
     const video = document.getElementById("video");
     const status = document.getElementById("status");
     const latencyHud = document.getElementById("latencyHud");
@@ -555,7 +563,13 @@
           "/atlas/atlas.json",
           "/atlas/atlas.bin"
         );
-        anatomyLayer = new AnatomyLayer(THREE, atlas, { flipYZ: false });
+        // Bones are drawn opaque so the depth buffer orders them correctly under the translucent skin
+        // (two translucent layers are sorted per object, which made bones inside the body look as if they were in front of it).
+        anatomyLayer = new AnatomyLayer(THREE, atlas, { flipYZ: false, opacity: 1 });
+        // Default view: just the skeleton inside the body mesh.
+        anatomyLayer.visibleGroups = new Set(["skull", "spine", "ribcage", "shoulder", "pelvis_leg"]);
+        anatomyLayer._applyVisibility();
+        anatomyLayer.setEnabled(true);
         bodyMesh.add(anatomyLayer.group);
         buildAnatomyPanel(atlas);
       } catch (error) {
@@ -570,39 +584,93 @@
      * extrapolated to the present (capped at 120 ms). Off: the rig updates only
      * when a mesh arrives, as before. See anatomy/stream.js and tests/js/stream_sim.mjs.
      */
-    const rigStream = new RigStream(18439 * 3, { horizonMs: 120, gain: 1.0, smoothMs: 0 });
+    // The server appends the MHR skeleton to each mesh (127 joint positions, then 127 rotation matrices). The rig is
+    // driven by those joints when present ("Drive bones from MHR joints"), and the stream carries mesh + joints together.
+    const N_SKIN = 18439 * 3;
+    let rigStream = new RigStream(N_SKIN, { horizonMs: 120, gain: 1.0, smoothMs: 0 });
     let predictRig = true;
+    let latestRigInput = null;      // Float32Array: vertices, optionally followed by the joints
+
+    function splitRigInput(values) {
+      if (values.length <= N_SKIN) return { skin: values, joints: null };
+      const n = (values.length - N_SKIN) / 12;
+      return {
+        skin: values.subarray(0, N_SKIN),
+        joints: { pos: values.subarray(N_SKIN, N_SKIN + n * 3), rot: values.subarray(N_SKIN + n * 3) }
+      };
+    }
+
+    function rigUpdate(values) {
+      const { skin, joints } = splitRigInput(values);
+      anatomyLayer.update(skin, 0, 1, joints);
+    }
 
     function anatomyUpdate(vertexValues, captureTimestampMs) {
-      if (!anatomyLayer || !(anatomyLayer.group.visible || xrayOn)) return;
+      if (!anatomyLayer || !(anatomyLayer.group.visible || xrayOn || ctOn)) return;
+      const values = latestRigInput && latestRigInput.length >= N_SKIN ? latestRigInput : vertexValues;
       if (predictRig && Number.isFinite(captureTimestampMs)) {
-        rigStream.push(vertexValues, captureTimestampMs);
+        if (rigStream.n !== values.length) {
+          rigStream = new RigStream(values.length, { horizonMs: 120, gain: 1.0, smoothMs: 0 });
+        }
+        rigStream.push(values, captureTimestampMs);
       } else {
-        anatomyLayer.update(vertexValues);
+        rigUpdate(values);
       }
     }
 
     /*
-     * Live radiograph of the posed rig (AP + lateral), drawn into the corner of
+     * Live DRR-style radiograph of the posed rig as seen from the camera (anterior view only when the person faces it), drawn into the corner of
      * the canvas every frame from the same bone meshes the rig just posed. Off by default.
      */
     let xrayView = null;
     let xrayOn = false;
 
+    /*
+     * CT-style coronal slice of the posed atlas (flat grey per labelled tissue, not CT voxels; see anatomy/ct.js),
+     * drawn next to the AP radiograph. Its front-to-back position follows the thoracic spine plus the slider offset.
+     */
+    let ctView = null;
+    let ctOn = false;
+    let ctOffsetM = -0.05;
+    const insetLabels = {};
+
+    function insetLabel(key, text, rightPx, bottomPx, widthPx, visible) {
+      let el = insetLabels[key];
+      if (!el) {
+        el = insetLabels[key] = document.createElement("div");
+        el.className = "insetLabel";
+        meshView.appendChild(el);
+      }
+      el.style.display = visible ? "block" : "none";
+      if (!visible) return;
+      el.textContent = text;
+      el.style.right = rightPx + "px";
+      el.style.bottom = bottomPx + "px";
+      el.style.width = widthPx + "px";
+    }
+
     function xrayDraw() {
-      if (!xrayOn || !xrayView || !renderer) return;
+      if (!renderer) return;
+      const showX = xrayOn && xrayView, showC = ctOn && ctView;
       const size = renderer.getSize(new THREE.Vector2());
       const s = Math.round(Math.min(300, size.y / 2.4));
       const centre = [0, -1.3, 0];
-      xrayView.render("ap", centre, { x: size.x - 2 * s - 24, y: 12, w: s, h: s });
-      xrayView.render("lateral", centre, { x: size.x - s - 12, y: 12, w: s, h: s });
-      renderer.setViewport(0, 0, size.x, size.y);
+      // right-most inset: AP radiograph; the CT slice sits to its left (or takes its place when the radiograph is off)
+      const xrayX = size.x - s - 12, ctX = showX ? size.x - 2 * s - 24 : size.x - s - 12;
+      if (showX) xrayView.render("ap", centre, { x: xrayX, y: 12, w: s, h: s });
+      if (showC) ctView.render(centre, ctOffsetM, { x: ctX, y: 12, w: s, h: s });
+      insetLabel("xray", "DRR X-ray (atlas bones, camera view)", 12, 12 + s - 20, s, !!showX);
+      insetLabel("ct", "Label CT slice (atlas, not CT voxels)", size.x - ctX - s, 12 + s - 20, s, !!showC);
+      if (showX || showC) renderer.setViewport(0, 0, size.x, size.y);
     }
 
+    // Console/debug access to the live objects (used to check the inset views without a visible window).
+    window.demoDebug = () => ({ THREE, renderer, scene, camera, bodyMesh, anatomyLayer, xrayView, ctView, ctOffsetM });
+
     function anatomyTick() {
-      if (!predictRig || !anatomyLayer || !(anatomyLayer.group.visible || xrayOn)) return;
+      if (!predictRig || !anatomyLayer || !(anatomyLayer.group.visible || xrayOn || ctOn)) return;
       const sample = rigStream.sample(performance.now());
-      if (sample) anatomyLayer.update(sample);
+      if (sample) rigUpdate(sample);
     }
 
     function buildAnatomyPanel(atlas) {
@@ -610,15 +678,24 @@
       panel.id = "anatomyPanel";
       panel.innerHTML =
         '<div class="panelTitle">Anatomy (atlas)</div>' +
-        '<label class="anaRow"><input id="anaEnable" type="checkbox">' +
-        '<span>Show ' + atlas.structures.length +
-        ' TotalSegmentator structures</span></label>' +
+        '<label class="anaRow"><input id="anaEnable" type="checkbox" checked>' +
+        '<span>Show atlas anatomy in the mesh (bones by default, ' + atlas.structures.length +
+        ' structures available)</span></label>' +
+        '<label class="anaRow"><input id="anaJoints" type="checkbox" checked>' +
+        '<span>Bone rotations from MHR joints (off: fit to skin patches)</span></label>' +
+        '<label class="anaRow"><input id="anaScale" type="checkbox" checked>' +
+        '<span>Scale skeleton to the body (off: atlas size)</span></label>' +
         '<label class="anaRow"><input id="anaPredict" type="checkbox" checked>' +
         '<span>Predict between updates (low latency)</span></label>' +
-        '<label class="anaRow"><input id="anaXray" type="checkbox">' +
-        '<span>Live X-ray (AP + lateral)</span></label>' +
+        '<label class="anaRow"><input id="anaXray" type="checkbox" checked>' +
+        '<span>Live DRR X-ray</span></label>' +
+        '<label class="anaRow"><input id="anaCt" type="checkbox" checked>' +
+        '<span>Live label CT slice</span></label>' +
+        '<label class="anaRow">CT slice position ' +
+        '<input id="anaCtOffset" type="range" min="-0.16" max="0.08" step="0.005" value="-0.05">' +
+        '<output id="anaCtOffsetValue"></output></label>' +
         '<label class="anaRow">Anatomy opacity ' +
-        '<input id="anaOpacity" type="range" min="0.2" max="1" step="0.05" value="0.9"></label>' +
+        '<input id="anaOpacity" type="range" min="0.2" max="1" step="0.05" value="1"></label>' +
         '<label class="anaRow">Skin opacity ' +
         '<input id="anaSkin" type="range" min="0.05" max="1" step="0.05" value="0.25"></label>' +
         '<div id="anaGroups"></div>' +
@@ -651,15 +728,45 @@
         skinMaterial.depthWrite = !(on && a < 1);
         skinMaterial.needsUpdate = true;
       };
-      panel.querySelector("#anaXray").addEventListener("change", (e) => {
+      const setXray = (on) => {
         try {
-          if (e.target.checked && !xrayView) xrayView = new XrayView(THREE, renderer, anatomyLayer, { size: 512 });
-          xrayOn = e.target.checked;
+          if (on && !xrayView) xrayView = new XrayView(THREE, renderer, anatomyLayer, { size: 512 });
+          xrayOn = on;
         } catch (error) {
           console.warn("X-ray view unavailable:", error);
-          e.target.checked = false;
+          panel.querySelector("#anaXray").checked = false;
           xrayOn = false;
         }
+      };
+      const setCt = (on) => {
+        try {
+          if (on && !ctView) ctView = new CtSliceView(THREE, renderer, anatomyLayer, bodyMesh.geometry, { size: 512 });
+          if (ctView) ctView.setActive(on);
+          ctOn = on;
+        } catch (error) {
+          console.warn("CT slice view unavailable:", error);
+          panel.querySelector("#anaCt").checked = false;
+          ctOn = false;
+        }
+      };
+      const ctOffsetInput = panel.querySelector("#anaCtOffset");
+      const showCtOffset = () => {
+        ctOffsetM = Number(ctOffsetInput.value);
+        const mm = Math.round(Math.abs(ctOffsetM) * 1000);
+        panel.querySelector("#anaCtOffsetValue").textContent =
+          mm + " mm " + (ctOffsetM < 0 ? "anterior" : "posterior") + " of T8";
+      };
+      ctOffsetInput.addEventListener("input", showCtOffset);
+      showCtOffset();
+      panel.querySelector("#anaXray").addEventListener("change", (e) => setXray(e.target.checked));
+      panel.querySelector("#anaCt").addEventListener("change", (e) => setCt(e.target.checked));
+      setXray(true);
+      setCt(true);
+      panel.querySelector("#anaJoints").addEventListener("change", (e) => {
+        anatomyLayer.useJoints = e.target.checked;
+      });
+      panel.querySelector("#anaScale").addEventListener("change", (e) => {
+        anatomyLayer.bodyScale = e.target.checked;
       });
       panel.querySelector("#anaPredict").addEventListener("change", (e) => {
         predictRig = e.target.checked;
@@ -671,6 +778,7 @@
       panel.querySelector("#anaOpacity").addEventListener("input", (e) =>
         anatomyLayer.setOpacity(Number(e.target.value)));
       panel.querySelector("#anaSkin").addEventListener("input", applySkin);
+      applySkin();
     }
     let referenceMesh = null;
     let topology;
@@ -2633,7 +2741,9 @@
           const requestCycleMs =
             performance.now() - websocketRequestStartMs;
 
-          const vertices = new Float32Array(event.data);
+          const received = new Float32Array(event.data);
+          const vertices = received.subarray(0, 18439 * 3);
+          latestRigInput = received;
 
           if (bodyMesh) {
             bodyMesh.visible = true;
@@ -2687,7 +2797,7 @@
           updateLatencyHud();
 
           status.textContent =
-            "Camera active" +
+            sourceLabel + " active" +
             " | frames: " + framesSent +
             " | mesh: " + metadata.mesh_id +
             " | inference: " +
@@ -3033,6 +3143,13 @@
       if (mediaStream) mediaStream.getTracks().forEach(track => track.stop());
       mediaStream = null;
       video.srcObject = null;
+      if (videoObjectUrl) {
+        video.pause();
+        video.removeAttribute("src");
+        video.load();
+        URL.revokeObjectURL(videoObjectUrl);
+        videoObjectUrl = null;
+      }
 
       if (streamSocket) {
         streamSocket.close();
@@ -3043,44 +3160,96 @@
       uploadBusy = false;
       stopButton.disabled = true;
       button.disabled = false;
-      status.textContent = "Webcam stopped";
+      videoButton.disabled = false;
+      status.textContent = sourceLabel + " stopped";
     };
 
-    button.onclick = async () => {
+    /*
+     * One session, two possible sources: the webcam, or a video file played in the same <video> element
+     * (looped, muted). Everything after the source is identical: frames are grabbed from the element, so a
+     * file is processed at the estimator's rate, taking whichever frame is showing when the last mesh returns.
+     */
+    async function startSession(label, sourceKey, attachSource) {
       try {
         button.disabled = true;
-        status.textContent = "Starting camera...";
+        videoButton.disabled = true;
+        sourceLabel = label;
+        status.textContent = "Starting " + label.toLowerCase() + "...";
 
-        mediaStream =
-          await navigator.mediaDevices.getUserMedia({
-            video: {
-              width: { ideal: 1280 },
-              height: { ideal: 720 }
-            },
-            audio: false
-          });
-
-        video.srcObject = mediaStream;
+        await attachSource();
         await video.play();
 
-        initializeRenderer();
-        status.textContent = "Loading mesh topology...";
-
-        await loadTopology();
+        // Built once and kept across stop/start: a second renderer, body mesh and anatomy panel
+        // would otherwise pile up every time a new source is started.
+        if (!renderer) initializeRenderer();
+        if (!bodyMesh) {
+          status.textContent = "Loading mesh topology...";
+          await loadTopology();
+        }
 
         await connectStreamSocket();
+
+        // The focal length is calibrated per camera and the server keeps it between sessions. A video
+        // file was shot with some other camera, so it always gets its own calibration; the webcam gets
+        // a new one when the previous source on this page was a file.
+        if (
+          sourceKey !== lastSourceKey &&
+          (sourceKey !== "webcam" || lastSourceKey !== null)
+        ) {
+          recalibrateButton.onclick();
+        }
+        lastSourceKey = sourceKey;
+        framesSent = 0;
 
         running = true;
         stopButton.disabled = false;
         status.textContent =
-          "Camera active. Waiting for first mesh...";
+          label + " active. Waiting for first mesh...";
 
         sendFrame();
       } catch (error) {
         button.disabled = false;
+        videoButton.disabled = false;
         status.textContent =
           error.name + ": " + error.message;
       }
+    }
+
+    button.onclick = () => startSession("Camera", "webcam", async () => {
+      mediaStream =
+        await navigator.mediaDevices.getUserMedia({
+          video: {
+            width: { ideal: 1280 },
+            height: { ideal: 720 }
+          },
+          audio: false
+        });
+
+      video.loop = false;
+      video.srcObject = mediaStream;
+    });
+
+    videoButton.onclick = () => {
+      videoFileInput.value = "";
+      videoFileInput.click();
+    };
+
+    videoFileInput.onchange = () => {
+      const file = videoFileInput.files && videoFileInput.files[0];
+      if (!file) return;
+      if (running) stopButton.onclick();
+
+      startSession("Video", "file:" + file.name + ":" + file.size, async () => {
+        videoObjectUrl = URL.createObjectURL(file);
+        video.srcObject = null;
+        video.loop = true;
+        video.muted = true;
+        video.src = videoObjectUrl;
+        await new Promise((resolve, reject) => {
+          video.onloadeddata = () => resolve();
+          video.onerror = () => reject(new Error("This browser cannot play that video file"));
+        });
+      });
     };
   </script>
 
@@ -3808,11 +3977,11 @@
 <style>
   #controls {
     display: grid;
-    grid-template-columns: auto auto 1fr;
+    grid-template-columns: auto auto auto 1fr;
   }
 
   #controls #status {
-    grid-column: 3;
+    grid-column: 4;
   }
 
   #views {
@@ -4383,5 +4552,10 @@
   #anatomyPanel .anaRow { display: flex; gap: 6px; align-items: center; margin: 4px 0; }
   #anatomyPanel .anaRow input[type=range] { flex: 1; }
   #anatomyPanel .anaChip { display: inline-block; margin: 2px 8px 2px 0; }
+  #mesh .insetLabel {
+    position: absolute; z-index: 3; box-sizing: border-box; padding: 2px 6px; pointer-events: none;
+    font: 11px/16px system-ui, sans-serif; color: #d8d8d8; background: rgba(0, 0, 0, 0.55);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
   #anatomyPanel .anaNote { margin-top: 8px; color: #e0b050; line-height: 1.35; }
 </style>

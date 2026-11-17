@@ -84,18 +84,32 @@ class Atlas:
     def names(self):
         return [s["name"] for s in self.structures]
 
-    def segment_transforms(self, skin):
-        """-> list of (q[w,x,y,z], R, c_rest, c_live), one per segment."""
+    def segment_transforms(self, skin, joints=None, body_scale=True):
+        """-> list of (q[w,x,y,z], R, c_rest, c_live, k), one per segment. k is the size of the person's segment relative to the
+        neutral body (segment_scale; 1 when body_scale is off): everything a frame carries is scaled by k about c_rest, so the
+        skeleton is sized to the body it sits in instead of staying atlas-sized.
+        joints: optional (pos (J,3), rot (J,3,3)) MHR joint positions and global rotations in the atlas frame, as the estimator
+        predicts them. A segment bound to a joint (atlas.json["mhr"], tools/bind_mhr_joints.py) then takes its ROTATION from that
+        joint instead of a fit to its skin patch. Its position still comes from the patch (rest centroid -> live centroid): measured
+        on real output, anchoring to the skin keeps the bones inside the body better than anchoring to the joint centres."""
+        mhr = self.meta.get("mhr") if joints is not None else None
         out = []
         for sg in self.segments:
+            j = mhr["segments"].get(sg["name"]) if mhr else None
+            if j is not None:
+                R = np.asarray(joints[1][j], np.float64) @ np.asarray(mhr["rest_rot"][str(j)]).reshape(3, 3).T
+                q = rot_to_quat(R); R = quat_to_rot(q / np.linalg.norm(q))          # exactly orthonormal
+                out.append((rot_to_quat(R), R, sg["rest"].mean(0), np.asarray(skin)[sg["idx"]].mean(0)))
+                continue
             R, cs, cd = kabsch(sg["rest"], skin[sg["idx"]])
             out.append((rot_to_quat(R), R, cs, cd))
-        return out
+        return [f + (self.segment_scale(i, None, skin) if body_scale else 1.0,) for i, f in enumerate(out)]
 
-    def frames(self, skin, breath=0.0, depth=1.0, joints=True, spine="skin"):
-        """-> (segment_frames, chain_frames, soft_frames). A frame is (q, R, c_rest, c_live)."""
+    def frames(self, skin, breath=0.0, depth=1.0, joints=True, spine="skin", mhr_joints=None, body_scale=True):
+        """-> (segment_frames, chain_frames, soft_frames). A frame is (q, R, c_rest, c_live, k): x -> k R (x - c_rest) + c_live.
+        mhr_joints: optional (pos, rot) of the MHR skeleton; body_scale: size the skeleton to the person. See segment_transforms."""
         from . import rig
-        T = self.segment_transforms(skin)
+        T = self.segment_transforms(skin, mhr_joints, body_scale)
         chain = self.meta.get("chain", [])
         by = {s["name"]: s for s in self.structures}
         cf = []
@@ -117,19 +131,33 @@ class Atlas:
             # forward kinematics gives the local spacing/rotation; the skin-driven (segment-blended)
             # positions give the low-frequency placement. final = FK + smooth(skin - FK).
             sp = [sum(w * _apply(T[sg], c[i]) for sg, w in by[chain[i]]["bone_w"]) for i in range(len(chain))]
+            kc = [sum(w * _k(T[sg]) for sg, w in by[chain[i]]["bone_w"]) for i in range(len(chain))]   # size of each vertebra's level
             cp = [sp[0]]
             for i in range(1, len(chain)):
                 qm = q[i - 1] + (q[i] if q[i] @ q[i - 1] >= 0 else -q[i])
-                cp.append(cp[-1] + quat_to_rot(qm / np.linalg.norm(qm)) @ (c[i] - c[i - 1]))
+                cp.append(cp[-1] + 0.5 * (kc[i - 1] + kc[i]) * (quat_to_rot(qm / np.linalg.norm(qm)) @ (c[i] - c[i - 1])))
             d = np.array(sp) - np.array(cp)
             ker = np.exp(-np.arange(-6, 7) ** 2 / 18.0); ker /= ker.sum()
             dp = np.pad(d, ((6, 6), (0, 0)), mode="edge")
             ds = np.stack([np.convolve(dp[:, k], ker, mode="valid") for k in range(3)], 1)
             cp = np.array(cp) + ds
-            cf = [(q[i], quat_to_rot(q[i]), c[i], cp[i]) for i in range(len(chain))]
+            cf = [(q[i], quat_to_rot(q[i]), c[i], cp[i], kc[i]) for i in range(len(chain))]
         sf = [T[rig.SEG["pelvis"]]] + cf + [T[rig.SEG["head"]]] + [T[rig.SEG[n]] for n in ("uparm_l", "uparm_r", "thigh_l", "thigh_r")]
-        F = self._joint_frames(T, cf, chain, by, breath, depth) if joints else self._legacy_frames(T, cf, chain)
+        F = self._joint_frames(T, cf, chain, by, breath, depth, mhr_joints=mhr_joints) if joints else self._legacy_frames(T, cf, chain)
+        if joints and mhr_joints is not None and self.meta.get("mhr"):   # limb bones sized to this person's bone lengths
+            for bone, lb in self.meta["mhr"].get("limbs", {}).items():
+                if bone in F:
+                    n = np.linalg.norm(np.asarray(mhr_joints[0][lb["child"]], np.float64) - np.asarray(mhr_joints[0][lb["joint"]], np.float64))
+                    F[bone] = F[bone][:4] + (float(np.clip(n / lb["rest_len"], 0.8, 1.25)),)
         return T, cf, sf, F
+
+    def segment_scale(self, seg, T, skin, lo=0.65, hi=1.35):
+        """Size of a segment's live skin patch relative to its rest patch (ratio of RMS radii about the centroids), clamped. The
+        neutral MHR body is one size and the estimator predicts each person's own shape, so a bone would otherwise stay
+        atlas-sized in a body that is bigger or smaller. (T is unused, kept for callers.)"""
+        sg = self.segments[seg]; live = np.asarray(skin)[sg["idx"]]
+        a = ((sg["rest"] - sg["rest"].mean(0)) ** 2).sum(); b = ((live - live.mean(0)) ** 2).sum()
+        return float(np.clip(np.sqrt(b / max(a, 1e-12)), lo, hi))
 
     def _legacy_frames(self, T, cf, chain):
         """The model stage BEFORE joint rules: ribs rigid on their vertebra, sternum/clavicle/scapula attached to the
@@ -159,14 +187,18 @@ class Atlas:
                 F[n] = T[rig.SEG["head"]]
         return F
 
-    def _joint_frames(self, T, cf, chain, by, breath, depth, glide=True):
-        """Body frames (q, R, J, pJ): x' = R (x - J) + pJ, for every joint-driven bone."""
+    def _joint_frames(self, T, cf, chain, by, breath, depth, glide=True, mhr_joints=None):
+        """Body frames (q, R, J, pJ, k): x' = k R (x - J) + pJ, for every joint-driven bone.
+        With mhr_joints and an atlas whose arm bones are seated on the MHR skeleton (tools/seat_limbs_on_mhr.py), the humerus is
+        defined on the model's own skeleton: its head rides the live MHR shoulder joint. The scapula keeps the ball in its socket
+        (it is pinned at that joint) and the clavicle reaches from the sternum to the scapula, so the chain is solved from the arm
+        back to the trunk instead of from the trunk out to the arm."""
         from . import rig
         from scipy.spatial.transform import Rotation as Rot
         SEG = rig.SEG
         J = {j["name"]: j for j in self.meta.get("joints", [])}
         F = {}
-        mk = lambda R, Jc, pJ: (rot_to_quat(R), R, np.asarray(Jc), pJ)
+        mk = lambda R, Jc, pJ, k=1.0: (rot_to_quat(R), R, np.asarray(Jc), pJ, k)
         for j in J.values():                                   # ribs: costovertebral joint + respiratory rotation
             if j["type"] != "costovertebral" or j["parent"] not in chain:
                 continue
@@ -174,43 +206,64 @@ class Atlas:
             Jc = np.asarray(j["center"])
             ang = np.radians(j["resp_deg"] * depth * breath) * j["resp_sign"]
             Rr = Rot.from_rotvec(np.asarray(j["axis"]) * ang).as_matrix()
-            F[j["child"]] = mk(fv[1] @ Rr, Jc, _apply(fv, Jc))
+            F[j["child"]] = mk(fv[1] @ Rr, Jc, _apply(fv, Jc), _k(fv))
         if "sternum" in by and by["sternum"].get("attach_ribs"):
             wf = [(F[r], w) for r, w in by["sternum"]["attach_ribs"] if r in F]
             F["sternum"] = _blend_frame(np.asarray(by["sternum"]["centroid"]), wf)
         S = F.get("sternum")
         Rthup = T[SEG["thorax_up"]][1]
+        mhr = self.meta.get("mhr") if mhr_joints is not None else None
+        on_skeleton = bool(mhr and mhr.get("limb_seated"))
         for k, side in (("l", "left"), ("r", "right")):
             Rarm, Rthigh = T[SEG[f"uparm_{k}"]][1], T[SEG[f"thigh_{k}"]][1]
-            if S is not None and f"sc_{k}" in J:
+            lb = mhr["limbs"].get(f"humerus_{side}") if on_skeleton else None
+            if S is not None and lb and all(f"{n}_{k}" in J for n in ("sc", "ac", "gh")):
+                sc, ac, gh = J[f"sc_{k}"], J[f"ac_{k}"], J[f"gh_{k}"]
+                Jsc, Jac, Jgh = (np.asarray(j["center"]) for j in (sc, ac, gh))
+                head = np.asarray(mhr_joints[0][lb["joint"]], np.float64)      # live MHR shoulder joint = centre of the humeral head
+                ks = _k(S)
+                # scapula: glenoid on the humeral head; a third of the arm's elevation, then glide on the rib cage about that pin
+                rv = Rot.from_matrix(Rthup.T @ Rarm).as_rotvec()
+                Rsc = S[1] @ rig.limit_rotation(Rot.from_rotvec(rv / 3.0).as_matrix(), ac["limit_deg"])
+                Rsc = _glide(ac, Rsc, Jgh, head, S, by[ac["child"]]["pos"]) if glide else Rsc
+                F[ac["child"]] = mk(Rsc, Jgh, head, ks)
+                # clavicle: from the sternoclavicular joint to where the scapula put the acromioclavicular joint
+                pJ = _apply(S, Jsc); tgt = _apply(F[ac["child"]], Jac) - pJ
+                Rcl = _aim(S[1] @ (Jac - Jsc), tgt, sc["limit_deg"]) @ S[1]
+                kcl = float(np.clip(np.linalg.norm(tgt) / np.linalg.norm(Jac - Jsc), 0.75 * ks, 1.35 * ks))
+                F[sc["child"]] = mk(Rcl, Jsc, pJ, kcl)
+                # humerus: on the model's skeleton
+                Rh = Rsc @ rig.limit_rotation(Rsc.T @ Rarm, gh["limit_deg"])
+                F[gh["child"]] = mk(Rh, Jgh, head, _k(T[SEG[f"uparm_{k}"]]))
+            elif S is not None and f"sc_{k}" in J:
                 sc, ac = J[f"sc_{k}"], J.get(f"ac_{k}")
                 Jsc = np.asarray(sc["center"]); pJ = _apply(S, Jsc)
                 # clavicle: aim its lateral end (AC joint) at where the shoulder cap went, about the SC joint
                 tgt = _apply(T[SEG[f"shoulder_{k}"]], np.asarray(ac["center"])) - pJ
                 a = S[1] @ (np.asarray(ac["center"]) - Jsc)
                 Rcl = _aim(a, tgt, sc["limit_deg"]) @ S[1]
-                F[sc["child"]] = mk(Rcl, Jsc, pJ)
+                F[sc["child"]] = mk(Rcl, Jsc, pJ, _k(S))
                 # scapula: pinned at the AC joint; rotates with a third of the arm's elevation (scapulohumeral rhythm)
                 Jac = np.asarray(ac["center"]); pJac = _apply(F[sc["child"]], Jac)
                 rv = Rot.from_matrix(Rthup.T @ Rarm).as_rotvec()
                 Rrel = rig.limit_rotation(Rot.from_rotvec(rv / 3.0).as_matrix(), ac["limit_deg"])
                 Rsc = S[1] @ Rrel
                 Rsc = _glide(ac, Rsc, Jac, pJac, S, by[ac["child"]]["pos"]) if glide else Rsc
-                F[ac["child"]] = mk(Rsc, Jac, pJac)
+                F[ac["child"]] = mk(Rsc, Jac, pJac, _k(S))
                 gh = J.get(f"gh_{k}")
                 if gh:                                          # humerus: ball pinned in the glenoid
                     Jgh = np.asarray(gh["center"])
                     Rh = Rsc @ rig.limit_rotation(Rsc.T @ Rarm, gh["limit_deg"])
-                    F[gh["child"]] = mk(Rh, Jgh, _apply(F[ac["child"]], Jgh))
+                    F[gh["child"]] = mk(Rh, Jgh, _apply(F[ac["child"]], Jgh), _k(T[SEG[f"uparm_{k}"]]))
             hip = J.get(f"hip_{k}")
             if hip:                                             # femur: ball pinned in the acetabulum
                 Tp = T[SEG["pelvis"]]; Jh = np.asarray(hip["center"])
                 Rf = Tp[1] @ rig.limit_rotation(Tp[1].T @ Rthigh, hip["limit_deg"])
-                F[hip["child"]] = mk(Rf, Jh, _apply(Tp, Jh))
+                F[hip["child"]] = mk(Rf, Jh, _apply(Tp, Jh), _k(T[SEG[f"thigh_{k}"]]))
         if "ao" in J and J["ao"]["parent"] in chain:           # skull on C1
             c1 = cf[chain.index(J["ao"]["parent"])]; Jao = np.asarray(J["ao"]["center"])
             Rh = T[SEG["head"]][1]
-            F["skull"] = mk(c1[1] @ rig.limit_rotation(c1[1].T @ Rh, J["ao"]["limit_deg"]), Jao, _apply(c1, Jao))
+            F["skull"] = mk(c1[1] @ rig.limit_rotation(c1[1].T @ Rh, J["ao"]["limit_deg"]), Jao, _apply(c1, Jao), _k(T[SEG["head"]]))
         return F
 
     def _cartilage(self, s, F):
@@ -231,12 +284,12 @@ class Atlas:
             out[m] = (1 - w[m, None]) * _apply(F[r], s["pos"][m]) + w[m, None] * xs[m]
         return out
 
-    def pose(self, skin, breath=0.0, depth=1.0, joints=True, spine="skin"):
+    def pose(self, skin, breath=0.0, depth=1.0, joints=True, spine="skin", mhr_joints=None, body_scale=True):
         """skin: (V,3) live MHR vertices in the rest frame/units (metres). breath: 0 (end-expiration) .. 1
         (end-inspiration), depth: 1 = quiet breathing. joints=False reproduces the model stage before joint rules;
         spine="physio" distributes trunk rotation by in-vivo per-level data (numpy only; the browser port is pending).
         -> {name: (n,3)}."""
-        T, cf, sf, F = self.frames(skin, breath, depth, joints, spine)
+        T, cf, sf, F = self.frames(skin, breath, depth, joints, spine, mhr_joints, body_scale)
         out = {}
         for s in self.structures:
             b = s["bind"]
@@ -275,15 +328,16 @@ def _glide(ac, Rsc, Jac, pJac, S, scap_pos, iters=6):
     if "patch" not in ac:
         return Rsc
     P = scap_pos[ac["patch"]]; c = np.asarray(ac["ellipsoid"]["center"]); r = np.asarray(ac["ellipsoid"]["radii"])
+    ks = _k(S)
     for _ in range(iters):
-        y = (P - Jac) @ Rsc.T + pJac                                  # posed contact patch
-        x = S[2] + (y - S[3]) @ S[1]                                  # into the sternum's rest frame: c + R^T (y - cp)
+        y = ks * (P - Jac) @ Rsc.T + pJac                             # posed contact patch (scaled with the thorax)
+        x = S[2] + (y - S[3]) @ S[1] / ks                             # into the sternum's rest frame: c + R^T (y - cp) / k
         d, n = ellipsoid_gap(x, c, r)
         nb = (n @ S[1].T).mean(0); nb = nb / max(np.linalg.norm(nb), 1e-12)
         lever = y.mean(0) - pJac
         # mean gap back to rest, and no deeper into the thorax than the rest-pose closest point (penetration term)
         shift = (d.mean() - ac["gap0"]) - max(ac["gapmin0"] - d.min(), 0.0)
-        w = np.cross(lever, -shift * nb) / max(lever @ lever, 1e-9)
+        w = np.cross(lever, -shift * ks * nb) / max(lever @ lever, 1e-9)
         a = np.linalg.norm(w)
         if a > 0.15:
             w = w * (0.15 / a)
@@ -296,7 +350,7 @@ def _blend_frame(centroid, wf):
     ref = wf[0][0][0]
     q = sum(w * (f[0] if f[0] @ ref >= 0 else -f[0]) for f, w in wf)
     q = q / np.linalg.norm(q)
-    return (q, quat_to_rot(q), centroid, sum(w * _apply(f, centroid) for f, w in wf))
+    return (q, quat_to_rot(q), centroid, sum(w * _apply(f, centroid) for f, w in wf), sum(w * _k(f) for f, w in wf) / sum(w for _, w in wf))
 
 
 def _aim(a, b, max_deg):
@@ -313,9 +367,16 @@ def _aim(a, b, max_deg):
     return Rot.from_rotvec(v / sn * ang).as_matrix()
 
 
+def _k(f):
+    """Uniform scale of a frame (1 if it carries none)."""
+    return f[4] if len(f) > 4 else 1.0
+
+
 def _apply(Tk, x):
-    _, R, cs, cd = Tk
-    return (x - cs) @ R.T + cd
+    """Rigid frame (q, R, c_rest, c_live); an optional fifth entry is a uniform scale about c_rest (the skull)."""
+    _, R, cs, cd = Tk[:4]
+    k = Tk[4] if len(Tk) > 4 else 1.0
+    return k * (x - cs) @ R.T + cd
 
 
 def _rigid(pos, c, weighted_frames):
@@ -323,11 +384,12 @@ def _rigid(pos, c, weighted_frames):
     centroid carried by the weighted frame images (exact for a single frame)."""
     if len(weighted_frames) == 1:
         f = weighted_frames[0][0]
-        return (pos - c) @ f[1].T + _apply(f, c)
+        return _k(f) * (pos - c) @ f[1].T + _apply(f, c)
     ref = weighted_frames[0][0][0]
     q = sum(w * (f[0] if f[0] @ ref >= 0 else -f[0]) for f, w in weighted_frames)
     R = quat_to_rot(q / np.linalg.norm(q))
-    return (pos - c) @ R.T + sum(w * _apply(f, c) for f, w in weighted_frames)
+    k = sum(w * _k(f) for f, w in weighted_frames) / sum(w for _, w in weighted_frames)
+    return k * (pos - c) @ R.T + sum(w * _apply(f, c) for f, w in weighted_frames)
 
 
 def _pose_soft(s, frames):

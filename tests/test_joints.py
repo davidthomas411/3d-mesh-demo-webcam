@@ -206,4 +206,126 @@ def test_scapula_keeps_contact_with_the_rib_cage_when_the_arm_is_raised_forward(
         P = atlas.pose(skin_with(atlas, {"uparm_l": (np.array([1.0, 0, 0]) * np.radians(deg), [0, 0, 0])}))
         rib_p = np.vstack([P[n] for n in P if n.startswith("rib_left_") and 2 <= int(n.split("_")[-1]) <= 9])
         g = cKDTree(rib_p).query(P["scapula_left"])[0].min()
-        assert abs(g - g0) < 0.006, (deg, g0, g)
+        # 7.5 mm: the scapula is about 17% larger since it was sized to the MHR shoulder (tools/seat_limbs_on_mhr.py); it was 6 mm
+        assert abs(g - g0) < 0.0075, (deg, g0, g)
+
+
+# ---- rig driven by the MHR skeleton (atlas.json["mhr"], tools/bind_mhr_joints.py) ----
+
+def mhr_joints_with(a, motions, lengthen=None):
+    """Synthetic MHR skeleton: every joint at rest; the joint bound to each named segment gets a rigid motion, and
+    `lengthen` {bone: factor} moves a limb's child joint to change that bone's length."""
+    m = a.meta["mhr"]; n = m["n_joints"]
+    pos = np.zeros((n, 3)); rot = np.tile(np.eye(3), (n, 1, 1))
+    for j, p in m["rest_pos"].items():
+        pos[int(j)] = p; rot[int(j)] = np.asarray(m["rest_rot"][j]).reshape(3, 3)
+    for seg, (rv, t) in motions.items():
+        j = m["segments"][seg]
+        rot[j] = Rot.from_rotvec(rv).as_matrix() @ rot[j]; pos[j] = pos[j] + np.asarray(t)
+    for bone, f in (lengthen or {}).items():
+        lb = m["limbs"][bone]
+        pos[lb["child"]] = pos[lb["joint"]] + f * (np.asarray(m["rest_pos"][str(lb["child"])]) - np.asarray(m["rest_pos"][str(lb["joint"])]))
+    return pos, rot
+
+
+def test_mhr_joints_at_rest_reproduce_the_rest_pose(atlas):
+    if not atlas.meta.get("mhr"):
+        pytest.skip("atlas has no MHR joint binding")
+    skin = skin_with(atlas, {})
+    out = atlas.pose(skin, mhr_joints=mhr_joints_with(atlas, {}))
+    for s in atlas.structures:
+        assert np.abs(out[s["name"]] - s["pos"]).max() < 1e-4, s["name"]
+
+
+def test_mhr_joint_drives_its_segment_and_scales_the_limb_bone(atlas):
+    if not atlas.meta.get("mhr"):
+        pytest.skip("atlas has no MHR joint binding")
+    skin = skin_with(atlas, {})                                # the skin does not move: only the joints do
+    rv = np.array([0.0, 0.0, 0.7])
+    T, cf, sf, F = atlas.frames(skin, mhr_joints=mhr_joints_with(atlas, {"uparm_l": (rv, [0, 0, 0])}, lengthen={"humerus_left": 1.1}))
+    by = {s["name"]: s for s in atlas.structures}
+    assert Rot.from_matrix(T[[g["name"] for g in atlas.segments].index("uparm_l")][1]).magnitude() == pytest.approx(0.7, abs=1e-6)
+    assert F["humerus_left"][4] == pytest.approx(1.1, abs=1e-4)          # bone length follows the joints
+    posed = atlas.pose(skin, mhr_joints=mhr_joints_with(atlas, {"uparm_l": (rv, [0, 0, 0])}, lengthen={"humerus_left": 1.1}))
+    h = by["humerus_left"]["pos"]; span = lambda p: np.linalg.norm(p - p.mean(0), axis=1).max()
+    assert span(posed["humerus_left"]) == pytest.approx(1.1 * span(h), rel=1e-4)
+    # defined on the model's skeleton: the humeral head and the scapula's glenoid both sit on the live MHR shoulder joint
+    pos, rot = mhr_joints_with(atlas, {"uparm_l": (rv, [0, 0, 0])})
+    pos[atlas.meta["mhr"]["limbs"]["humerus_left"]["joint"]] += [0.03, -0.02, 0.01]          # the shoulder moves (a shrug)
+    F2 = atlas.frames(skin, mhr_joints=(pos, rot))[3]
+    live = pos[atlas.meta["mhr"]["limbs"]["humerus_left"]["joint"]]
+    gh = np.asarray({j["name"]: j for j in atlas.meta["joints"]}["gh_l"]["center"])
+    for bone in ("humerus_left", "scapula_left"):
+        f = F2[bone]
+        assert np.linalg.norm((gh - f[2]) @ f[1].T * f[4] + f[3] - live) < 1e-9, bone
+    J = {j["name"]: j for j in atlas.meta["joints"]}
+    ac = np.asarray(J["ac_l"]["center"]); ap = lambda f, x: (x - f[2]) @ f[1].T * f[4] + f[3]
+    assert np.linalg.norm(ap(F2["clavicula_left"], ac) - ap(F2["scapula_left"], ac)) < 0.004     # clavicle still meets the scapula
+
+
+def test_js_runtime_matches_numpy_when_driven_by_mhr_joints(atlas, tmp_path):
+    if not shutil.which("node"):
+        pytest.skip("node not installed")
+    if not atlas.meta.get("mhr"):
+        pytest.skip("atlas has no MHR joint binding")
+    skin = skin_with(atlas, BIG)
+    pos, rot = mhr_joints_with(atlas, BIG, lengthen={"humerus_left": 1.12, "humerus_right": 0.9, "femur_left": 1.05})
+    out = atlas.pose(skin, breath=0.4, depth=1.0, spine="physio", mhr_joints=(pos, rot))
+    exp = np.concatenate([out[s["name"]].reshape(-1) for s in atlas.structures]).astype("<f4")
+    sk, ep, jp = tmp_path / "skin.bin", tmp_path / "exp.bin", tmp_path / "joints.bin"
+    skin.astype("<f4").tofile(sk); exp.tofile(ep); np.concatenate([pos.reshape(-1), rot.reshape(-1)]).astype("<f4").tofile(jp)
+    case = tmp_path / "case.json"
+    case.write_text(json.dumps({"skin": str(sk), "breath": 0.4, "depth": 1.0, "spine": "physio", "expected": str(ep), "joints": str(jp)}))
+    here = os.path.dirname(__file__)
+    r = subprocess.run(["node", os.path.join(here, "js", "parity_pose.mjs"), ATLAS, str(case)], capture_output=True, text=True)
+    assert r.returncode == 0, r.stdout + r.stderr
+
+
+def test_js_runtime_matches_numpy_with_body_scaling(atlas, tmp_path):
+    """A body bigger or smaller than the neutral one: the patches are scaled as well as moved, with and without MHR joints."""
+    if not shutil.which("node"):
+        pytest.skip("node not installed")
+    skin = skin_with(atlas, BIG)
+    sizes = {"pelvis": 0.8, "lumbar": 0.78, "thorax_low": 0.75, "thorax_up": 0.82, "head": 1.07, "uparm_l": 0.9, "uparm_r": 1.1,
+             "thigh_l": 1.15, "thigh_r": 0.9, "shoulder_l": 0.85, "shoulder_r": 1.12}
+    for sg in atlas.segments:
+        c = skin[sg["idx"]].mean(0)
+        skin[sg["idx"]] = c + sizes[sg["name"]] * (skin[sg["idx"]] - c)
+    T = atlas.segment_transforms(skin)
+    for f, sg in zip(T, atlas.segments):                       # neighbouring patches share a few vertices, so not exact
+        assert f[4] == pytest.approx(sizes[sg["name"]], abs=0.03), sg["name"]
+    here = os.path.dirname(__file__)
+    cases = [("skin", None)]
+    if atlas.meta.get("mhr"):
+        cases.append(("joints", mhr_joints_with(atlas, BIG, lengthen={"humerus_left": 1.12, "femur_right": 0.95})))
+    for tag, mj in cases:
+        out = atlas.pose(skin, breath=0.6, depth=1.0, spine="physio", mhr_joints=mj)
+        exp = np.concatenate([out[s["name"]].reshape(-1) for s in atlas.structures]).astype("<f4")
+        sk, ep = tmp_path / f"skin_{tag}.bin", tmp_path / f"exp_{tag}.bin"
+        skin.astype("<f4").tofile(sk); exp.tofile(ep)
+        case = {"skin": str(sk), "breath": 0.6, "depth": 1.0, "spine": "physio", "expected": str(ep)}
+        if mj is not None:
+            jp = tmp_path / "joints_scaled.bin"
+            np.concatenate([mj[0].reshape(-1), mj[1].reshape(-1)]).astype("<f4").tofile(jp); case["joints"] = str(jp)
+        cp = tmp_path / f"case_{tag}.json"; cp.write_text(json.dumps(case))
+        r = subprocess.run(["node", os.path.join(here, "js", "parity_pose.mjs"), ATLAS, str(cp)], capture_output=True, text=True)
+        assert r.returncode == 0, tag + ": " + r.stdout + r.stderr
+
+
+def test_body_scaling_keeps_joints_pinned_and_sizes_the_ribcage(atlas):
+    skin = skin_with(atlas, {})
+    for sg in atlas.segments:                                   # a body 20% smaller everywhere, in the rest pose
+        skin[sg["idx"]] = 0.8 * sg["rest"]
+    posed = atlas.pose(skin)
+    T, cf, sf, F = atlas.frames(skin)
+    by = {s["name"]: s for s in atlas.structures}
+    width = lambda P: np.ptp(np.vstack([P[n] for n in P if n.startswith("rib_")])[:, 0])
+    assert width(posed) == pytest.approx(0.8 * width({n: s["pos"] for n, s in by.items()}), rel=0.03)
+    J = {j["name"]: j for j in atlas.meta["joints"]}
+    for name in ("gh_l", "gh_r", "hip_l", "hip_r"):             # ball still in its socket after scaling
+        j = J[name]; c = np.asarray(j["center"]); par = F.get(j["parent"])
+        if par is None:
+            continue
+        live = (c - par[2]) @ par[1].T * par[4] + par[3]
+        child = F[j["child"]]
+        assert np.linalg.norm(child[3] - live) < 1e-9, name

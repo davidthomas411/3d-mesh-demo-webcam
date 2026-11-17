@@ -225,6 +225,13 @@ http://localhost:8098/
 
 Open the page, then select **Start webcam and inference**.
 
+## Video file instead of the webcam
+
+**Use a video file** plays a local file (anything the browser can decode, for example MP4/H.264 or WebM) in place of the camera, looped
+and muted. Nothing is uploaded as a file: frames are grabbed from the player and sent through the same WebSocket as webcam frames. The
+file plays at its own speed and the estimator takes the frame showing when the previous mesh returns, so at about 9 meshes a second most
+frames of a 30 fps clip are skipped. The focal length is recalibrated for each file.
+
 ## Runtime controls
 
 ### Inference mode
@@ -397,6 +404,54 @@ How it is built (`python -m anatomy.atlas_build <subject_dir> mhr_rest.npz atlas
    forward; shoulder girdle and pelvis get the same treatment without scaling.
 7. The rig (`anatomy/rig.py`) is bound: nine rigid segments, a vertebra chain, rib and girdle
    attachments, and soft-tissue skinning weights.
+
+### Containment at rest and head size (added after the first live run)
+
+The first live run showed arm and shoulder bones outside the body. The cause was in the atlas, not in the motion: against the neutral
+MHR rest skin the humeri were 90% outside (up to 10 cm), the clavicles 40-58%, the scapulae 15-20% and the skull 7%; ribs, spine and
+pelvis were inside. A bone that starts outside stays outside in every pose, because the rig only copies skin motion onto it.
+
+- `python tools/reseat_bones.py atlas/atlas mhr_rest.npz` re-seats them: clavicle about the sternoclavicular centre, scapula about the
+  acromioclavicular centre (kept at its rest gap from the rib cage), humerus about the glenohumeral centre, skull about the
+  atlanto-occipital centre with a size change. Joints stay pinned and bones stay rigid. After it, all six shoulder bones are 0% outside
+  the rest skin and the skull 0.3%. `mhr_rest.npz` (verts, faces) is the neutral MHR mesh; it is under the SAM License and is not in this repo.
+- The skull (and brain) is now scaled at run time by the size of the live head patch relative to the rest patch
+  (`Atlas.segment_scale`, `segmentScale` in `anatomy.js`), because the estimator predicts each person's own head size.
+- Measured on one live webcam mesh: shoulder-group vertices outside the skin 52.5% -> 2.1%, skull 6.6% -> 3.3%.
+- There is still no per-frame rule that tests bones against the live skin. Body shapes far from the neutral one (the live shoulders
+  here were 12% wider) are only handled for the skull.
+
+### Skeleton sized to the body, rotations from the MHR joints
+
+The estimator predicts a different body for each person; the atlas skeleton is one size. On a slim subject (the Fast SAM 3D Body sample
+image, torso about 0.75 of the neutral body) 21.6% of the spine surface, 24.8% of the rib cage and 13% of the pelvis lay outside the skin.
+
+- **Body scale** (on by default, `body_scale` / `bodyScale`): every segment frame carries a uniform scale, the RMS size of the segment's
+  live skin patch relative to its rest patch (clamped to 0.65-1.35). Vertebra spacing, ribs, sternum, girdle and soft tissue scale with
+  the frame that carries them; joints stay pinned. On that image: spine 21.6% -> 4.3%, rib cage 24.8% -> 1.6%, pelvis 13.0% -> 1.0%,
+  shoulder group 26.7% -> 9.0% (the humeri in a raised-arm pose are what is left).
+- **MHR joints** (`tools/bind_mhr_joints.py`, `atlas.json["mhr"]`): the server now sends the 127 joint positions and rotations with each
+  mesh. Each rig segment is bound to the joint that carries most of its skin patch's skinning weight (the limb's own joint where that is
+  a twist helper). The segment takes its rotation from the joint; its position still comes from the skin patch. Anchoring positions to
+  the joint centres instead was measured and was worse (rib cage 9.1% outside against 1.6%), so it is not used.
+- Limb bones are scaled by joint-to-joint length (shoulder-elbow, hip-knee) when joints are present. The scale is uniform, so a long thin
+  arm gets a bone that is slightly too thick.
+- Measured by `tools/compare_drive.py` (bone surface outside the live skin, skin-driven against joint-driven).
+- **Upper arm defined on the model's skeleton** (`tools/seat_limbs_on_mhr.py`, `atlas.json["mhr"]["limb_seated"]`): the atlas humeri
+  pivoted 63-88 mm from the MHR shoulder joint and their shafts were 11-18 degrees off the MHR shoulder-elbow line, so they could not
+  overlay the arm. At rest the humeral head is now on the MHR shoulder joint and the shaft on the shoulder-elbow line (length scaled to
+  the joint distance); the scapula's glenoid is on the same joint and the clavicle is lengthened to meet the scapula, because the CT
+  subject's girdle was narrower than the neutral MHR body (scapula x1.11-1.17, clavicle x1.34-1.52). At run time, with joints, the
+  humeral head rides the live shoulder joint, the scapula is pinned there and the clavicle reaches from the sternum to the scapula.
+  On the sample image: head 0 mm from the joint, shaft 0.0 degrees off the arm line, shoulder group outside the skin 9.0% -> 3.5%.
+- Not done: the femur still sits in the atlas acetabulum (24-26 mm from the MHR hip joint); forearm, lower-leg, hand and foot bones
+  (the atlas has none); anisotropic scale; a per-frame collision test.
+
+### Label CT slice
+
+`anatomy/ct.js` draws a slice of the posed atlas next to the DRR X-ray. It is a label image (one flat grey per tissue), not
+CT: the atlas holds surfaces, not voxels. The slice plane is fixed to the camera and follows the thoracic spine front to back.
+Scapulae and costal cartilage (open meshes) are missing from it, and a few meshes with small holes can leave thin streaks.
 
 ### Biomechanics (how the anatomy moves)
 

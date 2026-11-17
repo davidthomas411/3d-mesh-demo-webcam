@@ -9,7 +9,12 @@ const bin = fs.readFileSync(prefix + ".bin");
 const atlas = parseAtlas(JSON.parse(fs.readFileSync(prefix + ".json", "utf8")), bin.buffer.slice(bin.byteOffset, bin.byteOffset + bin.byteLength));
 const sk = fs.readFileSync(c.skin), skin = new Float32Array(sk.buffer.slice(sk.byteOffset, sk.byteOffset + sk.byteLength));
 const ex = fs.readFileSync(c.expected), exp = new Float32Array(ex.buffer.slice(ex.byteOffset, ex.byteOffset + ex.byteLength));
-const fr = computeFrames(atlas, skin, c.breath, c.depth, c.spine || "skin");
+let mhrJoints = null;
+if (c.joints) {                                            // float32: n*3 joint positions, then n*9 rotation-matrix entries
+  const jb = fs.readFileSync(c.joints), jv = new Float32Array(jb.buffer.slice(jb.byteOffset, jb.byteOffset + jb.byteLength)), n = jv.length / 12;
+  mhrJoints = { pos: jv.subarray(0, n * 3), rot: jv.subarray(n * 3) };
+}
+const fr = computeFrames(atlas, skin, c.breath, c.depth, c.spine || "skin", 1, mhrJoints);
 let off = 0, worst = 0, worstName = "";
 for (const s of atlas.structures) {
   const P = new Float64Array(s.pos.length);
