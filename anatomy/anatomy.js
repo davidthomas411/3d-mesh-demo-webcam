@@ -336,7 +336,7 @@ export function computeFrames(atlas, skin, breath = 0, depth = 1, spine = "skin"
       cf.push({ q: q[i], R: quatToR(q[i]), c: c[i], cp: [cp[i][0] + out[0], cp[i][1] + out[1], cp[i][2] + out[2]], s: kc[i] });
     }
   }
-  const F = jointFrames(atlas, T, cf, SEG, breath, depth, mhr ? mhrJoints : null);
+  const F = jointFrames(atlas, T, cf, SEG, breath, depth, mhr ? mhrJoints : null, craniumFrame(atlas, skin, T[SEG.head], bodyScale));
   if (mhr && mhr.limbs) {                                      // limb bones sized to this person's bone lengths
     const P = mhrJoints.pos;
     for (const bone in mhr.limbs) {
@@ -354,6 +354,15 @@ export function computeFrames(atlas, skin, breath = 0, depth = 1, spine = "skin"
 // Size of a segment's live skin patch relative to its rest patch (ratio of RMS radii about the centroids), clamped. The neutral MHR
 // body is one size and the estimator predicts each person's own shape, so a rigid bone would otherwise stay atlas-sized in a head
 // that is bigger or smaller. Mirrors Atlas.segment_scale in anatomy/runtime.py.
+// Frame that carries the skull: the head segment's rotation, placed and sized by the skin that is rigid with the head joint
+// (atlas.mhr.cranium: no neck, no jaw). Mirrors Atlas._cranium_frame in runtime.py.
+function craniumFrame(atlas, skin, Th, bodyScale) {
+  const cr = atlas.mhr && atlas.mhr.cranium;
+  if (!cr) return Th;
+  if (!cr._g) cr._g = { idx: Uint32Array.from(cr.idx), rest: Float32Array.from(cr.rest.flat()) };
+  const { cs, cd } = patchCentroids(cr._g, skin);
+  return { q: Th.q, R: Th.R, c: cs, cp: cd, s: bodyScale ? segmentScale(cr._g, skin) : 1 };
+}
 function patchCentroids(g, skin) {             // rest and live centroid of a segment's skin patch
   const r = g.rest, idx = g.idx, n = idx.length, cs = [0, 0, 0], cd = [0, 0, 0];
   for (let i = 0; i < n; i++) {
@@ -377,7 +386,7 @@ function segmentScale(g, skin, lo = 0.65, hi = 1.35) {
 
 // With mhrJoints and an atlas whose arm bones are seated on the MHR skeleton (atlas.mhr.limb_seated), the humeral head rides the live
 // MHR shoulder joint, the scapula is pinned there and the clavicle reaches from the sternum to the scapula (see runtime.py).
-function jointFrames(atlas, T, cf, SEG, breath, depth, mhrJoints = null) {
+function jointFrames(atlas, T, cf, SEG, breath, depth, mhrJoints = null, headFrame = null) {
   const chain = atlas.chain, J = Object.fromEntries(atlas.joints.map(j => [j.name, j])), F = {};
   for (const j of atlas.joints) {                              // ribs: costovertebral joint + respiratory rotation
     if (j.type !== "costovertebral" || !chain.includes(j.parent)) continue;
@@ -435,7 +444,7 @@ function jointFrames(atlas, T, cf, SEG, breath, depth, mhrJoints = null) {
   const ao = J.ao;
   if (ao && chain.includes(ao.parent)) {                       // skull on C1
     const c1 = cf[chain.indexOf(ao.parent)], Rh = T[SEG.head].R;
-    F.skull = mkFrame(mul3(c1.R, limitRotation(mul3(tr3(c1.R), Rh), ao.limit_deg)), ao.center, mapPoint(T[SEG.head], ao.center), T[SEG.head].s || 1);   // the skull rides the head frame, not C1 (see runtime.py)
+    F.skull = mkFrame(mul3(c1.R, limitRotation(mul3(tr3(c1.R), Rh), ao.limit_deg)), ao.center, mapPoint(headFrame || T[SEG.head], ao.center), (headFrame || T[SEG.head]).s || 1);   // the skull rides the cranium, not C1 (see runtime.py)
   }
   return F;
 }

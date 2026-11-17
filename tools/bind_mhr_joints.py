@@ -105,11 +105,24 @@ def main():
         limbs[bone] = {"joint": j, "child": int(c), "rest_len": round(float(np.linalg.norm(p0[c] - p0[j])), 5)}
         print(f"  {bone:14s} length joint {j} -> {c}: {limbs[bone]['rest_len'] * 1000:.0f} mm at rest")
 
-    used = sorted(set(seg_joint.values()) | {l["child"] for l in limbs.values()})
+    # the rigid part of the head: skin that follows the head joint alone (no neck, no jaw). The skull is anchored to it.
+    head = seg_joint["head"]
+    w_head = np.zeros(len(v0)); np.add.at(w_head, mhr.w_vert[mhr.w_joint == head], mhr.w[mhr.w_joint == head])
+    rigid = np.where(w_head > 0.995)[0]
+    rigid = rigid[np.linspace(0, len(rigid) - 1, min(600, len(rigid))).astype(int)]
+    kids = mhr.children(head)
+    eyes = sorted([k for k in kids if abs(p0[k][0]) > 0.01], key=lambda k: p0[k][0])
+    skinned = np.bincount(mhr.w_joint, weights=mhr.w, minlength=nJ)
+    landmarks = {"head": head, "head_top": int(min(kids, key=lambda k: p0[k][1])), "eye_r": int(eyes[0]), "eye_l": int(eyes[-1]),
+                 "jaw": int(max([k for k in kids if abs(p0[k][0]) <= 0.01], key=lambda k: skinned[k]))}
+    print(f"  cranium: {len(rigid)} skin vertices rigid with joint {head}; landmarks {landmarks}")
+
+    used = sorted(set(seg_joint.values()) | {l["child"] for l in limbs.values()} | set(landmarks.values()))
     block = {"n_joints": nJ, "segments": seg_joint,
              "rest_pos": {str(j): [round(float(x), 6) for x in p0[j]] for j in used},
              "rest_rot": {str(j): [round(float(x), 7) for x in r0[j].reshape(-1)] for j in used},
-             "limbs": limbs}
+             "limbs": limbs, "landmarks": landmarks,
+             "cranium": {"idx": [int(i) for i in rigid], "rest": [[round(float(x), 5) for x in v0[i]] for i in rigid]}}
 
     # how close is the joint-driven frame to the skin-patch fit on real motion?
     if a.clips:

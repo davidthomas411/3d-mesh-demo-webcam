@@ -13,8 +13,8 @@ The rules, applied in this order to atlas/ct_subject.* (the atlas as built by an
             that centres the rib cage in the chest. It is a smooth warp of space, so EVERYTHING in the thorax moves together: ribs,
             sternum, vertebrae, heart, lungs, vessels. It fades to nothing through the neck and through the abdomen; the pelvis keeps
             its size.
-  2 SKULL   Rotation, translation and three scales (width, height, depth) so the outer surface of the skull lies a scalp thickness
-            under the head skin. The brain moves with it.
+  2 SKULL   Rotation, translation and three scales (width, height, depth) so the skull fills the head: its vault a scalp thickness
+            under the head skin, its orbits at the height of the model's eye joints. The brain moves with it, the neck follows.
   3 JOINTS  Rig segments are bound to MHR joints (tools/bind_mhr_joints.py).
   4 ARMS    Humeral head on the MHR shoulder joint, shaft on the shoulder-elbow line, girdle sized to meet it
             (tools/seat_limbs_on_mhr.py).
@@ -144,43 +144,113 @@ def fit_trunk(atlas, depth):
     return {"lateral": round(sx, 4), "anteroposterior": round(sz, 4), "shift_mm": round((xm_new - xm) * 1000, 1)}
 
 
-def fit_skull(atlas, depth):
+def head_landmarks(mhr_path):
+    """Eye joints, head-top joint and head joint of the neutral MHR skeleton (atlas frame), found from the hierarchy:
+    the children of the head joint are a mirrored pair (the eyes), a joint straight above (the top of the head) and the jaw."""
+    from bind_mhr_joints import MHR
+    m = MHR(mhr_path)
+    _, p0, _ = m.pose()
+    w = np.bincount(m.w_joint, weights=m.w, minlength=len(m.parents))
+    head = max(range(len(m.parents)), key=lambda k: w[k] if p0[k][1] < -1.5 else -1)     # most skin weight above the shoulders
+    kids = m.children(head)
+    eyes = sorted([k for k in kids if abs(p0[k][0]) > 0.01], key=lambda k: p0[k][0])
+    top = min(kids, key=lambda k: p0[k][1])
+    return {"eye_r": p0[eyes[0]], "eye_l": p0[eyes[-1]], "top": p0[top], "head": p0[head]}
+
+
+def skull_orbit_height(skull, faces):
+    """Height (y) of the orbits on the skull: seen from the front, the eye sockets are where the bone surface is deepest
+    between the forehead and the cheekbones."""
+    import trimesh
+    from scipy.ndimage import gaussian_filter1d as g1
+    sm = trimesh.Trimesh(skull, faces, process=False)
+    top, h = skull[:, 1].min(), np.ptp(skull[:, 1])
+    ys = np.arange(top + 0.2 * h, top + 0.65 * h, 0.002)
+    xm = np.median(skull[:, 0])
+    prof = []
+    for y in ys:
+        o = np.array([[xm + sx_ * dx, y, -0.5] for sx_ in (-1, 1) for dx in (0.026, 0.032, 0.038)])
+        loc, ir, _ = sm.ray.intersects_location(o, np.tile([0, 0, 1.0], (len(o), 1)), multiple_hits=False)
+        z = np.full(len(o), skull[:, 2].max()); z[ir] = loc[:, 2]
+        prof.append(np.median(z))
+    prof = g1(np.array(prof), 2.0)
+    return float(ys[int(np.argmax(prof))]), float(xm)
+
+
+def fit_skull(atlas, depth, lm):
+    """The skull fills the head: its vault lies a scalp thickness under the head skin and its orbits are at the height of the
+    model's eyes. Rotation, translation and three scales (width, height, depth); the brain moves with it and the neck follows."""
+    import trimesh
     J = {j["name"]: j for j in atlas.meta["joints"]}
     Jao = np.asarray(J["ao"]["center"], np.float64)
+    e = atlas.by["skull"]
     skull = atlas.get("skull")
-    pts = sample(skull, 700)
+    faces = np.frombuffer(atlas.blob, np.uint16 if e["idx_type"] == "u16" else np.uint32, e["n_tris"] * 3, e["idx"]).reshape(-1, 3).astype(np.int64)
+    orbit_y, mid_x = skull_orbit_height(skull, faces)
+    c = skull.mean(0)
+    top, h = skull[:, 1].min(), np.ptp(skull[:, 1])
+    # outer surface of the vault: on the convex hull, in the upper part, not facing down
+    hull = trimesh.Trimesh(skull, faces, process=False).convex_hull
+    on_hull = np.abs(trimesh.proximity.signed_distance(hull, skull)) < 0.003
+    vault = skull[on_hull & (skull[:, 1] < top + 0.5 * h)]
+    vault = sample(vault, 350)
+    rest = sample(skull, 500)
+    orbit = np.array([[mid_x + 0.032, orbit_y, c[2]], [mid_x - 0.032, orbit_y, c[2]]])
+    eye_y = float((lm["eye_l"][1] + lm["eye_r"][1]) / 2)
     target = TISSUE["scalp"]
 
-    def tf(x, p):                                              # about the atlanto-occipital centre
-        return Jao + x[6:9] + ((p - Jao) * np.exp(x[3:6])) @ Rot.from_rotvec(x[0:3]).as_matrix().T
+    def tf(x, p):
+        return c + x[6:9] + ((p - c) * np.exp(x[3:6])) @ Rot.from_rotvec(x[0:3]).as_matrix().T
 
     def residuals(x):
-        d = depth(tf(x, pts), exact=True)
-        near = d < 0.022                                       # the outer surface: vault and face (the skull base is deep inside)
-        e = np.where(near, d - target, 0.0) * 1000
-        e = np.sign(e) * np.minimum(np.abs(e), 6 + 0.25 * np.abs(e))          # soft cap: the face is not a constant thickness
-        return np.concatenate([e / np.sqrt(len(pts)) * 2.0,
-                               hinge(d, 0.003) * 1000 / np.sqrt(len(pts)) * 6.0,   # never closer than 3 mm to the skin
-                               np.degrees(x[0:3]) * 0.04,
-                               (x[3:6] - x[3:6].mean()) * 100 * 0.06,            # the three scales stay close to each other
-                               x[6:9] * 1000 * 0.08])                            # the skull base stays on the neck
+        dv = depth(tf(x, vault), exact=True)
+        ev = (dv - target) * 1000
+        ev = np.sign(ev) * np.minimum(np.abs(ev), 8 + 0.35 * np.abs(ev))             # robust, but a far gap still pulls
+        o = tf(x, orbit)
+        return np.concatenate([ev / np.sqrt(len(vault)) * 3.0,
+                               hinge(depth(tf(x, rest), exact=True), 0.003) * 1000 / np.sqrt(len(rest)) * 8.0,   # all of it at least 3 mm inside
+                               (o[:, 1] - eye_y) * 1000 * 0.8,                         # orbits at the height of the eyes
+                               [(o[:, 0].mean() - (lm["eye_l"][0] + lm["eye_r"][0]) / 2) * 1000 * 0.5],
+                               np.degrees(x[0:3]) * 0.05])
 
     before = outside_report(depth, skull)
-    d0 = depth(pts, exact=True)
-    sol = least_squares(residuals, np.zeros(9), method="trf", x_scale=0.02, diff_step=2e-3, max_nfev=80)
-    x = sol.x
-    for name, e in atlas.by.items():
-        if name == "skull" or (e.get("bind") == "frame" and e.get("frame") == "skull"):
+    gap0 = (skull[:, 1].min() - depth.mesh.vertices[:, 1].min()) * 1000
+    best = None
+    for start in (np.zeros(9), np.r_[0, 0, 0, 0.05, 0.25, 0.05, 0, -0.03, 0.0]):          # second start: already stretched upward
+        sol = least_squares(residuals, start, method="trf", x_scale=0.03, diff_step=3e-3, max_nfev=90,
+                            bounds=(np.r_[-0.6, -0.6, -0.6, -0.25, -0.25, -0.25, -0.1, -0.1, -0.1], np.r_[0.6, 0.6, 0.6, 0.4, 0.4, 0.4, 0.1, 0.1, 0.1]))
+        if best is None or sol.cost < best.cost:
+            best = sol
+    x = best.x
+    for name, en in atlas.by.items():
+        if name == "skull" or (en.get("bind") == "frame" and en.get("frame") == "skull"):
             atlas.put(name, tf(x, atlas.get(name)))
-    J["ao"]["center"] = [round(float(v), 5) for v in tf(x, Jao[None])[0]]
-    after = outside_report(depth, atlas.get("skull"))
-    d1 = depth(tf(x, pts), exact=True)
-    s = np.exp(x[3:6])
-    near0, near1 = d0[d0 < 0.022] * 1000, d1[d1 < 0.022] * 1000
-    print(f"  skull: width x{s[0]:.3f}, height x{s[1]:.3f}, depth x{s[2]:.3f}, turned {np.degrees(np.linalg.norm(x[0:3])):.1f} deg, moved {np.linalg.norm(x[6:9]) * 1000:.1f} mm")
-    print(f"  outside the head skin {before[0]:.1f}% -> {after[0]:.1f}% | outer surface depth under the skin: median {np.median(near0):.1f} -> {np.median(near1):.1f} mm, "
-          f"spread (10-90%) {np.percentile(near0, 10):.1f}..{np.percentile(near0, 90):.1f} -> {np.percentile(near1, 10):.1f}..{np.percentile(near1, 90):.1f} mm")
-    return {"scale_xyz": [round(float(v), 4) for v in s], "rotation_deg": round(float(np.degrees(np.linalg.norm(x[0:3]))), 2)}
+    # the neck follows: whatever the skull base moved by is carried, fading out, down to the base of the neck
+    ao_new = tf(x, Jao[None])[0]
+    shift = ao_new - Jao
+
+    def follow(p):
+        return p + shift * smoothstep(-1.44, float(Jao[1]), -(-p[:, 1:2])) if False else p + shift * (1.0 - smoothstep(float(Jao[1]), -1.44, p[:, 1:2]))
+
+    for name, en in atlas.by.items():
+        if name == "skull" or (en.get("bind") == "frame" and en.get("frame") == "skull"):
+            continue
+        atlas.put(name, follow(atlas.get(name)))
+    for jn in atlas.meta["joints"]:
+        cc = np.asarray(jn["center"], np.float64)[None]
+        jn["center"] = [round(float(v), 5) for v in (ao_new if jn["name"] == "ao" else follow(cc)[0])]
+    sk2 = atlas.get("skull")
+    after = outside_report(depth, sk2)
+    sc = np.exp(x[3:6])
+    dv = depth(tf(x, vault), exact=True) * 1000
+    o = tf(x, orbit)
+    print(f"  skull: width x{sc[0]:.3f}, height x{sc[1]:.3f}, depth x{sc[2]:.3f}, turned {np.degrees(np.linalg.norm(x[0:3])):.1f} deg; "
+          f"now {np.ptp(sk2[:, 0]) * 1000:.0f} x {np.ptp(sk2[:, 1]) * 1000:.0f} x {np.ptp(sk2[:, 2]) * 1000:.0f} mm (w x h x d)")
+    print(f"  top of the skull to top of the head: {gap0:.0f} -> {(sk2[:, 1].min() - depth.mesh.vertices[:, 1].min()) * 1000:.0f} mm | "
+          f"orbits to the model's eye height: {(orbit_y - eye_y) * 1000:+.0f} -> {(o[:, 1].mean() - eye_y) * 1000:+.0f} mm (+ = too low)")
+    print(f"  vault under the scalp: median {np.median(dv):.1f} mm (10-90%: {np.percentile(dv, 10):.1f}..{np.percentile(dv, 90):.1f}) | outside the head {before[0]:.1f}% -> {after[0]:.1f}% | "
+          f"skull base moved {np.linalg.norm(shift) * 1000:.0f} mm, the neck follows")
+    return {"scale_xyz": [round(float(v), 4) for v in sc], "rotation_deg": round(float(np.degrees(np.linalg.norm(x[0:3]))), 2)}
 
 
 def main():
@@ -198,7 +268,7 @@ def main():
     print("1 TRUNK")
     trunk = fit_trunk(atlas, depth)
     print("2 SKULL")
-    skull = fit_skull(atlas, depth)
+    skull = fit_skull(atlas, depth, head_landmarks(a.mhr))
     atlas.meta["fit"] = {"tool": "tools/fit_skeleton_to_mhr.py", "source": os.path.basename(a.source), "tissue_m": TISSUE, "thorax": trunk, "skull": skull}
     atlas.meta.pop("history", None)
     atlas.save("tools/fit_skeleton_to_mhr.py: thorax and skull fitted to the neutral MHR body")

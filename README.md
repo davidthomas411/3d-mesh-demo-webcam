@@ -418,8 +418,11 @@ python tools/fit_skeleton_to_mhr.py atlas/ct_subject atlas/atlas mhr_rest.npz mh
    side to side, x1.102 front to back), about the spine's posterior line, plus a 12 mm lateral shift that centres the rib cage. It is
    a smooth warp of space, so ribs, vertebrae, sternum, heart, lungs and vessels move together. It fades out through the neck and the
    abdomen; the pelvis keeps its size. Rib cage 262 x 184 mm -> 279 x 203 mm; tissue in front of it 41-75 mm -> 22-57 mm.
-2. **Skull.** Rotation, translation and three scales so its outer surface lies a scalp thickness under the head skin (width x0.99,
-   height x0.95, depth x0.99); outside the head 6.9% -> 1.4%. At run time the skull is carried by the head frame, not by C1.
+2. **Skull.** The atlas skull was vertically squat: its top was 53 mm under the scalp and its orbits 24 mm below the model's eye
+   joints. It is fitted with rotation, translation and three scales so the vault lies a scalp thickness under the head skin and the
+   orbits are at eye height (width x1.07, height x1.25, depth x1.06): top 8 mm under the scalp, orbits 2 mm from eye height, vault a
+   median 7.4 mm deep, 0.5% outside. The neck follows the skull base. At run time the skull is carried by the skin that is rigid with
+   the head joint (`atlas.json["mhr"]["cranium"]`: no neck, no jaw), not by C1 and not by the head patch that reaches into the neck.
 3. **Joints.** Segments bound to MHR joints (`tools/bind_mhr_joints.py`).
 4. **Arms.** Humeral head on the MHR shoulder joint, shaft on the shoulder-elbow line, girdle sized to meet it
    (`tools/seat_limbs_on_mhr.py`).

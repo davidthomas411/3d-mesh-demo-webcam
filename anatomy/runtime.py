@@ -109,6 +109,7 @@ class Atlas:
         """-> (segment_frames, chain_frames, soft_frames). A frame is (q, R, c_rest, c_live, k): x -> k R (x - c_rest) + c_live.
         mhr_joints: optional (pos, rot) of the MHR skeleton; body_scale: size the skeleton to the person. See segment_transforms."""
         from . import rig
+        self._scale_on = bool(body_scale)
         T = self.segment_transforms(skin, mhr_joints, body_scale)
         chain = self.meta.get("chain", [])
         by = {s["name"]: s for s in self.structures}
@@ -143,6 +144,7 @@ class Atlas:
             cp = np.array(cp) + ds
             cf = [(q[i], quat_to_rot(q[i]), c[i], cp[i], kc[i]) for i in range(len(chain))]
         sf = [T[rig.SEG["pelvis"]]] + cf + [T[rig.SEG["head"]]] + [T[rig.SEG[n]] for n in ("uparm_l", "uparm_r", "thigh_l", "thigh_r")]
+        self._skin = skin
         F = self._joint_frames(T, cf, chain, by, breath, depth, mhr_joints=mhr_joints) if joints else self._legacy_frames(T, cf, chain)
         if joints and mhr_joints is not None and self.meta.get("mhr"):   # limb bones sized to this person's bone lengths
             for bone, lb in self.meta["mhr"].get("limbs", {}).items():
@@ -152,6 +154,21 @@ class Atlas:
                     # take the smaller of the length ratio and the limb's girth ratio (the frame's own scale)
                     F[bone] = F[bone][:4] + (min(float(np.clip(n / lb["rest_len"], 0.8, 1.25)), _k(F[bone])),)
         return T, cf, sf, F
+
+    def _cranium_frame(self, skin, Th):
+        """Frame that carries the skull: the head segment's rotation, placed and sized by the skin that is rigid with the head
+        joint (atlas.json["mhr"]["cranium"]: no neck, no jaw). The head segment's own patch reaches into the neck, so its centroid
+        and size shift with the neck's shape and pose and the skull drifted down the head. Falls back to the head segment."""
+        cr = (self.meta.get("mhr") or {}).get("cranium")
+        if not cr or skin is None:
+            return Th
+        if getattr(self, "_cranium", None) is None:
+            self._cranium = (np.asarray(cr["idx"], np.int64), np.asarray(cr["rest"], np.float64))
+        idx, rest = self._cranium
+        live = np.asarray(skin)[idx]
+        cs, cd = rest.mean(0), live.mean(0)
+        k = float(np.clip(np.sqrt(((live - cd) ** 2).sum() / ((rest - cs) ** 2).sum()), 0.65, 1.35)) if self._scale_on else 1.0
+        return (Th[0], Th[1], cs, cd, k)
 
     def segment_scale(self, seg, T, skin, lo=0.65, hi=1.35):
         """Size of a segment's live skin patch relative to its rest patch (ratio of RMS radii about the centroids), clamped. The
@@ -267,7 +284,7 @@ class Atlas:
             Rh = T[SEG["head"]][1]
             # The skull rides the head: it turns with it (within the joint's range on C1) and is carried by the head frame itself,
             # the same rule as the humerus on its joint. Pinning it to C1 instead let the spine's smoothing drag it off the head.
-            Th = T[SEG["head"]]
+            Th = self._cranium_frame(self._skin, T[SEG["head"]])
             F["skull"] = mk(c1[1] @ rig.limit_rotation(c1[1].T @ Rh, J["ao"]["limit_deg"]), Jao, _apply(Th, Jao), _k(Th))
         return F
 
