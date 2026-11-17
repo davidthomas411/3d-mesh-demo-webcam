@@ -3,6 +3,12 @@
 Newest first. Each entry says what changed, what was measured, and what is still wrong. Commit hashes are in this repo's `claude/femto-bolt-mesh-anatomy-x2x9wl`
 branch (the mobile repo carries the shipped atlas and `anatomy.js`). Evidence and numbers live in `docs/BENCHMARK.md`; the plan is `docs/PATIENT_RIG_PLAN.md`.
 
+## 2026-11-17 Matched CT + PET + MRI of one patient (STS_012)
+- TCIA Soft-tissue-Sarcoma STS_012: CT (3.27 mm), FDG PET (SUV from BQML, weight, decay-corrected dose) and T1 MRI share one frame of reference ("Aligned_T1toPET_BOX" is the authors' MR-to-PET registration). `tools/dicom_to_nii.py` converts and resamples onto the CT grid; `tools/pet_to_ct_grid.py` does the PET.
+- The MR box is only ~100 x 106 x 210 mm on one thigh (CT/PET cover head to upper thigh). `experiments/render_petct.py` (with MRI=...) puts a fourth coronal plane through the box using its offset from T8, so it follows the pose.
+- Atlas build needs `ATLAS_NO_NECK=1` for this scan (neck keypoint 128 mm off, similarity scale 0.83 with it, 0.80 without; this patient is smaller than the MHR average). Torso skin->MHR 13 mm mean.
+- Two 4-column renders at once ran out of memory (15 GB): one stream was killed and its clip re-rendered alone. Use one stream when a volume stack (CT + SUV + MR) is loaded, or two with CTW_STEP 4.
+
 ## 2026-11-17 PET/CT: matched CT + FDG PET of one patient driven by the rig
 - autoPET patient PETCT_0beb67c923 (TCIA FDG-PET-CT-Lesions): the PET series was downloaded, converted to SUVbw with `tools/pet_to_ct_grid.py` (decay-corrected dose, weight) and resampled onto the CT grid (scanner registration). TotalSegmentator fast mode (CPU, 3 mm, ~3 min) segmented the CT; `tools/subsample_subject.py` strides the subject by 2 to fit 15 GB; `anatomy.atlas_build` built a full rig (shoulders, 24 costovertebral joints).
 - Build fixes for a scan with no head and a truncated thorax: skull seating is optional; the scapulothoracic ellipsoid falls back to a bounding-box ellipsoid when the least-squares fit is degenerate.

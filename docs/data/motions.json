@@ -254,5 +254,93 @@
   "direction_error_deg": 0.3,
   "source_url": "https://huggingface.co/datasets/codepawl/rocketbox-motions-glb/tree/main/skeleton/f-idle-shake-arms-01",
   "modality": "petct"
+ },
+ {
+  "id": "trio-f-gestic-shrug-01",
+  "title": "Shrug (CT + PET + MRI)",
+  "blurb": "A conversational shrug: shoulders up, head tilted, palms out.",
+  "frames": 15,
+  "fps": 7.5,
+  "seconds": 2.0,
+  "direction_error_deg": 0.3,
+  "source_url": "https://huggingface.co/datasets/codepawl/rocketbox-motions-glb/tree/main/skeleton/f-gestic-shrug-01",
+  "modality": "trio"
+ },
+ {
+  "id": "trio-f-idle-look-around-01",
+  "title": "Look around (CT + PET + MRI)",
+  "blurb": "The head turns well past 90 degrees each way: the hardest test of the neck and skull.",
+  "frames": 16,
+  "fps": 3.3333333333333335,
+  "seconds": 4.8,
+  "direction_error_deg": 0.9,
+  "source_url": "https://huggingface.co/datasets/codepawl/rocketbox-motions-glb/tree/main/skeleton/f-idle-look-around-01",
+  "modality": "trio"
+ },
+ {
+  "id": "trio-f-idle-stretch-arms-01",
+  "title": "Stretch the arms (CT + PET + MRI)",
+  "blurb": "Both arms reach up and back: shoulder girdle, scapulae and upper spine.",
+  "frames": 16,
+  "fps": 2.142857142857143,
+  "seconds": 7.5,
+  "direction_error_deg": 0.7,
+  "source_url": "https://huggingface.co/datasets/codepawl/rocketbox-motions-glb/tree/main/skeleton/f-idle-stretch-arms-01",
+  "modality": "trio"
+ },
+ {
+  "id": "trio-f-cheer-01",
+  "title": "Cheer (CT + PET + MRI)",
+  "blurb": "Arms thrown up with a lean: large shoulder elevation and thoracic extension.",
+  "frames": 16,
+  "fps": 1.0344827586206897,
+  "seconds": 15.5,
+  "direction_error_deg": 0.6,
+  "source_url": "https://huggingface.co/datasets/codepawl/rocketbox-motions-glb/tree/main/skeleton/f-cheer-01",
+  "modality": "trio"
+ },
+ {
+  "id": "trio-f-claphands-01",
+  "title": "Clap (CT + PET + MRI)",
+  "blurb": "Hands brought together in front of the chest: scapular protraction.",
+  "frames": 16,
+  "fps": 1.0,
+  "seconds": 16.0,
+  "direction_error_deg": 0.4,
+  "source_url": "https://huggingface.co/datasets/codepawl/rocketbox-motions-glb/tree/main/skeleton/f-claphands-01",
+  "modality": "trio"
+ },
+ {
+  "id": "trio-f-drink-drinking",
+  "title": "Drink (CT + PET + MRI)",
+  "blurb": "One arm lifts a cup to the mouth and the head tips back.",
+  "frames": 16,
+  "fps": 1.3043478260869565,
+  "seconds": 12.3,
+  "direction_error_deg": 0.6,
+  "source_url": "https://huggingface.co/datasets/codepawl/rocketbox-motions-glb/tree/main/skeleton/f-drink-drinking",
+  "modality": "trio"
+ },
+ {
+  "id": "trio-f-gestic-presentation-left-01",
+  "title": "Present to the left (CT + PET + MRI)",
+  "blurb": "An open-handed gesture with a turn of the trunk and head.",
+  "frames": 16,
+  "fps": 0.967741935483871,
+  "seconds": 16.5,
+  "direction_error_deg": 1.5,
+  "source_url": "https://huggingface.co/datasets/codepawl/rocketbox-motions-glb/tree/main/skeleton/f-gestic-presentation-left-01",
+  "modality": "trio"
+ },
+ {
+  "id": "trio-f-idle-shake-arms-01",
+  "title": "Shake out the arms (CT + PET + MRI)",
+  "blurb": "Loose, fast arm shaking with a bouncing trunk.",
+  "frames": 16,
+  "fps": 3.3333333333333335,
+  "seconds": 4.8,
+  "direction_error_deg": 0.3,
+  "source_url": "https://huggingface.co/datasets/codepawl/rocketbox-motions-glb/tree/main/skeleton/f-idle-shake-arms-01",
+  "modality": "trio"
  }
 ]

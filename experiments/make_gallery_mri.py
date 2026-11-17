@@ -22,6 +22,6 @@ for n, (title, blurb) in CLIPS.items():
     subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-framerate", "5", "-i", f"{orig}/%03d.png", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", "26",
                     "-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2", f"{site}/media/{mid}.mp4"], check=True)
     subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-i", f"{orig}/{nf // 2:03d}.png", "-vf", "scale=900:-1", "-q:v", "4", f"{site}/media/{mid}.jpg"], check=True)
-    m = dict(meta[n]); m.update({"id": mid, "modality": MOD, "title": title + (" (MRI)" if MOD == "mri" else " (PET/CT)")})
+    m = dict(meta[n]); m.update({"id": mid, "modality": MOD, "title": title + {"mri": " (MRI)", "petct": " (PET/CT)", "trio": " (CT + PET + MRI)"}[MOD]})
     meta[mid] = m; print(mid, "done", flush=True)
 json.dump(list(meta.values()), open(mj, "w"), indent=1)

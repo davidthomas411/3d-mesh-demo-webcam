@@ -57,6 +57,9 @@ a { color: var(--accent); }
 
   <h2>CT: the same motions on a CT scan</h2>
   <section class="vgrid" id="grid" aria-label="CT motions"></section>
+  <h2>CT + PET + MRI: one patient, three modalities</h2>
+  <p class="lede">Patient STS_012 of the TCIA Soft-tissue-Sarcoma collection: CT, FDG PET and a T1 MRI of the same person, all in one frame of reference (the MRI was registered to the PET by the collection's authors). The same rig warps all three. The MRI covers only a small box on one thigh, so it appears in the fourth panel, cropped to the lower body; the CT and PET cover head to upper thigh.</p>
+  <section class="vgrid" id="gridtrio" aria-label="CT, PET and MRI of one patient"></section>
   <h2>PET/CT: CT with FDG uptake, same patient</h2>
   <p class="lede">A real patient from the autoPET collection: the CT and the FDG PET were acquired in one session, so they share a frame. The same rig warps both and the PET is shown as SUV (fusion at right). Heart, liver, kidneys and bladder take up tracer; the uptake moves with the tissue it sits in, which real tracer would not do.</p>
   <section class="vgrid" id="gridpetct" aria-label="PET/CT motions"></section>
@@ -71,11 +74,12 @@ a { color: var(--accent); }
       <li>The CT has no arms, so arm motion shows only in the original panel; the CT panels show the shoulder girdle, spine, ribs and head.</li>
       <li>Pelvis motion, root translation, fingers and face are not transferred. Spine twist and bend are constrained only through the shoulder, hip and neck keypoints.</li>
       <li>The soft-tissue warp still stretches face and jaw tissue at extreme head turns. The motion is retargeted by direction fitting, not exact mocap retargeting.</li>
+      <li>CT + PET + MRI: STS_012, Soft-tissue-Sarcoma (TCIA, CC BY 3.0). The MR box is small and the MRI is warped with the thigh bone and soft tissue it sits in; the patient is smaller than the MHR average, so the registration is rougher (torso skin to MHR 13 mm mean) than for the other scans. The neck landmark was left out of the registration because this supine, flexed neck disagreed with MHR by over 100 mm.</li>
       <li>PET/CT: patient PETCT_0beb67c923 of FDG-PET-CT-Lesions (autoPET, TCIA, CC BY 4.0). The scan runs from the upper chest to mid-thigh with no head, so the head does not move; segmentation is TotalSegmentator fast mode (3 mm), rerun on this CT. The CT and PET are matched in the scanner, not by this project.</li>
       <li>MRI: subject s0175 of the TotalSegmentator MRI dataset (CC BY-NC-SA 2.0). Vertebral levels are cut between real discs and numbered up from L5 (an assumption); the head body is a shell of the brain surface, not skull; the scan is stitched from several stations so reformats show seams; the arms are not driven.</li>
       <li>Illustrative research output. Not patient data and not for clinical use.</li>
     </ul>
-    <div class="chips"><span class="chip">motion: Microsoft Rocketbox, MIT</span><span class="chip">CT: TotalSegmentator dataset v2.0.1, CC BY 4.0</span><span class="chip">PET/CT: autoPET (FDG-PET-CT-Lesions), CC BY 4.0</span><span class="chip">MRI: TotalSegmentator MRI dataset v1.0, CC BY-NC-SA 2.0</span><span class="chip">body model: MHR</span></div>
+    <div class="chips"><span class="chip">motion: Microsoft Rocketbox, MIT</span><span class="chip">CT: TotalSegmentator dataset v2.0.1, CC BY 4.0</span><span class="chip">CT/PET/MR: STS (TCIA), CC BY 3.0</span><span class="chip">PET/CT: autoPET (FDG-PET-CT-Lesions), CC BY 4.0</span><span class="chip">MRI: TotalSegmentator MRI dataset v1.0, CC BY-NC-SA 2.0</span><span class="chip">body model: MHR</span></div>
   </section>
   <footer>Each clip is 15 or 16 frames spread evenly over the capture and played at 5 frames per second, so short captures run slower than real time and long ones run faster. Frames are rendered at reduced resolution.</footer>
 </div>
@@ -90,7 +94,7 @@ a { color: var(--accent); }
       c.querySelector("h3").textContent = d.title;
       c.querySelector(".meta").textContent = d.seconds + " s of capture, plays at " + (d.seconds / (d.frames / 5)).toFixed(1) + "x, " + d.direction_error_deg + " deg fit error";
       var p = c.querySelector("p"); p.textContent = d.blurb + " "; var a = document.createElement("a"); a.href = d.source_url; a.target = "_blank"; a.rel = "noopener"; a.textContent = "Source clip"; p.appendChild(a);
-      (d.modality === "mri" ? document.getElementById("gridmri") : d.modality === "petct" ? document.getElementById("gridpetct") : grid).appendChild(c);
+      (d.modality === "mri" ? document.getElementById("gridmri") : d.modality === "petct" ? document.getElementById("gridpetct") : d.modality === "trio" ? document.getElementById("gridtrio") : grid).appendChild(c);
     });
   }).catch(function () { grid.textContent = "Motions could not be loaded"; });
 })();

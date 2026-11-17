@@ -150,7 +150,7 @@ class Warp:
 def register_to_mhr(skin_v_mm, masks, affine, mhr_v, mhr_joints, rounds=(8.0, 3.0, 1.0), n_ctrl=900,
                     verbose=True):
     lm = ct_landmarks(masks, affine)
-    names = [k for k in lm if k in MHR_KP]
+    names = [k for k in lm if k in MHR_KP and not (k == "neck" and os.environ.get("ATLAS_NO_NECK"))]   # neck keypoint is unreliable for flexed/kyphotic supine scans
     src = np.array([lm[k] for k in names]) / 1000.0
     dst = np.array([mhr_joints[MHR_KP[k]] for k in names])
     s, R, t = umeyama(src, dst)
