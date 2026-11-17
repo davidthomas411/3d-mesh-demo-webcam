@@ -58,6 +58,47 @@ def box_iou(a, b):
     union = (a[2] - a[0]) * (a[3] - a[1]) + (b[2] - b[0]) * (b[3] - b[1]) - iw * ih
     return float(iw * ih / union) if union > 0 else 0.0
 
+# One person only. The page shows one body, so when the detector finds several the model must run on one of them (it used to run
+# on all of them and the frame was then thrown away). The person followed on the previous frame is kept (largest overlap with
+# their box); with nobody followed yet, the largest box near the middle of the image wins. The detector wrapper does not return
+# confidences, so size and position stand in for "most confident".
+person_pick = {"last": None, "seen": 0}
+
+
+def pick_person(boxes, image_shape, last=None):
+    """Index of the box to keep. boxes: (n, 4) x0, y0, x1, y1."""
+    boxes = np.asarray(boxes, dtype=np.float32).reshape(-1, 4)
+    if len(boxes) <= 1:
+        return 0
+    if last is not None:
+        overlap = [box_iou(b, last) for b in boxes]
+        if max(overlap) > 0.2:
+            return int(np.argmax(overlap))
+    h, w = image_shape[:2]
+    area = (boxes[:, 2] - boxes[:, 0]) * (boxes[:, 3] - boxes[:, 1]) / float(w * h)
+    off = np.hypot(((boxes[:, 0] + boxes[:, 2]) / 2 - w / 2) / (w / 2), ((boxes[:, 1] + boxes[:, 3]) / 2 - h / 2) / (h / 2))
+    return int(np.argmax(area * (1.0 - 0.5 * np.clip(off, 0.0, 1.0))))
+
+
+def single_person_detector(detector):
+    """Make detector.run_human_detection return at most one person (see pick_person)."""
+    run = detector.run_human_detection
+
+    def run_one(img, **kwargs):
+        result = run(img, **kwargs)
+        boxes = result["boxes"] if isinstance(result, dict) else result
+        n = 0 if boxes is None else len(boxes)
+        person_pick["seen"] = n
+        if n <= 1:
+            return result
+        i = pick_person(np.asarray(boxes)[:, :4], img.shape, person_pick["last"])
+        if isinstance(result, dict):
+            return {k: (v[i:i + 1] if v is not None and hasattr(v, "__len__") and len(v) == n else v) for k, v in result.items()}
+        return boxes[i:i + 1]
+
+    detector.run_human_detection = run_one
+
+
 # Optional Femto Bolt / depth fusion (see depth/). Off unless --depth is given.
 depth_source = None
 depth_fusion = None
@@ -137,6 +178,8 @@ def inference_worker():
         fov_fast_mode=True,
     )
 
+    if getattr(estimator, "detector", None) is not None:
+        single_person_detector(estimator.detector)
     faces = np.asarray(estimator.faces, dtype=np.int32)
     if depth_source is not None:
         from depth.fusion import DepthFusion
@@ -169,6 +212,7 @@ def inference_worker():
             # a different camera stream: its person box has nothing to do with the last one
             tracked_owner = item_owner
             tracked_box = None
+            person_pick["last"] = None
 
         if item is None:
             continue
@@ -233,6 +277,7 @@ def inference_worker():
 
             if len(outputs) != 1:
                 tracked_box = None
+                person_pick["last"] = None
                 with mesh_condition:
                     mesh_id += 1
 
@@ -320,6 +365,8 @@ def inference_worker():
             except (KeyError, TypeError, ValueError):
                 joints = None
 
+            if "bbox" in outputs[0]:
+                person_pick["last"] = to_numpy(outputs[0]["bbox"]).reshape(-1)[:4].copy()      # the person to stay with
             if TRACK_BOX:
                 image_height, image_width = image_rgb.shape[:2]
                 tracked_box = box_from_mesh(

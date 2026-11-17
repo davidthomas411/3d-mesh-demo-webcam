@@ -206,8 +206,9 @@ def test_scapula_keeps_contact_with_the_rib_cage_when_the_arm_is_raised_forward(
         P = atlas.pose(skin_with(atlas, {"uparm_l": (np.array([1.0, 0, 0]) * np.radians(deg), [0, 0, 0])}))
         rib_p = np.vstack([P[n] for n in P if n.startswith("rib_left_") and 2 <= int(n.split("_")[-1]) <= 9])
         g = cKDTree(rib_p).query(P["scapula_left"])[0].min()
-        # 7.5 mm: the scapula is about 17% larger since it was sized to the MHR shoulder (tools/seat_limbs_on_mhr.py); it was 6 mm
-        assert abs(g - g0) < 0.0075, (deg, g0, g)
+        # 8.5 mm: the scapula is about 27% larger since it was sized to the MHR shoulder (tools/seat_limbs_on_mhr.py) from the
+        # CT-aligned atlas; it was 6 mm at the CT's own size and 7.5 mm at 17% larger
+        assert abs(g - g0) < 0.0085, (deg, g0, g)
 
 
 # ---- rig driven by the MHR skeleton (atlas.json["mhr"], tools/bind_mhr_joints.py) ----

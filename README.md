@@ -543,6 +543,7 @@ pip install remotezip
 python tools/fetch_ts_subject.py s1159 ../ct_data          # 63 MB out of the 23.6 GB TotalSegmentator archive, by range requests
 python tools/build_ct_volume.py ../ct_data/s1159 atlas/ct_subject atlas/ct_volume --fitted atlas/fitted --align-atlas atlas/atlas --pet-out atlas/ct_pet
 python tools/bind_mhr_joints.py atlas/atlas mhr_model.pt   # the aligned atlas needs its joint binding again
+python tools/seat_limbs_on_mhr.py atlas/atlas mhr_rest.npz # the CT's arm and shoulder bones onto the model's joints
 ```
 
 - **Offline, once per CT.** Meshes regenerated from the CT segmentations have the same vertex order as the atlas as built from the
@@ -553,8 +554,9 @@ python tools/bind_mhr_joints.py atlas/atlas mhr_model.pt   # the aligned atlas n
   head into the model's head. The CT is resampled through that map on a 2 mm rest-frame grid as half-float HU, couch removed.
 - **The CT atlas is the CT.** `--align-atlas` rewrites `atlas/atlas.*` with every structure taken from the CT through the same
   map, so the CT slice, the CT-voxel DRR and the CT-bone overlay are one coherent CT. Against the neutral body model: rib cage and
-  pelvis 0% outside the skin, spine 0.7%, skull 9.5%. The shoulder girdle and humeri stay where the scan had them (arms by the
-  side, 44% outside the A-pose rest skin): fitting bones to the body is the SKEL skeleton's job, and the two are never mixed.
+  pelvis 0% outside the skin, spine 0.7%, skull 9.5%. The scan has the arms by the side, so its humeri, scapulae and clavicles
+  are then seated on the model's shoulder and elbow joints (`tools/seat_limbs_on_mhr.py`: shoulder group 0.7% outside, was 44%),
+  which is what lets the atlas bones articulate at the shoulder. They are still this CT's bones; SKEL is never mixed in.
 - **Maps that were tried and dropped.** Following every vertex pair tore the image (the atlas build moved neighbouring structures
   differently). An affine per height level sheared it. A single similarity kept the CT intact but left the head where the scan's
   pillow put it, 39% outside the model's head.
@@ -563,10 +565,11 @@ python tools/bind_mhr_joints.py atlas/atlas mhr_model.pt   # the aligned atlas n
   that ends at the hips stays with the pelvis frame down to its end.
 - **Slice.** By default a coronal plane of the rest body carried by the T8 frame, so it stays coronal when the person turns; it
   can be fixed to the camera instead. Window presets: soft tissue, bone, lung.
-- **DRR from the CT voxels.** "DRR from: CT voxels" marches an orthographic ray per pixel through the deformed volume (128 steps,
-  384 x 384, each step warm-started from the previous one), with the same camera as the surface DRR, so it can be dragged round.
-  Brightness is an attenuation line integral with bone weighted up, as at kV energies. "Skeleton surfaces" keeps the old DRR of
-  whichever skeleton the mesh shows.
+- **DRR.** "DRR from" chooses what the radiograph is made of. *CT voxels*: an orthographic ray per pixel marched through the
+  deformed volume (128 steps, 384 x 384, each step warm-started from the previous one), brightness an attenuation line integral
+  with bone weighted up, as at kV energies; the arms in it do not articulate. *CT atlas bones*: the surface DRR of the atlas
+  bones, fully articulated (shoulders, arms). *Blend* (default): the two mixed by the "DRR blend" slider. *Skeleton shown in the
+  3-D view*: the surface DRR of whichever skeleton the mesh shows. All share one camera, so all can be dragged round.
 - **Reference.** "Capture reference" keeps the current slice and DRR; they are then drawn in green under the live picture in
   magenta. A reference only means something in a camera-fixed picture, so the slice switches to the camera plane while one is held.
 - **PET.** A second volume in the same rest frame is fused in colour on the slice and as a maximum-intensity projection on the
@@ -575,6 +578,12 @@ python tools/bind_mhr_joints.py atlas/atlas mhr_model.pt   # the aligned atlas n
   the display path, not to be read as PET.
 - **Limits.** It is the atlas subject's CT, not the person's. Bones follow the soft-tissue frames in these views, so the shoulder
   girdle and arms do not articulate. The scan ends at the hips. Skin and subcutaneous tissue are carried by the nearest frames.
+
+### One person
+
+The page shows one body. When the detector finds several people, the server keeps the one it was already following (largest
+overlap with their box on the previous frame); with nobody followed yet it takes the largest box near the middle of the image
+(`pick_person` in `webcam_server.py`). The detector wrapper returns no confidences, so size and position stand in for them.
 
 ### Label CT slice
 
