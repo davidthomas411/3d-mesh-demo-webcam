@@ -538,14 +538,34 @@ The page can show the atlas subject's real CT, carried by the rig: as a slice, a
 and the volumes built from it are not in this repository (`atlas/ct_volume.*`, `atlas/ct_pet.*` are git-ignored); without them the
 page shows the label slice and the surface DRR.
 
+The subject is a real PET-CT: study 0279 of ENHANCE.PET (AWS Open Data bucket `enhance-pet-1-6k`; this study comes from the
+autoPET collection, CC BY-NC 4.0). Head to toe, both arms down and complete, 87-year-old man, melanoma work-up. The dataset ships
+CT, PET and CT-derived labels per study, so no segmentation model is run. It was chosen by reading the NIfTI headers of all CTs
+(length) and the bone labels of the 127 scans longer than 1.7 m (arm position).
+
 ```bash
-pip install remotezip
-python tools/fetch_ts_subject.py s1159 ../ct_data          # 63 MB out of the 23.6 GB TotalSegmentator archive, by range requests
-python tools/build_ct_volume.py ../ct_data/s1159 atlas/ct_subject atlas/ct_volume --fitted atlas/fitted --skel atlas/skel --align-atlas atlas/atlas --pet-out atlas/ct_pet
+# files of one study, from https://enhance-pet-1-6k.s3.amazonaws.com/imaging-data/ : images/CT, images/PT and the six
+# ground-truth label volumes Cardiac, Muscles, Organs, Peripheral-Bones, Ribs, Vertebrae (0279.nii.gz each), saved under RAW/
+python tools/enhance_subject.py RAW ../ct_data/e0279 --weight-kg 96 --dose-mbq 320 --uptake-min 60.35     # 1.5 mm grid, PET -> SUV
+python tools/make_mhr_rest.py mhr_model.pt model.ckpt mhr_rest_kp.npz mhr_rest.npz                        # rest mesh + keypoints
+python -m anatomy.atlas_build ../ct_data/e0279 mhr_rest_kp.npz atlas/ct_subject                           # atlas as in the CT
+python tools/fit_skeleton_to_mhr.py atlas/ct_subject atlas/fitted mhr_rest.npz mhr_model.pt --skel ../body_models/skel_fit_mhr_rest.npz
+python tools/build_ct_volume.py ../ct_data/e0279 atlas/ct_subject atlas/ct_volume --fitted atlas/fitted --skel atlas/skel        --align-atlas atlas/atlas --pet-out atlas/ct_pet --pet ../ct_data/e0279/suv.nii.gz
 python tools/bind_mhr_joints.py atlas/atlas mhr_model.pt   # the aligned atlas needs its joint binding again
 python tools/seat_limbs_on_mhr.py atlas/atlas mhr_rest.npz # the CT's arm and shoulder bones onto the model's joints
 ```
 
+The earlier subject (TotalSegmentator s1159, no PET) still builds the same way from `tools/fetch_ts_subject.py`; its atlas is in
+the git history.
+
+- **Girth.** This patient's rib cage is 13% wider and 15% deeper than the neutral body model's. The trunk is scaled transversely
+  about the spine's centre line by the ratio to the rib cage of the body-fitted atlas (lateral x0.88, front-to-back x0.85),
+  tapering to none at the pelvis and neck. Heights are untouched. This is a shape change: transverse sections of the trunk,
+  vertebrae included, are squeezed by those factors. Ribs outside the skin: 13% before, 0.8% after.
+- **Head.** Sized from the skull's width against SKEL's skull and scaled about the top of the head (this label set's "skull"
+  reaches further down the face than TotalSegmentator's, which misled a size taken from the whole label).
+- **Not yet fitted.** Skull 16% outside the neutral head (the face), femurs 13% (the hips are not re-seated). The scan includes
+  the legs and forearms, but the live CT still ends at the hips and the limbs below the elbow and knee have no CT atlas bones.
 - **Offline, once per CT.** Meshes regenerated from the CT segmentations have the same vertex order as the atlas as built from the
   CT (`atlas/ct_subject.*`), so every atlas vertex has a known place in the CT (all 114 structures pair). The CT is un-posed with
   the rig's own model: one similarity per spine-chain frame (pelvis, each vertebra, head), fitted to that bone's pairs and blended
@@ -573,16 +593,17 @@ python tools/seat_limbs_on_mhr.py atlas/atlas mhr_rest.npz # the CT's arm and sh
 - **Slice.** By default a coronal plane of the rest body carried by the T8 frame, so it stays coronal when the person turns; it
   can be fixed to the camera instead. Window presets: soft tissue, bone, lung.
 - **DRR.** One slider blends two radiographs that share a camera (so both can be dragged round). At one end, *CT voxels*: an
-  orthographic ray per pixel marched through the deformed volume (128 steps, 384 x 384, each step warm-started from the previous
-  one), brightness an attenuation line integral with bone weighted up, as at kV energies; the arms in it do not articulate. At
+  orthographic ray per pixel marched through the deformed volume (each step warm-started from the previous one), brightness an attenuation line integral with bone weighted up, as at kV energies; the arms in it do not articulate. At
   the other end, *bones*: the surface DRR, fully articulated (shoulders, arms). "DRR bones" chooses which bones: the skeleton
   shown in the 3-D view (SKEL or CT atlas) or always the CT atlas bones. At 0% or 100% only one of the two is drawn.
 - **Reference.** "Capture reference" keeps the current slice and DRR; they are then drawn in green under the live picture in
   magenta. A reference only means something in a camera-fixed picture, so the slice switches to the camera plane while one is held.
-- **PET.** A second volume in the same rest frame is fused in colour on the slice and as a maximum-intensity projection on the
-  DRR. `--pet FILE` takes a real PET (SUV, registered to the CT). Without one, `--pet-out` writes a SIMULATED uptake map from the
-  segmentation: a typical FDG SUV per organ, physiological only, no lesions. The page labels it as simulated. It is there to show
-  the display path, not to be read as PET.
+- **PET.** A second volume in the same rest frame, fused in colour on the slice and as a maximum-intensity projection on the
+  DRR (SUV window 0-7). It is this patient's measured PET, converted to SUV (body weight) from Bq/ml with the dose, weight and
+  uptake time in the dataset's sheet, and carried through exactly the same map as the CT. Without `--pet`, `--pet-out` writes a
+  simulated uptake map from the segmentation instead (typical FDG SUV per organ, no lesions), which the page labels as simulated.
+- **Cost.** The voxel DRR is drawn at most 20 times a second (96 steps, 320 x 320): drawn on every animation frame it competed
+  with the model for the GPU.
 - **Limits.** It is the atlas subject's CT, not the person's. Bones follow the soft-tissue frames in these views, so the shoulder
   girdle and arms do not articulate. The scan ends at the hips. Skin and subcutaneous tissue are carried by the nearest frames.
 

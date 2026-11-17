@@ -119,7 +119,7 @@ def skel_spine_targets(prefix):
         raise SystemExit(f"expected 12 thoracic vertebrae in the SKEL thorax, found {len(mid)}")
     tgt.update({f"vertebrae_T{i + 1}": c for i, c in enumerate(mid)})
     tgt["pelvis"] = sk["skel_pelvis"]["pos"].mean(0)
-    tgt["skull"] = (sk["skel_skull"]["pos"].mean(0), float(np.ptp(sk["skel_skull"]["pos"], 0).mean()))
+    tgt["skull_width"] = float(np.ptp(sk["skel_skull"]["pos"][:, 0]))
     return tgt
 
 
@@ -200,7 +200,7 @@ def main():
     # each vertebra moves rigidly, takes its tilt from its neighbours, and soft tissue is interpolated between them. Bones are
     # not bent, which a free-form registration would do.
     Y_ct = Y
-    pelvis_shift = np.zeros(3); skel_head = None
+    pelvis_shift = np.zeros(3); skel_width = None
     if a.skel:
         tgt = skel_spine_targets(a.skel)
         Y = Y.copy(); moved = []
@@ -211,31 +211,63 @@ def main():
         pelvis_shift = tgt["pelvis"] - np.vstack([by[n]["pos"] for n in pel]).mean(0)
         for n in pel + ["vertebrae_S1"]:
             Y[names_fit == n] += pelvis_shift
-        skel_head = tgt["skull"]
+        skel_width = tgt["skull_width"]
         print(f"registered onto the SKEL spine: {len(moved)} vertebrae moved by {min(moved):.0f}-{max(moved):.0f} mm (median {np.median(moved):.0f}), "
               f"pelvis by {np.linalg.norm(pelvis_shift) * 1000:.0f} mm")
-    frames = []                                                      # (k, R, t) per frame: pelvis, vertebrae bottom to top, head
-    ys, xs = pairs_of(["hip_left", "hip_right", "sacrum", "vertebrae_S1"])
-    frames.append(umeyama(ys, xs, k_body))
-    for i, n in enumerate(chain):
-        ys, xs = pairs_of(chain[max(0, i - 1):i + 2])                # the vertebra and its neighbours: a stable local frame
-        frames.append(umeyama(ys, xs, k_body))
-    # head: the skull as placed and sized to fill the body model's head (the fitted atlas), by ONE uniform scale (no stretching)
-    Yhead = None
-    if a.fitted:
-        fa = Atlas(a.fitted); fby = {st["name"]: st for st in fa.structures}
-        Yhead = Y.copy()
-        m = names_fit == "skull"
-        Yhead[m] = fby["skull"]["pos"][::max(1, len(fby["skull"]["pos"]) // 600)]
-        if skel_head is not None:                                    # centred and sized as SKEL's skull, orientation as fitted
-            fp = fby["skull"]["pos"]; c0 = fp.mean(0)
-            Yhead[m] = skel_head[0] + (Yhead[m] - c0) * min(1.0, skel_head[1] / float(np.ptp(fp, 0).mean()))
-    ys, xs = pairs_of(["skull"], Yhead)
-    frames.append(umeyama(ys, xs))
     chain_y = [float(Y[names_fit == n][:, 1].mean()) for n in chain]      # rest heights of the frames (after the registration)
     levels = np.array([float(lv["pelvis"]) + float(pelvis_shift[1])] + chain_y + [chain_y[-1] - 0.045])
     if np.any(np.diff(levels) >= 0):
         raise SystemExit("chain levels are not strictly ascending in height after the registration")
+    fa = Atlas(a.fitted) if a.fitted else None
+    fby = {st["name"]: st for st in fa.structures} if fa else {}
+
+    # ---- girth of the trunk. A patient's chest is rarely as wide and deep as the body model's (this one: 13% wider). The rib
+    # cage of the atlas fitted to the body model says how wide and deep it should be; the trunk is scaled by those two factors
+    # transversely about the spine's centre line (height untouched), tapering to none at the pelvis and at the neck. This is a
+    # change of shape, not a rigid move: transverse sections of the trunk (vertebrae included) are squeezed by these factors.
+    ribs = [n for n in ct_verts if n.startswith("rib_")]
+    girth = np.ones(2)
+    if fby and ribs and all(n in fby for n in ribs):
+        ct_ext = np.ptp(np.vstack([ct_verts[n] for n in ribs]), 0)[[0, 2]] / k_body          # metres at the trunk's own scale
+        fit_ext = np.ptp(np.vstack([fby[n]["pos"] for n in ribs]), 0)[[0, 2]]
+        girth = np.clip(fit_ext / ct_ext, 0.75, 1.15)
+    cy = np.array(chain_y)[::-1]                                     # ascending y for np.interp (the chain runs bottom to top)
+    cxz = np.array([Y[names_fit == n][:, [0, 2]].mean(0) for n in chain])[::-1]
+    idx = {n: i for i, n in enumerate(chain)}
+    taper_y = [chain_y[idx["vertebrae_C4"]], chain_y[idx["vertebrae_T1"]], chain_y[idx["vertebrae_L5"]], levels[0]]
+
+    def squeeze(pts, inverse=False):
+        """Rest point -> the same point at the CT's own girth (or back)."""
+        w = np.interp(pts[:, 1], taper_y, [0.0, 1.0, 1.0, 0.0])[:, None]
+        f = 1.0 + w * (1.0 / girth[None] - 1.0)
+        c = np.stack([np.interp(pts[:, 1], cy, cxz[:, 0]), np.interp(pts[:, 1], cy, cxz[:, 1])], 1)
+        out = pts.copy()
+        out[:, [0, 2]] = c + (pts[:, [0, 2]] - c) * (1.0 / f if inverse else f)
+        return out
+
+    print(f"trunk girth fitted to the body model: lateral x{girth[0]:.2f}, front-to-back x{girth[1]:.2f}")
+    frames = []                                                      # (k, R, t) per frame: pelvis, vertebrae bottom to top, head
+    ys, xs = pairs_of(["hip_left", "hip_right", "sacrum", "vertebrae_S1"])
+    frames.append(umeyama(squeeze(ys), xs, k_body))
+    for i, n in enumerate(chain):
+        ys, xs = pairs_of(chain[max(0, i - 1):i + 2])                # the vertebra and its neighbours: a stable local frame
+        frames.append(umeyama(squeeze(ys), xs, k_body))
+    # head: the skull as placed and sized to fill the body model's head (the fitted atlas), by ONE uniform scale (no stretching)
+    Yhead = None
+    if fby:
+        Yhead = Y.copy()
+        m = names_fit == "skull"
+        Yhead[m] = fby["skull"]["pos"][::max(1, len(fby["skull"]["pos"]) // 600)]
+        if skel_width is not None:
+            # Size from the skull's WIDTH against SKEL's skull (what a "skull" label includes below the cranium differs between
+            # label sets, and misled the fitted atlas for one of them); placed as fitted, scaled about the top of the head, so
+            # the vertex stays under the scalp.
+            k_fit = umeyama(Yhead[m], X[m])[0]
+            k_des = float(np.ptp(ct_verts["skull"][:, 0])) / skel_width
+            top = Yhead[m][Yhead[m][:, 1] < Yhead[m][:, 1].min() + 0.01].mean(0)
+            Yhead[m] = top + (Yhead[m] - top) * float(np.clip(k_fit / k_des, 0.85, 1.3))
+    ys, xs = pairs_of(["skull"], Yhead)
+    frames.append(umeyama(ys, xs))
     Ms = np.array([np.vstack([kk * R.T, t]) for kk, R, t in frames])  # (L, 4, 3): x = [y, 1] M
     Mg = Ms[len(Ms) // 2]
     print(f"CT un-posed with {len(frames)} chain frames: trunk scale {k_body / 1000:.3f}, head scale {frames[-1][0] / 1000:.3f}")
@@ -250,7 +282,7 @@ def main():
         return W
 
     def to_ct_mm(pts):
-        ph = np.hstack([pts, np.ones((len(pts), 1))])
+        ph = np.hstack([squeeze(pts), np.ones((len(pts), 1))])
         return np.einsum("nl,nla->na", level_weights(pts[:, 1]), np.einsum("nb,lba->nla", ph, Ms))
 
     res = np.linalg.norm(to_ct_mm(Y_ct) - X, axis=1)
@@ -265,7 +297,7 @@ def main():
         for _ in range(30):
             M = np.einsum("nl,lba->nba", level_weights(y[:, 1]), Ms)   # (n, 4, 3): x = [y, 1] M
             y = np.einsum("na,nab->nb", x_mm - M[:, 3], np.linalg.inv(M[:, :3]))
-        return y
+        return squeeze(y, inverse=True)                          # the frames and the girth both leave the height alone
 
     if a.align_atlas:
         align_atlas(a.atlas, a.align_atlas, ct_verts, to_rest, to_ct_mm)

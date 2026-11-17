@@ -687,6 +687,7 @@
     // which bones: "surfaces" (the skeleton drawn in the 3-D view, SKEL or CT atlas) or "atlas" (always the CT atlas bones).
     let drrSource = "surfaces";
     let drrBlend = 0.5;
+    let lastVoxelDrrMs = 0;
     let ctVolView = null;             // real CT, deformed live
     let ctSource = "labels";          // "real" | "labels"
     let ctBodyAligned = true;         // real CT: slice plane carried by the trunk (stays coronal) or fixed to the camera
@@ -760,7 +761,11 @@
         g.drawImage(source, 0, (size.y - s) * dpr, s * dpr, s * dpr, 0, 0, canvas.width, canvas.height);
         g.globalAlpha = 1;
       };
-      if (showX) {
+      // The voxel DRR marches a ray per pixel: drawn at most 20 times a second, so that it never competes with the model for the
+      // GPU (drawn on every animation frame, two open pages were enough to slow inference to a second a frame).
+      const nowMs = performance.now(), drrDue = !voxelDrr || nowMs - lastVoxelDrrMs >= 50;
+      if (showX && drrDue) {
+        if (voxelDrr) lastVoxelDrrMs = nowMs;
         const turned = drrOrbit.yaw !== 0 || drrOrbit.pitch !== 0;
         if (voxelDrr) {
           ctVolView.renderDrr(insetCentre, { x: 0, y: 0, w: s, h: s }, turned ? drrOrbit : null);

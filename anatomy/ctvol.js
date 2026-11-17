@@ -17,7 +17,7 @@
 // What it is not: the CT of the person in front of the camera. It is the atlas subject's CT, carried by the body model's motion
 // and scaled per segment. Bones follow the soft-tissue frames here, so the shoulder girdle does not articulate in these views.
 const MAX_FRAMES = 32;
-const STEPS = 128;
+const STEPS = 96;
 
 export async function loadCtVolume(jsonUrl, binUrl) {
   const meta = await fetch(jsonUrl).then(r => { if (!r.ok) throw new Error("ct volume json " + r.status); return r.json(); });
@@ -36,7 +36,7 @@ export async function loadPetVolume(jsonUrl, binUrl) {
 
 export class CtVolumeView {
   // layer: the AnatomyLayer of the CT atlas (its last computed frames drive the warp). pet: loadPetVolume() result or null.
-  constructor(THREE, renderer, layer, volume, { halfExtentM = 0.55, anchor = "vertebrae_T8", pet = null, sliceSize = 512, drrSize = 384 } = {}) {
+  constructor(THREE, renderer, layer, volume, { halfExtentM = 0.55, anchor = "vertebrae_T8", pet = null, sliceSize = 512, drrSize = 320 } = {}) {
     this.THREE = THREE; this.renderer = renderer; this.layer = layer; this.half = halfExtentM;
     const { meta, data } = volume, [nx, ny, nz] = meta.shape;
     if (data.length !== nx * ny * nz) throw new Error("ct volume size mismatch");
