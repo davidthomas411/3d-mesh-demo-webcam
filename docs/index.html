@@ -33,6 +33,9 @@ h2 { font-size: 20px; }
 .clip p { margin: 2px 0 0; color: #9fb0bd; font-size: 13px; flex-basis: 100%; }
 .clip .meta { font-size: 11px; }
 .clip a { color: var(--accent); }
+.clip figure { margin: 0; border-top: 1px solid var(--line); background: #05080c; display: flex; flex-direction: column; align-items: center; padding: 10px 0 0; }
+.clip figure img { display: block; max-width: min(100%, 432px); height: auto; border-radius: 4px; }
+.clip figcaption { color: #9fb0bd; font-size: 12px; padding: 8px 12px 12px; align-self: stretch; }
 .limits { background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 16px 18px; }
 .limits ul { margin: 10px 0 0; padding-left: 18px; display: flex; flex-direction: column; gap: 6px; max-width: 90ch; }
 .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 12px; }
@@ -77,6 +80,7 @@ a { color: var(--accent); }
       <li>CT + PET + MRI: STS_012, Soft-tissue-Sarcoma (TCIA, CC BY 3.0). The MR box is small and the MRI is warped with the thigh bone and soft tissue it sits in; the patient is smaller than the MHR average, so the registration is rougher (torso skin to MHR 13 mm mean) than for the other scans. The neck landmark was left out of the registration because this supine, flexed neck disagreed with MHR by over 100 mm.</li>
       <li>PET/CT: patient PETCT_0beb67c923 of FDG-PET-CT-Lesions (autoPET, TCIA, CC BY 4.0). The scan runs from the upper chest to mid-thigh with no head, so the head does not move; segmentation is TotalSegmentator fast mode (3 mm), rerun on this CT. The CT and PET are matched in the scanner, not by this project.</li>
       <li>MRI: subject s0175 of the TotalSegmentator MRI dataset (CC BY-NC-SA 2.0). Vertebral levels are cut between real discs and numbered up from L5 (an assumption); the head body is a shell of the brain surface, not skull; the scan is stitched from several stations so reformats show seams; the arms are not driven.</li>
+      <li>Cinematic renderings are our own Monte Carlo volumetric path tracer (delta tracking, multiple scattering, soft key/fill/rim lights, filmic tone map; 128 samples per pixel, denoised, 3 mm voxels). It is the same family of method as Siemens' Cinematic Rendering but not their renderer, lighting or transfer functions. Colours come from our own transfer function; the MRI view takes bone and organ colour from the segmentation labels because MRI intensity alone does not identify tissue.</li>
       <li>Illustrative research output. Not patient data and not for clinical use.</li>
     </ul>
     <div class="chips"><span class="chip">motion: Microsoft Rocketbox, MIT</span><span class="chip">CT: TotalSegmentator dataset v2.0.1, CC BY 4.0</span><span class="chip">CT/PET/MR: STS (TCIA), CC BY 3.0</span><span class="chip">PET/CT: autoPET (FDG-PET-CT-Lesions), CC BY 4.0</span><span class="chip">MRI: TotalSegmentator MRI dataset v1.0, CC BY-NC-SA 2.0</span><span class="chip">body model: MHR</span></div>
@@ -93,6 +97,7 @@ a { color: var(--accent); }
       var v = c.querySelector("video"); v.src = "media/" + d.id + ".mp4"; v.poster = "media/" + d.id + ".jpg"; v.setAttribute("aria-label", d.title + ": original motion beside the rig and CT");
       c.querySelector("h3").textContent = d.title;
       c.querySelector(".meta").textContent = d.seconds + " s of capture, plays at " + (d.seconds / (d.frames / 5)).toFixed(1) + "x, " + d.direction_error_deg + " deg fit error";
+      if (d.cine) { var f = document.createElement("figure"); f.innerHTML = '<img loading="lazy" alt=""><figcaption></figcaption>'; var im = f.querySelector("img"); im.src = d.cine; im.alt = d.title + ": cinematic rendering of the most extreme pose"; f.querySelector("figcaption").textContent = "Cinematic rendering of this clip's most extreme pose (path-traced, global illumination)."; c.insertBefore(f, c.querySelector(".bar")); }
       var p = c.querySelector("p"); p.textContent = d.blurb + " "; var a = document.createElement("a"); a.href = d.source_url; a.target = "_blank"; a.rel = "noopener"; a.textContent = "Source clip"; p.appendChild(a);
       (d.modality === "mri" ? document.getElementById("gridmri") : d.modality === "petct" ? document.getElementById("gridpetct") : d.modality === "trio" ? document.getElementById("gridtrio") : grid).appendChild(c);
     });

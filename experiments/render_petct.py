@@ -29,7 +29,8 @@ def setup():
     if os.environ.get("MRI"):                                  # MRI already resampled onto the CT grid (tools/dicom_to_nii.py --onto)
         m = np.asarray(nib.load(os.environ["MRI"]).dataobj).astype(np.float32); MRI = (m * W.keep, float(np.percentile(m[m > 0], 99)))
         ijk = np.argwhere(m[::4, ::4, ::2] > 0) * np.array([4, 4, 2]); BOX = W.vox_to_mm(ijk.astype(float)).mean(0) - W.v_ct["vertebrae_T8"].mean(0); print("MR box offset from T8 (mm):", BOX.round(0), flush=True)
-    SUV = (np.asarray(nib.load(os.environ["SUBJECT"] + "/suv.nii.gz").dataobj).astype(np.float32) * W.keep)
+    sp = os.environ["SUBJECT"] + "/suv.nii.gz"
+    SUV = (np.asarray(nib.load(sp).dataobj).astype(np.float32) * W.keep) if os.path.exists(sp) else None
 
 
 def hot(s, vmax=8.0):

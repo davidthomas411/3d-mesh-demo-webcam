@@ -333,9 +333,10 @@ class CTWarper:
         P[..., ver_axis] = V + center[ver_axis]
         return P.reshape(-1, 3), H.shape
 
-    def warped_volume(self, fld, step=2.0, region=None, soft_bone=False):
+    def warped_volume(self, fld, step=2.0, region=None, soft_bone=False, extras=None):
         """Warped CT (HU) and warped bone mask on a regular output grid, for projections.
-        region: (min_xyz, max_xyz) in mm to crop the output grid."""
+        region: (min_xyz, max_xyz) in mm to crop the output grid.
+        extras: {name: volume on the CT grid} (e.g. PET SUV, aligned MRI) warped with the same field; results in self.extra_out[name]."""
         lo = self.vox_to_mm(np.array([0, 0, 0.0])); hi = self.vox_to_mm(np.array(self.hu.shape, float) - 1)
         mn, mx = np.minimum(lo, hi), np.maximum(lo, hi)
         if region is not None:                 # explicit region wins, even beyond the CT box: a bent-forward head leaves the scanned volume
@@ -346,12 +347,15 @@ class CTWarper:
         bone_f = self.bone.astype(np.float32)                 # converted once, not per slab
         yy, zz = np.meshgrid(axes[1], axes[2], indexing="ij")
         yz = np.stack([yy, zz], -1).reshape(-1, 2)
+        self.extra_out = {k: np.zeros(shape, np.float32) for k in (extras or {})}
         for i0 in range(0, shape[0], 8):                      # slabs along x: peak memory stays small however large the region
             xs = axes[0][i0:i0 + 8]
             G = np.concatenate([np.concatenate([np.full((len(yz), 1), x), yz], 1) for x in xs])
             src = self.source_positions(fld, G)
             hu[i0:i0 + len(xs)] = self.sample(self.hu_c, src).astype(np.float32).reshape((len(xs),) + shape[1:])
             bone[i0:i0 + len(xs)] = self.sample(bone_f, src, cval=0).reshape((len(xs),) + shape[1:])
+            for k, v in (extras or {}).items():
+                self.extra_out[k][i0:i0 + len(xs)] = self.sample(v, src, cval=0).reshape((len(xs),) + shape[1:])
         if not soft_bone:
             bone = bone > 0.4                  # binary mask: thin cortex aliases (moire) when step is coarser than the CT voxel
         return hu, bone, axes, step
