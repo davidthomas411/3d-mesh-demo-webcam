@@ -535,6 +535,13 @@ with its regions and tolerances folded away. "Show parameters" and "Show latency
 
 `run_local.cmd` starts the server on http://127.0.0.1:8097; run it in a terminal of your own so that it stays up.
 
+### Reference CT
+
+Each reference CT that has a rig built is a folder `atlas/subjects/<id>/` holding `atlas.*`, `skel.*`, `ct_volume.*` and
+`ct_pet.*` (build into that folder; only `atlas.*` is in git). The page lists them in the CT gear menu ("Reference CT") and
+loads the chosen one (`?ct=<id>`); with no subject folders it uses the files in `atlas/`. Two are built: `e0279` (ENHANCE.PET
+0279, measured PET, the default) and `s1159` (TotalSegmentator, simulated PET).
+
 ### Real CT, deformed live (`tools/build_ct_volume.py`, `anatomy/ctvol.js`)
 
 The page can show the atlas subject's real CT, carried by the rig: as a slice, and as a DRR ray-marched through the voxels. The CT

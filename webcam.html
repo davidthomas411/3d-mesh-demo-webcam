@@ -917,7 +917,7 @@
           ? '<label class="anaRow">Reference CT <select id="anaSubject">' +
             subjects.map((x) => '<option value="' + x.id + '"' + (x.id === subjectId ? " selected" : "") + ">" +
               x.subject + (x.pet === "measured" ? " (PET-CT" : x.pet ? " (CT, simulated PET" : " (CT") +
-              (x.rigid === false ? ", deformed)" : x.rigid ? ", rigid)" : ")") + "</option>").join("") +
+              (x.rigid ? ", rigid)" : ")") + "</option>").join("") +
             "</select></label>"
           : '') +
         (ctVolume
