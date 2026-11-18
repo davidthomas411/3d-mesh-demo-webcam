@@ -459,6 +459,43 @@ def atlas_file(name):
     return send_from_directory("atlas", name)
 
 
+ATLAS_FILES = ("atlas.json", "atlas.bin", "skel.json", "skel.bin", "ct_volume.json", "ct_volume.bin", "ct_pet.json", "ct_pet.bin")
+SUBJECTS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "atlas", "subjects")
+
+
+@app.get("/subjects")
+def subjects():
+    """Reference CTs that have a rig built: one folder each under atlas/subjects (tools/build_ct_volume.py)."""
+    out = []
+    if os.path.isdir(SUBJECTS_DIR):
+        for sid in sorted(os.listdir(SUBJECTS_DIR)):
+            d = os.path.join(SUBJECTS_DIR, sid)
+            if not sid.replace("_", "").replace("-", "").isalnum() or not os.path.exists(os.path.join(d, "atlas.json")):
+                continue
+            try:
+                with open(os.path.join(d, "atlas.json"), encoding="utf-8") as f:
+                    src = json.load(f).get("source", {})
+                pet = None; rigid = None
+                if os.path.exists(os.path.join(d, "ct_volume.json")):
+                    with open(os.path.join(d, "ct_volume.json"), encoding="utf-8") as f:
+                        rigid = bool(json.load(f).get("rigid"))
+                if os.path.exists(os.path.join(d, "ct_pet.json")):
+                    with open(os.path.join(d, "ct_pet.json"), encoding="utf-8") as f:
+                        pet = "simulated" if json.load(f).get("simulated") else "measured"
+                out.append({"id": sid, "dataset": str(src.get("dataset", ""))[:80], "subject": str(src.get("subject", sid)),
+                            "ct": os.path.exists(os.path.join(d, "ct_volume.bin")), "pet": pet, "rigid": rigid})
+            except (OSError, ValueError):
+                continue
+    return jsonify(out)
+
+
+@app.get("/atlas/subjects/<sid>/<name>")
+def subject_file(sid, name):
+    if name not in ATLAS_FILES or not sid.replace("_", "").replace("-", "").isalnum():
+        return Response("Not found", status=404)
+    return send_from_directory(os.path.join(SUBJECTS_DIR, sid), name)
+
+
 @app.post("/frame")
 def receive_frame():
     global latest_frame

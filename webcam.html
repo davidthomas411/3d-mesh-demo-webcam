@@ -588,11 +588,22 @@
     const ctFigure = document.getElementById("ctFigure");
     const imagingView = document.getElementById("imagingView");
 
+    // Reference CT: one of the subjects under atlas/subjects (chosen with ?ct=ID, or the first), else the files in atlas/.
+    let subjects = [], subjectId = null, atlasBase = "/atlas/";
+
     async function initAnatomy() {
       try {
+        try {
+          subjects = await fetch("/subjects").then((r) => (r.ok ? r.json() : []));
+          const wanted = new URLSearchParams(window.location.search).get("ct");
+          const chosen = subjects.find((x) => x.id === wanted) || subjects.find((x) => x.pet === "measured") || subjects[0];
+          if (chosen) { subjectId = chosen.id; atlasBase = "/atlas/subjects/" + chosen.id + "/"; }
+        } catch (error) {
+          subjects = [];
+        }
         const atlas = await loadAtlas(
-          "/atlas/atlas.json",
-          "/atlas/atlas.bin"
+          atlasBase + "atlas.json",
+          atlasBase + "atlas.bin"
         );
         // Bones are drawn opaque so the depth buffer orders them correctly under the translucent skin
         // (two translucent layers are sorted per object, which made bones inside the body look as if they were in front of it).
@@ -601,7 +612,7 @@
         anatomyLayer._applyVisibility();
         bodyMesh.add(anatomyLayer.group);
         try {
-          const skel = await loadAtlas("/atlas/skel.json", "/atlas/skel.bin");
+          const skel = await loadAtlas(atlasBase + "skel.json", atlasBase + "skel.bin");
           skelLayer = new AnatomyLayer(THREE, skel, { flipYZ: false, opacity: 1 });
           bodyMesh.add(skelLayer.group);
           skeletonMode = "skel";
@@ -609,8 +620,8 @@
           skelLayer = null;           // no SKEL atlas on this machine: CT bones only
         }
         try {
-          ctVolume = await loadCtVolume("/atlas/ct_volume.json", "/atlas/ct_volume.bin");
-          petVolume = await loadPetVolume("/atlas/ct_pet.json", "/atlas/ct_pet.bin");
+          ctVolume = await loadCtVolume(atlasBase + "ct_volume.json", atlasBase + "ct_volume.bin");
+          petVolume = await loadPetVolume(atlasBase + "ct_pet.json", atlasBase + "ct_pet.bin");
           ctSource = "real";
         } catch (error) {
           ctVolume = null;            // no CT volume on this machine: label slice only
@@ -795,7 +806,7 @@
         const petNote = petOn && petVolume ? (petVolume.meta.simulated ? " + PET (simulated uptake)" : " + PET") : "";
         ctCaption.textContent = !real ? "Label CT slice (atlas, not CT voxels)"
           : held ? "CT, camera plane: reference green, live magenta"
-          : "CT" + petNote + ", atlas subject, deformed live" + (aligned ? ", coronal to the body" : ", camera plane") + " (not this person's CT)";
+          : "CT" + petNote + ", reference subject, " + (ctVolume.meta.rigid ? "rigid" : "deformed live") + (aligned ? ", coronal to the body" : ", camera plane") + " (not this person's CT)";
       }
       renderer.setViewport(0, 0, size.x, size.y);
     }
@@ -902,6 +913,13 @@
         '<span>Live DRR X-ray</span></label>' +
         '<label class="anaRow"><input id="anaCt" type="checkbox" checked>' +
         '<span>Live CT slice</span></label>' +
+        (subjects.length > 1
+          ? '<label class="anaRow">Reference CT <select id="anaSubject">' +
+            subjects.map((x) => '<option value="' + x.id + '"' + (x.id === subjectId ? " selected" : "") + ">" +
+              x.subject + (x.pet === "measured" ? " (PET-CT" : x.pet ? " (CT, simulated PET" : " (CT") +
+              (x.rigid === false ? ", deformed)" : x.rigid ? ", rigid)" : ")") + "</option>").join("") +
+            "</select></label>"
+          : '') +
         (ctVolume
           ? '<label class="anaRow">CT source <select id="anaCtSource">' +
             '<option value="real">Real CT, deformed (atlas subject)</option>' +
@@ -1129,7 +1147,12 @@
       addStrip(drrFigure, [row("anaDrrBlend")]);
       addMenu(drrFigure, "DRR options", [row("anaDrrSource")], "right");
       addStrip(ctFigure, [row("anaPet"), row("anaCtOffset")]);
-      addMenu(ctFigure, "CT options", [row("anaCtSource"), row("anaCtWindow"), row("anaCtBody")], "right");
+      addMenu(ctFigure, "CT options", [row("anaSubject"), row("anaCtSource"), row("anaCtWindow"), row("anaCtBody")], "right");
+      const subjectSelect = document.querySelector("#anaSubject");
+      if (subjectSelect) subjectSelect.addEventListener("change", (e) => {       // another reference CT: load the page with it
+        const q = new URLSearchParams(window.location.search); q.set("ct", e.target.value);
+        window.location.search = q.toString();
+      });
       addMenu(document.getElementById("mesh"), "3-D view and anatomy", [
         row("anaEnable"), row("anaSkeleton"), row("anaSkin"), row("anaOpacity"), row("anaXray"), row("anaCt"),
         row("anaJaw"), row("anaJoints"), row("anaScale"), row("anaPredict"), notes[0], groups, notes[1],

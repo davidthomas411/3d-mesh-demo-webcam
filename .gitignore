@@ -10,3 +10,6 @@ atlas/ct_volume.json
 atlas/ct_volume.bin
 atlas/ct_pet.json
 atlas/ct_pet.bin
+atlas/subjects/*/ct_volume.*
+atlas/subjects/*/ct_pet.*
+atlas/subjects/*/skel.*
