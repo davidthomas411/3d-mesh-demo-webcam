@@ -65,6 +65,9 @@ The model repository is gated on Hugging Face. Access approval and Hugging Face 
 
 ## Installation
 
+**Local Windows demo (branch `local-anatomy`): see [INSTALL.md](INSTALL.md)** for the step-by-step set-up on a new PC, including
+SKEL. The notes below are the original Linux/conda set-up.
+
 Clone the upstream repository:
 
 ```bash
