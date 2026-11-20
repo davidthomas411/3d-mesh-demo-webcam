@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Webcam to Skeleton: how the demo works</title>
+<style>
+  :root{--bg:#fff;--fg:#1a1a1a;--mut:#5c6370;--line:#d9dce1;--card:#f6f7f9;--acc:#1f6feb;--ok:#1a7f4b;--warn:#b35c00}
+  @media (prefers-color-scheme:dark){:root{--bg:#14161a;--fg:#e8e9ec;--mut:#9aa1ad;--line:#2d3138;--card:#1d2026;--acc:#6aa5ff;--ok:#4cc38a;--warn:#e0a050}}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.6 system-ui,-apple-system,"Segoe UI",sans-serif}
+  main{max-width:860px;margin:0 auto;padding:32px 16px 64px}
+  h1{font-size:28px;margin:0 0 6px}
+  h2{font-size:20px;margin:40px 0 8px}
+  p{margin:8px 0}
+  .lede{color:var(--mut);font-size:17px}
+  code{background:var(--card);border:1px solid var(--line);border-radius:4px;padding:1px 5px;font-size:.88em}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:14px 16px;margin:12px 0}
+  .step{display:grid;grid-template-columns:34px 1fr;gap:12px;margin:14px 0}
+  .num{width:34px;height:34px;border-radius:50%;background:var(--acc);color:#fff;display:flex;align-items:center;justify-content:center;font-weight:600}
+  .step h3{margin:2px 0 2px;font-size:17px}
+  .tag{display:inline-block;font-size:12px;border:1px solid var(--line);border-radius:10px;padding:0 8px;color:var(--mut);margin-right:4px}
+  table{border-collapse:collapse;width:100%;font-size:15px}
+  th,td{border-bottom:1px solid var(--line);text-align:left;padding:8px 6px;vertical-align:top}
+  th{color:var(--mut);font-weight:600}
+  svg{width:100%;height:auto;display:block}
+  svg text{fill:var(--fg);font:13px system-ui,sans-serif}
+  svg .box{fill:var(--card);stroke:var(--line);stroke-width:1.5}
+  svg .live{stroke:var(--acc)}
+  svg .once{stroke:var(--warn)}
+  svg .arrow{stroke:var(--mut);stroke-width:1.5;fill:none;marker-end:url(#a)}
+  svg .sub{fill:var(--mut);font-size:11.5px}
+  .legend span{margin-right:16px;font-size:14px;color:var(--mut)}
+  .dot{display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:5px;vertical-align:baseline}
+</style>
+</head>
+<body>
+<main>
+<h1>Webcam to skeleton</h1>
+<p class="lede">A live webcam feed becomes a 3-D body mesh, with a skeleton, a simulated X-ray and a CT view that move with the person. This page explains each stage and what the one-time SKEL set-up does.</p>
+
+<h2>The whole pipeline</h2>
+<p class="legend"><span><i class="dot" style="background:var(--acc)"></i>runs live, every frame</span><span><i class="dot" style="background:var(--warn)"></i>built once, saved to disk</span></p>
+<div class="card">
+<svg viewBox="0 0 820 330" role="img" aria-label="Pipeline diagram: live path from webcam to browser, and one-time path from SKEL to skel files, joined at the browser">
+  <defs><marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5L0 10z" fill="var(--mut)"/></marker></defs>
+
+  <text x="10" y="18" class="sub">LIVE, PER FRAME</text>
+  <rect class="box live" x="10" y="28" width="140" height="62" rx="8"/><text x="80" y="55" text-anchor="middle">Webcam</text><text x="80" y="73" text-anchor="middle" class="sub">browser, JPEG</text>
+  <rect class="box live" x="190" y="28" width="150" height="62" rx="8"/><text x="265" y="55" text-anchor="middle">Detect + depth</text><text x="265" y="73" text-anchor="middle" class="sub">YOLO pose, MoGe2</text>
+  <rect class="box live" x="380" y="28" width="150" height="62" rx="8"/><text x="455" y="55" text-anchor="middle">SAM 3D Body</text><text x="455" y="73" text-anchor="middle" class="sub">MHR mesh, 18,439 verts</text>
+  <rect class="box live" x="570" y="28" width="240" height="62" rx="8"/><text x="690" y="55" text-anchor="middle">Flask server, port 8097</text><text x="690" y="73" text-anchor="middle" class="sub">sends vertices + joints</text>
+  <path class="arrow" d="M150 59H188"/><path class="arrow" d="M340 59H378"/><path class="arrow" d="M530 59H568"/>
+  <path class="arrow" d="M690 90V150"/>
+
+  <rect class="box live" x="460" y="152" width="350" height="76" rx="8"/>
+  <text x="635" y="178" text-anchor="middle">Browser page</text>
+  <text x="635" y="196" text-anchor="middle" class="sub">mesh overlay, skeleton posed by joints,</text>
+  <text x="635" y="212" text-anchor="middle" class="sub">DRR (simulated X-ray), CT slice</text>
+
+  <text x="10" y="168" class="sub">ONE-TIME SET-UP</text>
+  <rect class="box once" x="10" y="178" width="150" height="62" rx="8"/><text x="85" y="205" text-anchor="middle">SKEL model</text><text x="85" y="223" text-anchor="middle" class="sub">licensed, not in git</text>
+  <rect class="box once" x="190" y="178" width="140" height="62" rx="8"/><text x="260" y="205" text-anchor="middle">Fit to MHR</text><text x="260" y="223" text-anchor="middle" class="sub">skel_fit_mhr_rest.npz</text>
+  <rect class="box once" x="190" y="262" width="140" height="56" rx="8"/><text x="260" y="286" text-anchor="middle">Build atlas</text><text x="260" y="304" text-anchor="middle" class="sub">skel.json + skel.bin</text>
+  <path class="arrow" d="M160 209H188"/><path class="arrow" d="M260 240V260"/>
+  <path class="arrow" d="M330 290H395V210H458"/>
+</svg>
+</div>
+
+<h2>Live path, step by step</h2>
+<div class="step"><div class="num">1</div><div><h3>Webcam frame</h3><p>The browser grabs a frame and sends it as a JPEG over a WebSocket to the local server. The camera only works on <code>localhost</code> or <code>127.0.0.1</code>.</p></div></div>
+<div class="step"><div class="num">2</div><div><h3>Find the person</h3><p>A YOLO11 pose detector draws a box around the person and keeps following the same one. MoGe2 estimates camera field of view and depth, so the mesh lands at the right size and distance. The log line <code>FOCAL_CALIBRATED</code> is that calibration.</p></div></div>
+<div class="step"><div class="num">3</div><div><h3>Fit a body mesh</h3><p>Fast SAM 3D Body predicts the person's pose and shape and outputs a body mesh in the MHR model's format: 18,439 vertices, 36,874 faces, plus a joint skeleton. The DINOv3 backbone runs at 384 px. Inference was about 165 ms on your RTX A2000.</p></div></div>
+<div class="step"><div class="num">4</div><div><h3>Stream to the page</h3><p>The server sends the vertices as raw float32 bytes. The page draws the mesh over the video and in its own rotatable 3-D view.</p></div></div>
+<div class="step"><div class="num">5</div><div><h3>Pose the anatomy</h3><p>Bones are bound to MHR joints. When the joints move, the bones move with them (linear blend skinning). The page then draws the bones as a skeleton, as a simulated radiograph (DRR), and as a CT slice.</p></div></div>
+
+<h2>Where SKEL fits in</h2>
+<p>SKEL is a research skeleton model (Keller et al. 2023) learned from many bodies. The page needs it because the MHR mesh has no bones inside. Three files are produced once and loaded by the page.</p>
+<div class="step"><div class="num">A</div><div><h3>Neutral rest body <span class="tag">make_mhr_rest.py</span></h3><p>Reads <code>model.ckpt</code> and <code>mhr_model.pt</code> and writes <code>mhr_rest.npz</code>: the MHR body standing in a neutral pose (vertices, faces, rest keypoints). It is the reference everything else is fitted to.</p></div></div>
+<div class="step"><div class="num">B</div><div><h3>Fit SKEL to that body <span class="tag">fit_skel_to_mhr.py</span></h3><p>Uses <code>mhr2smpl_mapping.npz</code> to turn the MHR surface into the SMPL topology SKEL expects, then adjusts SKEL's shape until its skin matches. Your run gave mean 13.2 mm, median 10.7 mm. Output: <code>skel_fit_mhr_rest.npz</code>, about 247k skeleton vertices.</p></div></div>
+<div class="step"><div class="num">C</div><div><h3>Build the atlas <span class="tag">build_skel_atlas.py</span></h3><p>Simplifies each bone mesh (with <code>fast_simplification</code>), binds it to the MHR joints, and writes <code>skel.json</code> (structure) and <code>skel.bin</code> (geometry). It runs for the default atlas and for each reference subject.</p></div></div>
+<div class="card"><b>Generic, not personal.</b> The skeleton is fitted to the average MHR body, not to a CT and not to the person on camera. The person's live pose drives it through the MHR joints, but bone sizes come from the average body. The reference CT is registered onto the SKEL spine, so the skeleton is the common frame.</div>
+
+<h2>Files and what each one does</h2>
+<table>
+<tr><th>File</th><th>Role</th><th>In git?</th></tr>
+<tr><td><code>atlas/atlas.*</code></td><td>CT-atlas bones, labels, bone-to-joint binding</td><td>yes</td></tr>
+<tr><td><code>atlas/skel.json / .bin</code></td><td>SKEL skeleton for the page (about 3 MB for all)</td><td>no, licence</td></tr>
+<tr><td><code>atlas/subjects/&lt;id&gt;/atlas.*</code></td><td>Reference CT subjects (e0279, s1159)</td><td>yes</td></tr>
+<tr><td><code>atlas/subjects/&lt;id&gt;/skel.*</code></td><td>SKEL skeleton for that subject's page</td><td>no</td></tr>
+<tr><td><code>ct_volume.*</code></td><td>Real CT voxels: CT slice and voxel DRR (60-70 MB each)</td><td>no, size</td></tr>
+<tr><td><code>ct_pet.*</code></td><td>PET overlay (4 MB each)</td><td>no</td></tr>
+</table>
+<p>A 404 for a file in this table means the page falls back to a simpler view. It is not an error in the server.</p>
+
+<h2>What you see depending on the files present</h2>
+<table>
+<tr><th>Present</th><th>The page shows</th></tr>
+<tr><td>Code only</td><td>Body mesh, CT-atlas bones, surface DRR, label slice</td></tr>
+<tr><td>+ SKEL atlas</td><td>SKEL skeleton (whole body, hands, feet, jaw), the default</td></tr>
+<tr><td>+ CT volume</td><td>Real CT slice and CT-voxel DRR</td></tr>
+<tr><td>+ PET volume</td><td>PET checkbox</td></tr>
+</table>
+
+<h2>Glossary</h2>
+<table>
+<tr><td><b>MHR</b></td><td>The body model Fast SAM 3D Body outputs: mesh plus joints.</td></tr>
+<tr><td><b>SKEL</b></td><td>A learned skeleton model with realistic bones and joints, fitted inside a skin surface.</td></tr>
+<tr><td><b>Atlas</b></td><td>Pre-built anatomy (bone meshes and their joint binding) that is posed at run time.</td></tr>
+<tr><td><b>DRR</b></td><td>Digitally reconstructed radiograph: a simulated X-ray made from bones or CT voxels.</td></tr>
+<tr><td><b>Skinning</b></td><td>Moving a mesh by blending the motion of nearby joints.</td></tr>
+<tr><td><b>TensorRT engine</b></td><td>A GPU-specific compiled copy of the backbone. Build one per PC.</td></tr>
+</table>
+</main>
+</body>
+</html>
