@@ -23,6 +23,63 @@ The interface provides:
 - Runtime inference controls
 - Current, median, and P90 latency measurements
 
+The `local-anatomy` branch adds anatomy inside the body mesh: a skeleton (SKEL or CT-atlas bones), organs, a simulated X-ray (DRR),
+a CT slice and reference tracking with shifts. Set-up on a new PC is in [INSTALL.md](INSTALL.md).
+
+## Pipeline at a glance
+
+![Pipeline diagram](docs/pipeline/pipeline_diagram.png)
+
+More: [docs/PIPELINE.md](docs/PIPELINE.md) (the same diagram with the reasoning), and
+[docs/pipeline_interactive.html](docs/pipeline_interactive.html) (open it in a browser: click a stage, then a step, for the detail).
+
+The pipeline has four parts. Part 1 runs on every frame. Parts 2 and 3 are built once from data and read from disk.
+
+1. **Live, every frame.** Webcam JPEG over a WebSocket, YOLO11 pose box and MoGe2 depth, Fast SAM 3D Body (MHR mesh of 18,439
+   vertices plus 127 joints), streamed to the page as float32.
+2. **CT anatomy atlas** (`atlas/atlas.*`, in git). A real reference CT with one mask per structure is turned into 114 organ and
+   bone meshes, fitted into the MHR body (soft tissue warped, bones only re-placed rigidly) and bound to the MHR joints.
+3. **SKEL skeleton** (`atlas/skel.*`, not in git: licence). SKEL is fitted to the same neutral MHR body (mean 13.2 mm, median
+   10.7 mm) and cut into 36 bones bound to the live joints. It is generic: it is not fitted to a CT or to the person on camera.
+4. **In the browser.** The live joints pose the atlas, and the page draws the 3-D view, the DRR and the CT slice.
+
+### Where the anatomy comes from
+
+It is not predicted from the webcam. It is a real CT that was segmented once. `e0279` (default) is study 0279 of ENHANCE.PET
+(CC BY-NC 4.0), a head-to-toe PET-CT whose CT-derived labels ship with the dataset, converted by `tools/enhance_subject.py`;
+`s1159` is a subject of the TotalSegmentator dataset (Zenodo 10047292, CC BY 4.0) with its ground-truth masks. Your own CT works
+if you segment it with TotalSegmentator first.
+
+### What each data file adds
+
+None of these except `atlas.*` are in git.
+
+| Present | The page shows |
+|---|---|
+| Code + `atlas/atlas.*` | Body mesh, CT-atlas bones and organs, surface DRR, label CT slice (flat greys), reference capture and shifts |
+| + `atlas/skel.*` (3 MB) | The SKEL skeleton, the default skeleton |
+| + `ct_volume.*` (60-70 MB per subject) | The real CT slice and the CT-voxel DRR |
+| + `ct_pet.*` (4 MB per subject) | The PET checkbox |
+
+Missing files show up as `404` lines in the server log (`/atlas/subjects/<id>/skel.json`, `ct_volume.json`) and the page falls back
+to the simpler view. The reference overlay (green under the live picture in magenta) exists on the DRR and on the real-CT slice, not
+on the flat label slice.
+
+### How the CT is deformed
+
+Two stages, both articulated (bones are never bent):
+
+1. **Once per CT** (`tools/build_ct_volume.py`): every atlas vertex is paired with its place in the CT. The spine is registered
+   onto SKEL's, vertebra by vertebra. One rigid similarity is fitted per spine-chain frame (pelvis, each vertebra, head), and soft
+   tissue is blended between frames by height. The CT is resampled through that map into the neutral pose (`ct_volume.*`).
+2. **Live** (`anatomy/ctvol.js`): for each pixel of the posed body, a shader solves for the rest point it came from,
+   `y = sum w_k(y) F_k^-1 p`, by fixed-point iteration, and samples the volume there. The frames `F_k` are the same ones that pose
+   the bones. Soft tissue at a height blends only the two chain frames that bracket it (thighs take over below the hip). Nothing
+   is precomputed per pose.
+
+Limits: it is the reference subject's CT, not the person's; the arm and shoulder bones do not articulate in the CT views; the
+scan ends at the hips; lung and chest wall do not slide against each other.
+
 ## Upstream repository
 
 This demo runs inside a working checkout of:
