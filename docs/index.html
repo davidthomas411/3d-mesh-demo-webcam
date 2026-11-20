@@ -1,0 +1,107 @@
+<title>Rig Motion Atlas</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<style>
+/* Layout: an imaging-viewer layout: one large player on the left, the motion list beside it, the three panels explained below. */
+:root {
+  --bg: #f3f5f7; --surface: #ffffff; --ink: #14202b; --muted: #55646f; --line: #d5dce2;
+  --accent: #b45309; --accent-ink: #ffffff; --screen: #0b1118; --screen-ink: #dfe7ee; --chip: #e7ecf0;
+  --display: "Space Grotesk", "Segoe UI", system-ui, sans-serif; --body: "Inter", "Segoe UI", system-ui, sans-serif; --mono: "IBM Plex Mono", ui-monospace, Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg: #0c1218; --surface: #131b23; --ink: #e5ecf2; --muted: #93a3b0; --line: #24313d;
+  --accent: #f0a53d; --accent-ink: #1b1204; --screen: #05090d; --screen-ink: #dfe7ee; --chip: #1b2631; color-scheme: dark; } }
+:root[data-theme="dark"] {
+  --bg: #0c1218; --surface: #131b23; --ink: #e5ecf2; --muted: #93a3b0; --line: #24313d;
+  --accent: #f0a53d; --accent-ink: #1b1204; --screen: #05090d; --screen-ink: #dfe7ee; --chip: #1b2631; color-scheme: dark; }
+* { box-sizing: border-box; }
+body { background: var(--bg); color: var(--ink); font-family: var(--body); font-size: 15px; line-height: 1.55;
+  padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); padding-block: 28px 56px; }
+.wrap { max-width: 1280px; margin: 0 auto; display: flex; flex-direction: column; gap: 28px; }
+h1, h2, h3 { font-family: var(--display); text-wrap: balance; margin: 0; letter-spacing: -0.01em; }
+h1 { font-size: clamp(28px, 4.4vw, 44px); line-height: 1.05; }
+h2 { font-size: 20px; }
+.lede { max-width: 68ch; color: var(--muted); margin: 10px 0 0; font-size: 16px; }
+.eyebrow { font-family: var(--mono); font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--accent); margin-bottom: 10px; }
+.legend3 { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 14px; }
+.legend3 div { background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 12px 14px; color: var(--muted); font-size: 14px; min-width: 0; }
+.legend3 b { display: block; color: var(--ink); font-family: var(--display); margin-bottom: 2px; }
+.vgrid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 560px), 1fr)); gap: 18px; }
+.clip { background: var(--screen); border: 1px solid var(--line); border-radius: 6px; overflow: hidden; min-width: 0; color: var(--screen-ink); }
+.clip video { display: block; width: 100%; height: auto; background: var(--screen); }
+.clip .bar { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 4px 14px; padding: 10px 12px 12px; }
+.clip h3 { font-size: 16px; }
+.clip p { margin: 2px 0 0; color: #9fb0bd; font-size: 13px; flex-basis: 100%; }
+.clip .meta { font-size: 11px; }
+.clip a { color: var(--accent); }
+.clip figure { margin: 0; border-top: 1px solid var(--line); background: #05080c; display: flex; flex-direction: column; align-items: center; padding: 10px 0 0; }
+.clip figure img { display: block; max-width: min(100%, 432px); height: auto; border-radius: 4px; }
+.clip figcaption { color: #9fb0bd; font-size: 12px; padding: 8px 12px 12px; align-self: stretch; }
+.limits { background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 16px 18px; }
+.limits ul { margin: 10px 0 0; padding-left: 18px; display: flex; flex-direction: column; gap: 6px; max-width: 90ch; }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 12px; }
+.chip { background: var(--chip); border-radius: 3px; padding: 2px 8px; font-family: var(--mono); font-size: 12px; color: var(--muted); }
+footer { color: var(--muted); font-size: 13px; max-width: 90ch; }
+a { color: var(--accent); }
+@media (prefers-reduced-motion: reduce) { * { scroll-behavior: auto !important; } }
+</style>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Inter:wght@400;500;600&family=Space+Grotesk:wght@500;700&display=swap">
+<div class="wrap">
+  <header>
+    <div class="eyebrow">Rig, CT and motion capture</div>
+    <h1>Rig Motion Atlas</h1>
+    <p class="lede">Real human motion capture drives a biomechanical skeleton and one real CT scan. Every clip plays below: the original motion on the left, the same motion applied to the rig on the right.</p>
+  </header>
+
+  <p class="lede"><a href="cine/">Real-time cinematic rendering (needs a GPU): orbit the PET/CT patient, progressively path-traced in your browser.</a></p>
+
+  <section class="legend3" aria-label="How to read each clip">
+    <div><b>Left: the original motion</b>Rocketbox avatar skinned by the capture, with its Bip01 skeleton in red. Front and side views.</div>
+    <div><b>Middle: bone radiographs</b>AP and lateral projections of the rig's bones, deformed from one CT. Bones are rigid; joints are pinned.</div>
+    <div><b>Right: real-HU CT reformats</b>Coronal and sagittal slices of the same CT deformed by the rig. Soft tissue is interpolated, not simulated.</div>
+  </section>
+
+  <h2>CT: the same motions on a CT scan</h2>
+  <section class="vgrid" id="grid" aria-label="CT motions"></section>
+  <h2>CT + PET + MRI: one patient, three modalities</h2>
+  <p class="lede">Patient STS_012 of the TCIA Soft-tissue-Sarcoma collection: CT, FDG PET and a T1 MRI of the same person, all in one frame of reference (the MRI was registered to the PET by the collection's authors). The same rig warps all three. The MRI covers only a small box on one thigh, so it appears in the fourth panel, cropped to the lower body; the CT and PET cover head to upper thigh.</p>
+  <section class="vgrid" id="gridtrio" aria-label="CT, PET and MRI of one patient"></section>
+  <h2>PET/CT: CT with FDG uptake, same patient</h2>
+  <p class="lede">A real patient from the autoPET collection: the CT and the FDG PET were acquired in one session, so they share a frame. The same rig warps both and the PET is shown as SUV (fusion at right). Heart, liver, kidneys and bladder take up tracer; the uptake moves with the tissue it sits in, which real tracer would not do.</p>
+  <section class="vgrid" id="gridpetct" aria-label="PET/CT motions"></section>
+  <h2>MRI: the same motions on a TotalSegmentator MRI</h2>
+  <p class="lede">Same rig, same retargeted motion, but the anatomy comes from a whole-body MRI (head to mid-thigh). The MRI label set has no ribs, sternum, shoulder girdle or skull, so only the spine, pelvis and head move as bone; see the limits below.</p>
+  <section class="vgrid" id="gridmri" aria-label="MRI motions"></section>
+
+  <section class="limits">
+    <h2>What this does and does not show</h2>
+    <ul>
+      <li>The CT is one scan from the open TotalSegmentator dataset. The rig is an atlas built from it, so internal anatomy is that subject's, not a patient's.</li>
+      <li>The CT has no arms, so arm motion shows only in the original panel; the CT panels show the shoulder girdle, spine, ribs and head.</li>
+      <li>Pelvis motion, root translation, fingers and face are not transferred. Spine twist and bend are constrained only through the shoulder, hip and neck keypoints.</li>
+      <li>The soft-tissue warp still stretches face and jaw tissue at extreme head turns. The motion is retargeted by direction fitting, not exact mocap retargeting.</li>
+      <li>CT + PET + MRI: STS_012, Soft-tissue-Sarcoma (TCIA, CC BY 3.0). The MR box is small and the MRI is warped with the thigh bone and soft tissue it sits in; the patient is smaller than the MHR average, so the registration is rougher (torso skin to MHR 13 mm mean) than for the other scans. The neck landmark was left out of the registration because this supine, flexed neck disagreed with MHR by over 100 mm.</li>
+      <li>PET/CT: patient PETCT_0beb67c923 of FDG-PET-CT-Lesions (autoPET, TCIA, CC BY 4.0). The scan runs from the upper chest to mid-thigh with no head, so the head does not move; segmentation is TotalSegmentator fast mode (3 mm), rerun on this CT. The CT and PET are matched in the scanner, not by this project.</li>
+      <li>MRI: subject s0175 of the TotalSegmentator MRI dataset (CC BY-NC-SA 2.0). Vertebral levels are cut between real discs and numbered up from L5 (an assumption); the head body is a shell of the brain surface, not skull; the scan is stitched from several stations so reformats show seams; the arms are not driven.</li>
+      <li>Illustrative research output. Not patient data and not for clinical use.</li>
+    </ul>
+    <div class="chips"><span class="chip">motion: Microsoft Rocketbox, MIT</span><span class="chip">CT: TotalSegmentator dataset v2.0.1, CC BY 4.0</span><span class="chip">CT/PET/MR: STS (TCIA), CC BY 3.0</span><span class="chip">PET/CT: autoPET (FDG-PET-CT-Lesions), CC BY 4.0</span><span class="chip">MRI: TotalSegmentator MRI dataset v1.0, CC BY-NC-SA 2.0</span><span class="chip">body model: MHR</span></div>
+  </section>
+  <footer>Each clip is 15 or 16 frames spread evenly over the capture and played at 5 frames per second, so short captures run slower than real time and long ones run faster. Frames are rendered at reduced resolution.</footer>
+</div>
+<script>
+(function () {
+  var grid = document.getElementById("grid");
+  fetch("data/motions.json").then(function (r) { return r.json(); }).then(function (data) {
+    data.forEach(function (d) {
+      var c = document.createElement("article"); c.className = "clip";
+      c.innerHTML = '<video autoplay loop muted playsinline preload="auto" aria-label=""></video><div class="bar"><h3></h3><div class="meta"></div><p></p></div>';
+      var v = c.querySelector("video"); v.src = "media/" + d.id + ".mp4"; v.poster = "media/" + d.id + ".jpg"; v.setAttribute("aria-label", d.title + ": original motion beside the rig and CT");
+      c.querySelector("h3").textContent = d.title;
+      c.querySelector(".meta").textContent = d.seconds + " s of capture, plays at " + (d.seconds / (d.frames / 5)).toFixed(1) + "x, " + d.direction_error_deg + " deg fit error";
+      if (d.cine) { var f = document.createElement("figure"); f.innerHTML = '<img loading="lazy" alt=""><figcaption></figcaption>'; var im = f.querySelector("img"); im.src = d.cine; im.alt = d.title + ": cinematic rendering of the most extreme pose"; f.querySelector("figcaption").textContent = "Cinematic rendering of this clip's most extreme pose (path-traced, global illumination)."; c.insertBefore(f, c.querySelector(".bar")); }
+      var p = c.querySelector("p"); p.textContent = d.blurb + " "; var a = document.createElement("a"); a.href = d.source_url; a.target = "_blank"; a.rel = "noopener"; a.textContent = "Source clip"; p.appendChild(a);
+      (d.modality === "mri" ? document.getElementById("gridmri") : d.modality === "petct" ? document.getElementById("gridpetct") : d.modality === "trio" ? document.getElementById("gridtrio") : grid).appendChild(c);
+    });
+  }).catch(function () { grid.textContent = "Motions could not be loaded"; });
+})();
+</script>

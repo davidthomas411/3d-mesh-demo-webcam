@@ -1,0 +1,13 @@
+diff --git a/sam_3d_body/models/backbones/dinov3_tensorrt.py b/sam_3d_body/models/backbones/dinov3_tensorrt.py
+index 083b4a3..618d5e0 100644
+--- a/sam_3d_body/models/backbones/dinov3_tensorrt.py
++++ b/sam_3d_body/models/backbones/dinov3_tensorrt.py
+@@ -106,7 +106,7 @@ class TRTDinov3Backbone(nn.Module):
+ 
+         # Allocate output buffer (FP16)
+         output = torch.empty(
+-            batch_size, self.embed_dim, self.output_size[0], self.output_size[1],
++            batch_size, self.embed_dim, x.shape[2] // self.patch_size, x.shape[3] // self.patch_size,
+             device=x.device, dtype=torch.float16
+         )
+ 

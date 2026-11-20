@@ -49,14 +49,14 @@
     /* Teams-friendly demo layout */
     #controls {
       display: grid;
-      grid-template-columns: auto auto 1fr;
+      grid-template-columns: auto auto auto 1fr;
       gap: 10px;
       align-items: start;
       padding: 12px 16px;
     }
 
     #status {
-      grid-column: 3;
+      grid-column: 4;
       margin: 0;
       font-size: 18px;
       font-weight: 600;
@@ -111,7 +111,9 @@
 <body>
   <div id="controls">
     <button id="start">Start webcam and inference</button>
-    <button id="stop" disabled>Stop webcam</button>
+    <button id="startVideo" type="button">Use a video file</button>
+    <input id="videoFile" type="file" accept="video/*" hidden>
+    <button id="stop" disabled>Stop</button>
     <div id="status">Waiting to start</div>
   </div>
 
@@ -407,6 +409,16 @@
           Show overlay
         </button>
 
+        <div id="imagingView">
+          <figure id="drrFigure">
+            <figcaption id="drrCaption">DRR X-ray</figcaption>
+            <canvas id="drrCanvas" width="640" height="640"></canvas>
+          </figure>
+          <figure id="ctFigure">
+            <figcaption id="ctCaption">Label CT slice (atlas, not CT voxels)</figcaption>
+            <canvas id="ctCanvas" width="640" height="640"></canvas>
+          </figure>
+        </div>
         <pre id="latencyHud">Latency HUD: waiting for data</pre>
         <canvas id="overlay"></canvas>
       </div>
@@ -456,8 +468,20 @@
     import { OrbitControls } from
       "https://esm.sh/three@0.180.0/examples/jsm/controls/OrbitControls.js";
 
+    import { loadAtlas, AnatomyLayer, DISCLAIMER } from
+      "/anatomy/anatomy.js";
+    import { RigStream } from "/anatomy/stream.js";
+    import { XrayView } from "/anatomy/xray.js";
+    import { CtSliceView } from "/anatomy/ct.js";
+    import { loadCtVolume, loadPetVolume, CtVolumeView } from "/anatomy/ctvol.js";
+
     const button = document.getElementById("start");
     const stopButton = document.getElementById("stop");
+    const videoButton = document.getElementById("startVideo");
+    const videoFileInput = document.getElementById("videoFile");
+    let sourceLabel = "Camera";       // "Camera" or "Video", shown in the status line
+    let lastSourceKey = null;         // which camera/file the focal calibration belongs to
+    let videoObjectUrl = null;
     const video = document.getElementById("video");
     const status = document.getElementById("status");
     const latencyHud = document.getElementById("latencyHud");
@@ -537,6 +561,605 @@
     let camera;
     let controls;
     let bodyMesh;
+
+    /*
+     * Atlas anatomy (TotalSegmentator-class structures) driven by the live
+     * mesh. Illustrative only: see DISCLAIMER shown in the panel.
+     */
+    let anatomyLayer = null;
+
+    /*
+     * Two skeletons can be shown in the body mesh:
+     *   SKEL  the learned skeleton of SKEL fitted to the body model (atlas/skel.*, built locally by tools/build_skel_atlas.py):
+     *         whole skeleton including forearms, hands, legs, feet and a separate jaw
+     *   CT    the bones of the CT atlas (atlas/atlas.*), which has no forearms, hands, lower legs or feet
+     * Both are posed by the same rig from the same mesh and joints. The CT atlas also supplies the organs and the label CT slice.
+     */
+    let skelLayer = null;
+    let skeletonMode = "ct";          // "skel" | "ct"
+    let anatomyShown = true;
+    const CT_BONE_GROUPS = ["skull", "spine", "ribcage", "shoulder", "pelvis_leg"];
+    const SKEL_GROUPS = ["skel_axial", "skel_arm", "skel_limbs"];
+    const drrCanvas = document.getElementById("drrCanvas");
+    const ctCanvas = document.getElementById("ctCanvas");
+    const drrCaption = document.getElementById("drrCaption");
+    const ctCaption = document.getElementById("ctCaption");
+    const drrFigure = document.getElementById("drrFigure");
+    const ctFigure = document.getElementById("ctFigure");
+    const imagingView = document.getElementById("imagingView");
+
+    // Reference CT: one of the subjects under atlas/subjects (chosen with ?ct=ID, or the first), else the files in atlas/.
+    let subjects = [], subjectId = null, atlasBase = "/atlas/";
+
+    async function initAnatomy() {
+      try {
+        try {
+          subjects = await fetch("/subjects").then((r) => (r.ok ? r.json() : []));
+          const wanted = new URLSearchParams(window.location.search).get("ct");
+          const chosen = subjects.find((x) => x.id === wanted) || subjects.find((x) => x.pet === "measured") || subjects[0];
+          if (chosen) { subjectId = chosen.id; atlasBase = "/atlas/subjects/" + chosen.id + "/"; }
+        } catch (error) {
+          subjects = [];
+        }
+        const atlas = await loadAtlas(
+          atlasBase + "atlas.json",
+          atlasBase + "atlas.bin"
+        );
+        // Bones are drawn opaque so the depth buffer orders them correctly under the translucent skin
+        // (two translucent layers are sorted per object, which made bones inside the body look as if they were in front of it).
+        anatomyLayer = new AnatomyLayer(THREE, atlas, { flipYZ: false, opacity: 1 });
+        anatomyLayer.visibleGroups = new Set(CT_BONE_GROUPS);
+        anatomyLayer._applyVisibility();
+        bodyMesh.add(anatomyLayer.group);
+        try {
+          const skel = await loadAtlas(atlasBase + "skel.json", atlasBase + "skel.bin");
+          skelLayer = new AnatomyLayer(THREE, skel, { flipYZ: false, opacity: 1 });
+          bodyMesh.add(skelLayer.group);
+          skeletonMode = "skel";
+        } catch (error) {
+          skelLayer = null;           // no SKEL atlas on this machine: CT bones only
+        }
+        try {
+          ctVolume = await loadCtVolume(atlasBase + "ct_volume.json", atlasBase + "ct_volume.bin");
+          petVolume = await loadPetVolume(atlasBase + "ct_pet.json", atlasBase + "ct_pet.bin");
+          ctSource = "real";
+        } catch (error) {
+          ctVolume = null;            // no CT volume on this machine: label slice only
+        }
+        buildAnatomyPanel(atlas);
+      } catch (error) {
+        console.warn("Anatomy atlas unavailable:", error);
+      }
+    }
+
+    /*
+     * The estimator delivers a mesh at ~10-13 Hz, 100-170 ms after capture. With
+     * "Predict between updates" on, new meshes go into a RigStream (with their
+     * capture time) and the rig is recomputed every display frame from the mesh
+     * extrapolated to the present (capped at 120 ms). Off: the rig updates only
+     * when a mesh arrives, as before. See anatomy/stream.js and tests/js/stream_sim.mjs.
+     */
+    // The server appends the MHR skeleton to each mesh (127 joint positions, then 127 rotation matrices). The rig is
+    // driven by those joints when present, and the stream carries mesh + joints together.
+    const N_SKIN = 18439 * 3;
+    let rigStream = new RigStream(N_SKIN, { horizonMs: 120, gain: 1.0, smoothMs: 0 });
+    let predictRig = true;
+    let latestRigInput = null;      // Float32Array: vertices, optionally followed by the joints
+
+    function splitRigInput(values) {
+      if (values.length <= N_SKIN) return { skin: values, joints: null };
+      const n = (values.length - N_SKIN) / 12;
+      return {
+        skin: values.subarray(0, N_SKIN),
+        joints: { pos: values.subarray(N_SKIN, N_SKIN + n * 3), rot: values.subarray(N_SKIN + n * 3) }
+      };
+    }
+
+    function rigUpdate(values) {
+      const { skin, joints } = splitRigInput(values);
+      anatomyLayer.update(skin, 0, 1, joints);
+      if (skelLayer) skelLayer.update(skin, 0, 1, joints);
+    }
+
+    function rigNeeded() {
+      return anatomyLayer && (
+        anatomyLayer.group.visible || (skelLayer && skelLayer.group.visible) || xrayOn || ctOn
+      );
+    }
+
+    function anatomyUpdate(vertexValues, captureTimestampMs) {
+      if (!rigNeeded()) return;
+      const values = latestRigInput && latestRigInput.length >= N_SKIN ? latestRigInput : vertexValues;
+      if (predictRig && Number.isFinite(captureTimestampMs)) {
+        if (rigStream.n !== values.length) {
+          rigStream = new RigStream(values.length, { horizonMs: 120, gain: 1.0, smoothMs: 0 });
+        }
+        rigStream.push(values, captureTimestampMs);
+      } else {
+        rigUpdate(values);
+      }
+    }
+
+    /*
+     * Imaging panel (under the video): a live DRR-style radiograph of the posed skeleton as seen from the camera, and a
+     * CT-style slice of the posed CT atlas (flat grey per labelled tissue, not CT voxels; see anatomy/ct.js). Both are
+     * rendered by the 3-D view's own WebGL context into a corner of its canvas BEFORE the scene is drawn, copied to the
+     * panel's 2-D canvases, and then overwritten by the scene.
+     */
+    let xrayView = null;
+    const xrayViews = {};             // one per skeleton mode
+    let xrayOn = false;
+    let ctView = null;                // label slice (flat grey per atlas structure)
+    let ctVolume = null;              // the atlas subject's real CT in the rest frame (atlas/ct_volume.*, built locally), if there
+    let petVolume = null;             // PET in the same rest frame (atlas/ct_pet.*), if there
+    let petOn = false;
+    // The DRR is a blend of two pictures: the CT voxels (ray-marched; trunk and head move, the arms do not articulate) and a bone
+    // surface DRR (fully articulated). drrBlend is the share of the bones: 0 = CT voxels only, 1 = bones only. drrSource says
+    // which bones: "surfaces" (the skeleton drawn in the 3-D view, SKEL or CT atlas) or "atlas" (always the CT atlas bones).
+    let drrSource = "surfaces";
+    let drrBlend = 0.5;
+    let lastVoxelDrrMs = 0;
+    let ctVolView = null;             // real CT, deformed live
+    let ctSource = "labels";          // "real" | "labels"
+    let ctBodyAligned = true;         // real CT: slice plane carried by the trunk (stays coronal) or fixed to the camera
+    const CT_WINDOWS = { soft: [40, 400], bone: [400, 1800], lung: [-600, 1500] };
+    let ctOn = false;
+    let ctOffsetM = -0.05;
+    let imagingVisible = true;
+    let insetCentreCam = null;        // picture centre in camera space (x, y), set from the first mesh
+    // The DRR can be turned like the 3-D view: drag on it to orbit about the body, double-click to go back to the camera's view.
+    // A captured DRR reference belongs to one viewpoint, so turning drops it.
+    const drrOrbit = { yaw: 0, pitch: 0 };
+    {
+      let drag = null;
+      const dropReference = () => { for (const v of Object.values(xrayViews)) v.clearReference(); if (ctVolView) ctVolView.clearReference("drr"); };
+      drrCanvas.style.cursor = "grab";
+      drrCanvas.addEventListener("pointerdown", (e) => {
+        drag = { x: e.clientX, y: e.clientY, yaw: drrOrbit.yaw, pitch: drrOrbit.pitch };
+        drrCanvas.setPointerCapture(e.pointerId);
+        drrCanvas.style.cursor = "grabbing";
+      });
+      drrCanvas.addEventListener("pointermove", (e) => {
+        if (!drag) return;
+        const k = Math.PI / drrCanvas.clientWidth;            // a drag across the picture is half a turn
+        drrOrbit.yaw = drag.yaw - (e.clientX - drag.x) * k;
+        drrOrbit.pitch = Math.max(-1.45, Math.min(1.45, drag.pitch - (e.clientY - drag.y) * k));
+        dropReference();
+      });
+      const end = () => { drag = null; drrCanvas.style.cursor = "grab"; };
+      drrCanvas.addEventListener("pointerup", end);
+      drrCanvas.addEventListener("pointercancel", end);
+      drrCanvas.addEventListener("dblclick", () => { drrOrbit.yaw = 0; drrOrbit.pitch = 0; dropReference(); });
+    }
+
+    function xrayViewFor(mode) {
+      if (!xrayViews[mode]) {
+        xrayViews[mode] = mode === "skel" && skelLayer
+          ? new XrayView(THREE, renderer, skelLayer, { size: 512 })
+          : new XrayView(THREE, renderer, anatomyLayer, { size: 512 });
+      }
+      return xrayViews[mode];
+    }
+
+    function xrayDraw() {
+      if (!renderer) return;
+      const real = ctSource === "real" && ctVolView;
+      const voxelDrr = drrBlend < 1 && ctVolView;
+      const surfaceDrr = !xrayOn || (voxelDrr && drrBlend <= 0) ? null
+        : drrSource === "atlas" ? xrayViewFor("ct") : xrayView;
+      const showX = xrayOn && (voxelDrr || surfaceDrr), showC = ctOn && (real || ctView);
+      drrFigure.style.display = showX ? "" : "none";
+      ctFigure.style.display = showC ? "" : "none";
+      if (!imagingVisible || !(showX || showC)) return;
+      const size = renderer.getSize(new THREE.Vector2());
+      const s = Math.floor(Math.min(640, size.x, size.y));
+      if (s < 32) return;
+      const centre = [0, -1.3, 0];
+      // The pictures are in CAMERA space, like the 3-D view. The mesh vertices are relative to the body's own origin, which the
+      // estimator moves whenever the pose changes (a shrug dropped the skull in a body-centred picture although the head was still);
+      // the body's place in the camera is pred_cam_t. The picture centre is fixed in camera space when the first mesh arrives
+      // ("Reset 3D camera" re-centres it), so a still head stays still and a captured reference shows real displacement.
+      if (!insetCentreCam && latestPredCamT) {
+        insetCentreCam = [centre[0] + latestPredCamT[0], centre[1] + latestPredCamT[1]];
+      }
+      const insetCentre = insetCentreCam && latestPredCamT
+        ? [insetCentreCam[0] - latestPredCamT[0], insetCentreCam[1] - latestPredCamT[1], 0]
+        : centre;
+      const dpr = renderer.getPixelRatio(), source = renderer.domElement;
+      const copyTo = (canvas, alpha = 1) => {
+        const g = canvas.getContext("2d");
+        g.globalAlpha = alpha;
+        g.drawImage(source, 0, (size.y - s) * dpr, s * dpr, s * dpr, 0, 0, canvas.width, canvas.height);
+        g.globalAlpha = 1;
+      };
+      // The voxel DRR marches a ray per pixel: drawn at most 20 times a second, so that it never competes with the model for the
+      // GPU (drawn on every animation frame, two open pages were enough to slow inference to a second a frame).
+      const nowMs = performance.now(), drrDue = !voxelDrr || nowMs - lastVoxelDrrMs >= 50;
+      if (showX && drrDue) {
+        if (voxelDrr) lastVoxelDrrMs = nowMs;
+        const turned = drrOrbit.yaw !== 0 || drrOrbit.pitch !== 0;
+        if (voxelDrr) {
+          ctVolView.renderDrr(insetCentre, { x: 0, y: 0, w: s, h: s }, turned ? drrOrbit : null);
+          copyTo(drrCanvas);
+        }
+        if (surfaceDrr) {                                      // on its own, or mixed over the voxel DRR
+          surfaceDrr.render("ap", insetCentre, { x: 0, y: 0, w: s, h: s }, turned ? drrOrbit : null);
+          copyTo(drrCanvas, voxelDrr ? drrBlend : 1);
+        }
+        const bones = drrSource === "atlas" || !(skeletonMode === "skel" && skelLayer) ? "CT atlas bones" : "SKEL skeleton";
+        const what = voxelDrr && surfaceDrr ? "CT voxels + " + Math.round(drrBlend * 100) + "% " + bones + (petOn ? " + PET MIP" : "")
+          : voxelDrr ? "CT voxels, atlas subject" + (petOn ? " + PET MIP" : "")
+          : bones;
+        const view = turned
+          ? "turned " + Math.round(drrOrbit.yaw * 180 / Math.PI) + "° / " + Math.round(drrOrbit.pitch * 180 / Math.PI) + "°, double-click to reset"
+          : "camera view, drag to turn";
+        drrCaption.textContent = ((voxelDrr && ctVolView.holdsReference("drr")) || (surfaceDrr && surfaceDrr.hasReference))
+          ? "DRR X-ray (" + what + "): reference green, live magenta"
+          : "DRR X-ray (" + what + ", " + view + ")";
+      }
+      if (showC) {
+        // a reference only means something in a picture fixed to the camera: while one is held the slice is in the camera plane
+        const held = real && ctVolView.holdsReference("slice"), aligned = ctBodyAligned && !held;
+        if (real) ctVolView.render(insetCentre, ctOffsetM, { x: 0, y: 0, w: s, h: s }, aligned);
+        else ctView.render(insetCentre, ctOffsetM, { x: 0, y: 0, w: s, h: s });
+        copyTo(ctCanvas);
+        const petNote = petOn && petVolume ? (petVolume.meta.simulated ? " + PET (simulated uptake)" : " + PET") : "";
+        ctCaption.textContent = !real ? "Label CT slice (atlas, not CT voxels)"
+          : held ? "CT, camera plane: reference green, live magenta"
+          : "CT" + petNote + ", reference subject, " + (ctVolume.meta.rigid ? "rigid" : "deformed live") + (aligned ? ", coronal to the body" : ", camera plane") + " (not this person's CT)";
+      }
+      renderer.setViewport(0, 0, size.x, size.y);
+    }
+
+    // Console/debug access to the live objects (used to check the views without a visible window).
+    window.demoDebug = () => ({ THREE, renderer, scene, camera, bodyMesh, anatomyLayer, skelLayer, xrayView, ctView, ctVolView, ctOffsetM, petVolume, drrSource });
+
+    function anatomyTick() {
+      if (!predictRig || !rigNeeded()) return;
+      const sample = rigStream.sample(performance.now());
+      if (sample) rigUpdate(sample);
+    }
+
+    /*
+     * Jaw: the estimator does not move the jaw (its face parameters are switched off), so the opening comes from a face
+     * tracker running in the browser on the same video (MediaPipe Face Landmarker, "jawOpen" blendshape, CPU so it does not
+     * compete with the estimator for the GPU). It drives the hinge of the SKEL jaw.
+     */
+    let faceLandmarker = null;
+    let jawTracking = false;
+    let jawTimer = null;
+    let jawSmoothed = 0;
+    const JAW_MAX_DEG = 24;           // jaw opening at jawOpen = 1
+
+    async function startJawTracking(statusEl) {
+      jawTracking = true;
+      try {
+        if (!faceLandmarker) {
+          statusEl.textContent = "loading face tracker...";
+          const base = "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14";
+          const vision = await import(base + "/vision_bundle.mjs");
+          const files = await vision.FilesetResolver.forVisionTasks(base + "/wasm");
+          faceLandmarker = await vision.FaceLandmarker.createFromOptions(files, {
+            baseOptions: {
+              modelAssetPath: "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task",
+              delegate: "CPU"
+            },
+            outputFaceBlendshapes: true,
+            runningMode: "VIDEO",
+            numFaces: 1
+          });
+        }
+      } catch (error) {
+        jawTracking = false;
+        statusEl.textContent = "face tracker unavailable (" + error.message + ")";
+        return;
+      }
+      if (jawTimer) return;
+      jawTimer = window.setInterval(() => {
+        if (!jawTracking || !faceLandmarker || !video.videoWidth || video.paused) return;
+        let open = null;
+        try {
+          const result = faceLandmarker.detectForVideo(video, performance.now());
+          const shapes = result.faceBlendshapes && result.faceBlendshapes[0];
+          if (shapes) {
+            const jaw = shapes.categories.find((c) => c.categoryName === "jawOpen");
+            if (jaw) open = jaw.score;
+          }
+        } catch (error) {
+          statusEl.textContent = "face tracker error (" + error.message + ")";
+          return;
+        }
+        if (open === null) {
+          statusEl.textContent = "no face found";
+          jawSmoothed *= 0.8;
+        } else {
+          jawSmoothed += 0.5 * (open - jawSmoothed);
+          statusEl.textContent = "jaw open " + (jawSmoothed * JAW_MAX_DEG).toFixed(0) + "°";
+        }
+        if (skelLayer) skelLayer.jawDeg = jawSmoothed * JAW_MAX_DEG;
+      }, 66);
+    }
+
+    function stopJawTracking(statusEl) {
+      jawTracking = false;
+      jawSmoothed = 0;
+      if (skelLayer) skelLayer.jawDeg = 0;
+      statusEl.textContent = "off";
+    }
+
+    function buildAnatomyPanel(atlas) {
+      const panel = document.createElement("div");
+      panel.id = "anatomyPanel";
+      panel.innerHTML =
+        '<div class="panelTitle">Anatomy</div>' +
+        '<label class="anaRow"><input id="anaEnable" type="checkbox" checked>' +
+        '<span>Show the skeleton in the mesh</span></label>' +
+        '<label class="anaRow">Skeleton ' +
+        '<select id="anaSkeleton">' +
+        (skelLayer ? '<option value="skel">SKEL (learned, whole skeleton)</option>' : '') +
+        '<option value="ct">CT atlas bones</option>' +
+        '</select></label>' +
+        (skelLayer
+          ? '<label class="anaRow"><input id="anaJaw" type="checkbox" checked>' +
+            '<span>Track the jaw (face tracker) <output id="anaJawStatus">off</output></span></label>'
+          : '') +
+        '<label class="anaRow"><input id="anaJoints" type="checkbox" checked>' +
+        '<span>Bone rotations from MHR joints (off: fit to skin patches)</span></label>' +
+        '<label class="anaRow"><input id="anaScale" type="checkbox" checked>' +
+        '<span>Scale skeleton to the body (off: atlas size)</span></label>' +
+        '<label class="anaRow"><input id="anaPredict" type="checkbox" checked>' +
+        '<span>Predict between updates (low latency)</span></label>' +
+        '<label class="anaRow"><input id="anaXray" type="checkbox" checked>' +
+        '<span>Live DRR X-ray</span></label>' +
+        '<label class="anaRow"><input id="anaCt" type="checkbox" checked>' +
+        '<span>Live CT slice</span></label>' +
+        (subjects.length > 1
+          ? '<label class="anaRow">Reference CT <select id="anaSubject">' +
+            subjects.map((x) => '<option value="' + x.id + '"' + (x.id === subjectId ? " selected" : "") + ">" +
+              x.subject + (x.pet === "measured" ? " (PET-CT" : x.pet ? " (CT, simulated PET" : " (CT") +
+              (x.rigid ? ", rigid)" : ")") + "</option>").join("") +
+            "</select></label>"
+          : '') +
+        (ctVolume
+          ? '<label class="anaRow">CT source <select id="anaCtSource">' +
+            '<option value="real">Real CT, deformed (atlas subject)</option>' +
+            '<option value="labels">Labels (flat grey per structure)</option></select></label>' +
+            '<label class="anaRow">CT window <select id="anaCtWindow">' +
+            '<option value="soft">Soft tissue</option><option value="bone">Bone</option><option value="lung">Lung</option></select></label>' +
+            '<label class="anaRow"><input id="anaCtBody" type="checkbox" checked>' +
+            '<span>CT plane follows the body (off: fixed to the camera)</span></label>' +
+            '<label class="anaRow">CT <input id="anaDrrBlend" type="range" min="0" max="1" step="0.05" value="0.5"> bones' +
+            '<output id="anaDrrBlendValue"></output></label>' +
+            '<label class="anaRow">DRR bones <select id="anaDrrSource">' +
+            '<option value="surfaces">Skeleton shown in the 3-D view</option>' +
+            '<option value="atlas">CT atlas bones</option></select></label>' +
+            (petVolume
+              ? '<label class="anaRow"><input id="anaPet" type="checkbox">' +
+                '<span>PET' + (petVolume.meta.simulated ? " (simulated)" : "") + '</span></label>'
+              : '')
+          : '') +
+        '<label class="anaRow">Slice ' +
+        '<input id="anaCtOffset" type="range" min="-0.16" max="0.08" step="0.005" value="-0.05">' +
+        '<output id="anaCtOffsetValue"></output></label>' +
+        '<label class="anaRow">Anatomy opacity ' +
+        '<input id="anaOpacity" type="range" min="0.2" max="1" step="0.05" value="1"></label>' +
+        '<label class="anaRow">Skin opacity ' +
+        '<input id="anaSkin" type="range" min="0.05" max="1" step="0.05" value="0.25"></label>' +
+        '<div class="anaNote">CT atlas structures (shown with the CT skeleton):</div>' +
+        '<div id="anaGroups"></div>' +
+        '<div class="anaNote">' + DISCLAIMER + " Source: " +
+        atlas.meta.source.dataset + ", subject " +
+        atlas.meta.source.subject +
+        (skelLayer ? ". SKEL skeleton: " + skelLayer.atlas.meta.source.dataset : "") + ".</div>";
+      const anchor =
+        document.getElementById("referencePanel") || runtimePanel;
+      anchor.insertAdjacentElement("afterend", panel);
+
+      const groups = document.querySelector("#anaGroups");
+      for (const g of anatomyLayer.groups()) {
+        const label = document.createElement("label");
+        label.className = "anaChip";
+        const box = document.createElement("input");
+        box.type = "checkbox";
+        box.checked = anatomyLayer.visibleGroups.has(g.name);
+        box.addEventListener("change", () =>
+          anatomyLayer.setGroupVisible(g.name, box.checked));
+        label.append(box, " " + g.name.replace("_", " ") + " (" + g.count + ")");
+        groups.append(label);
+      }
+
+      const skinMaterial = bodyMesh.material;
+      const applySkin = () => {
+        const on = anatomyShown;
+        const a = Number(document.querySelector("#anaSkin").value);
+        skinMaterial.transparent = on && a < 1;
+        skinMaterial.opacity = on ? a : 1;
+        skinMaterial.depthWrite = !(on && a < 1);
+        skinMaterial.needsUpdate = true;
+      };
+      // Which bones are drawn in the mesh, and which skeleton the DRR is made from.
+      const applySkeleton = () => {
+        const skel = skeletonMode === "skel" && skelLayer;
+        anatomyLayer.setEnabled(anatomyShown && !skel);
+        if (skelLayer) {
+          skelLayer.visibleGroups = new Set(SKEL_GROUPS);
+          skelLayer._applyVisibility();
+          skelLayer.setEnabled(anatomyShown && !!skel);    // the two skeletons are never mixed
+        }
+        if (xrayOn) {
+          for (const v of Object.values(xrayViews)) v.clearReference();
+          xrayView = xrayViewFor(skel ? "skel" : "ct");
+        }
+        applySkin();
+      };
+      const ensureCtVolView = () => {
+        if (!ctVolView && ctVolume) {
+          ctVolView = new CtVolumeView(THREE, renderer, anatomyLayer, ctVolume, { pet: petVolume });
+          ctVolView.setPet(petOn);
+          const w = document.querySelector("#anaCtWindow");
+          if (w) ctVolView.setWindow(...CT_WINDOWS[w.value]);
+        }
+        return ctVolView;
+      };
+      const setXray = (on) => {
+        try {
+          xrayOn = on;
+          if (on && ctVolume) { ensureCtVolView(); anatomyLayer.ctActive = true; }
+          if (on) xrayView = xrayViewFor(skeletonMode === "skel" && skelLayer ? "skel" : "ct");
+        } catch (error) {
+          console.warn("X-ray view unavailable:", error);
+          document.querySelector("#anaXray").checked = false;
+          xrayOn = false;
+        }
+      };
+      const setCt = (on) => {
+        try {
+          const real = ctSource === "real" && ctVolume;
+          if (on && real) ensureCtVolView();
+          if (on && !real && !ctView) ctView = new CtSliceView(THREE, renderer, anatomyLayer, bodyMesh.geometry, { size: 512 });
+          // the label slice needs every structure posed each frame; the real CT only needs the rig's frames
+          if (ctView) ctView.setActive(on && !real);
+          anatomyLayer.ctActive = on || (xrayOn && !!ctVolume);
+          ctOn = on;
+        } catch (error) {
+          console.warn("CT slice view unavailable:", error);
+          document.querySelector("#anaCt").checked = false;
+          ctOn = false;
+        }
+      };
+      const ctOffsetInput = document.querySelector("#anaCtOffset");
+      const showCtOffset = () => {
+        ctOffsetM = Number(ctOffsetInput.value);
+        const mm = Math.round(Math.abs(ctOffsetM) * 1000);
+        document.querySelector("#anaCtOffsetValue").textContent =
+          mm + " mm " + (ctOffsetM < 0 ? "ant." : "post.");
+      };
+      ctOffsetInput.addEventListener("input", showCtOffset);
+      showCtOffset();
+      document.querySelector("#anaXray").addEventListener("change", (e) => setXray(e.target.checked));
+      document.querySelector("#anaCt").addEventListener("change", (e) => setCt(e.target.checked));
+      const ctSourceSelect = document.querySelector("#anaCtSource");
+      if (ctSourceSelect) {
+        ctSourceSelect.addEventListener("change", (e) => {
+          ctSource = e.target.value;
+          setCt(document.querySelector("#anaCt").checked);
+        });
+        document.querySelector("#anaCtBody").addEventListener("change", (e) => { ctBodyAligned = e.target.checked; });
+        const drrSelect = document.querySelector("#anaDrrSource");
+        drrSource = drrSelect.value;
+        drrSelect.addEventListener("change", (e) => {
+          drrSource = e.target.value;
+          for (const v of Object.values(xrayViews)) v.clearReference();
+          if (ctVolView) ctVolView.clearReference("drr");
+          setXray(document.querySelector("#anaXray").checked);
+          setCt(document.querySelector("#anaCt").checked);
+        });
+        const blendInput = document.querySelector("#anaDrrBlend");
+        const showBlend = () => {
+          drrBlend = Number(blendInput.value);
+          document.querySelector("#anaDrrBlendValue").textContent =
+            drrBlend <= 0 ? "CT only" : drrBlend >= 1 ? "bones only" : Math.round(drrBlend * 100) + "%";
+        };
+        blendInput.addEventListener("input", showBlend);
+        drrSelect.addEventListener("change", showBlend);
+        showBlend();
+        const petBox = document.querySelector("#anaPet");
+        if (petBox) petBox.addEventListener("change", (e) => {
+          petOn = e.target.checked;
+          if (ensureCtVolView()) ctVolView.setPet(petOn);
+        });
+        document.querySelector("#anaCtWindow").addEventListener("change", (e) => {
+          if (ctVolView) ctVolView.setWindow(...CT_WINDOWS[e.target.value]);
+        });
+      }
+      document.querySelector("#anaSkeleton").value = skeletonMode;
+      document.querySelector("#anaSkeleton").addEventListener("change", (e) => {
+        skeletonMode = e.target.value;
+        applySkeleton();
+      });
+      setXray(true);
+      setCt(true);
+      applySkeleton();
+      const eachLayer = (fn) => { fn(anatomyLayer); if (skelLayer) fn(skelLayer); };
+      document.querySelector("#anaJoints").addEventListener("change", (e) => {
+        eachLayer((layer) => { layer.useJoints = e.target.checked; });
+      });
+      document.querySelector("#anaScale").addEventListener("change", (e) => {
+        eachLayer((layer) => { layer.bodyScale = e.target.checked; });
+      });
+      document.querySelector("#anaPredict").addEventListener("change", (e) => {
+        predictRig = e.target.checked;
+      });
+      document.querySelector("#anaEnable").addEventListener("change", (e) => {
+        anatomyShown = e.target.checked;
+        applySkeleton();
+      });
+      document.querySelector("#anaOpacity").addEventListener("input", (e) =>
+        eachLayer((layer) => layer.setOpacity(Number(e.target.value))));
+      document.querySelector("#anaSkin").addEventListener("input", applySkin);
+      const jawBox = document.querySelector("#anaJaw");
+      if (jawBox) {
+        const jawStatus = document.querySelector("#anaJawStatus");
+        jawBox.addEventListener("change", (e) => {
+          if (e.target.checked) startJawTracking(jawStatus); else stopJawTracking(jawStatus);
+        });
+        startJawTracking(jawStatus);
+      }
+      placeControls(panel);
+    }
+
+    /*
+     * Controls live in the picture they act on. Each view (DRR, CT, 3-D) gets a gear button that opens its options, and the one
+     * or two controls used all the time sit in a strip along the bottom of the picture. The rows are the anatomy panel's own
+     * elements, moved (their listeners go with them); the panel itself is not shown.
+     */
+    function placeControls(panel) {
+      const row = (id) => { const e = panel.querySelector("#" + id); return e ? e.closest(".anaRow") : null; };
+      const menus = [];
+      const addMenu = (host, title, items, side) => {
+        items = items.filter(Boolean);
+        if (!host || !items.length) return;
+        const button = document.createElement("button");
+        button.type = "button"; button.className = "viewMenuButton " + side; button.textContent = "\u2699";
+        button.title = title; button.setAttribute("aria-label", title); button.setAttribute("aria-expanded", "false");
+        const pop = document.createElement("div");
+        pop.className = "viewMenu " + side; pop.hidden = true;
+        const head = document.createElement("div"); head.className = "viewMenuTitle"; head.textContent = title;
+        pop.append(head, ...items);
+        button.addEventListener("click", (e) => {
+          e.stopPropagation();
+          for (const m of menus) if (m.pop !== pop) { m.pop.hidden = true; m.button.setAttribute("aria-expanded", "false"); }
+          pop.hidden = !pop.hidden; button.setAttribute("aria-expanded", String(!pop.hidden));
+        });
+        for (const type of ["click", "pointerdown", "dblclick", "wheel"]) pop.addEventListener(type, (e) => e.stopPropagation());
+        host.append(button, pop); menus.push({ button, pop });
+      };
+      const addStrip = (host, items) => {
+        items = items.filter(Boolean);
+        if (!host || !items.length) return;
+        const strip = document.createElement("div"); strip.className = "viewStrip";
+        for (const type of ["pointerdown", "dblclick"]) strip.addEventListener(type, (e) => e.stopPropagation());
+        strip.append(...items); host.append(strip);
+      };
+      document.addEventListener("click", () => { for (const m of menus) { m.pop.hidden = true; m.button.setAttribute("aria-expanded", "false"); } });
+
+      const notes = [...panel.querySelectorAll(".anaNote")], groups = panel.querySelector("#anaGroups");
+      addStrip(drrFigure, [row("anaDrrBlend")]);
+      addMenu(drrFigure, "DRR options", [row("anaDrrSource")], "right");
+      addStrip(ctFigure, [row("anaPet"), row("anaCtOffset")]);
+      addMenu(ctFigure, "CT options", [row("anaSubject"), row("anaCtSource"), row("anaCtWindow"), row("anaCtBody")], "right");
+      const subjectSelect = document.querySelector("#anaSubject");
+      if (subjectSelect) subjectSelect.addEventListener("change", (e) => {       // another reference CT: load the page with it
+        const q = new URLSearchParams(window.location.search); q.set("ct", e.target.value);
+        window.location.search = q.toString();
+      });
+      addMenu(document.getElementById("mesh"), "3-D view and anatomy", [
+        row("anaEnable"), row("anaSkeleton"), row("anaSkin"), row("anaOpacity"), row("anaXray"), row("anaCt"),
+        row("anaJaw"), row("anaJoints"), row("anaScale"), row("anaPredict"), notes[0], groups, notes[1],
+      ], "left");
+      panel.style.display = "none";
+      window.requestAnimationFrame(resizeRenderer);
+    }
     let referenceMesh = null;
     let topology;
     let lastMeshId = 0;
@@ -678,7 +1301,9 @@
 
       function animate() {
         requestAnimationFrame(animate);
+        anatomyTick();
         controls.update();
+        xrayDraw();
         renderer.render(scene, camera);
       }
 
@@ -739,6 +1364,7 @@
       bodyMesh.rotation.z = Math.PI;
       bodyMesh.rotation.y = Math.PI;
       scene.add(bodyMesh);
+      initAnatomy();
     }
 
     function buildAnatomicalRegions(vertexValues) {
@@ -2103,7 +2729,7 @@
       updateOverallTrackingStatus();
     }
 
-    function updateMesh(vertexValues, predCamT) {
+    function updateMesh(vertexValues, predCamT, captureTimestampMs) {
       const geometry = bodyMesh.geometry;
       const positions = geometry.attributes.position.array;
 
@@ -2188,6 +2814,7 @@
         controls.update();
       }
 
+      anatomyUpdate(vertexValues, captureTimestampMs);
       updateLiveMeshAlignmentColor(vertexValues);
     }
 
@@ -2494,7 +3121,9 @@
           const requestCycleMs =
             performance.now() - websocketRequestStartMs;
 
-          const vertices = new Float32Array(event.data);
+          const received = new Float32Array(event.data);
+          const vertices = received.subarray(0, 18439 * 3);
+          latestRigInput = received;
 
           if (bodyMesh) {
             bodyMesh.visible = true;
@@ -2521,7 +3150,7 @@
 
           const renderStartMs = performance.now();
 
-          updateMesh(vertices, metadata.pred_cam_t);
+          updateMesh(vertices, metadata.pred_cam_t, Number(metadata.capture_timestamp_ms));
           updateOverlay(
             vertices,
             metadata.pred_cam_t,
@@ -2548,7 +3177,7 @@
           updateLatencyHud();
 
           status.textContent =
-            "Camera active" +
+            sourceLabel + " active" +
             " | frames: " + framesSent +
             " | mesh: " + metadata.mesh_id +
             " | inference: " +
@@ -2649,30 +3278,43 @@
     };
 
     /*
-     * Parameters are visible initially.
+     * Parameters start collapsed ("Show parameters"), so the reference and anatomy panels fit in the left column.
      */
-    setRuntimePanelVisible(true);
+    setRuntimePanelVisible(false);
 
-    function setSecondaryView(showProjectedOverlay) {
-      overlayCanvas.style.display =
-        showProjectedOverlay ? "block" : "none";
+    // Page chrome out of the way: the two panel toggles sit in the top bar, and the reference panel keeps its set-up
+    // (regions, tolerances) folded away so that what is on screen is the reading.
+    {
+      const bar = document.getElementById("controls");
+      bar.append(toggleRuntimePanel, toggleSecondaryView);
+      const regions = document.getElementById("trackingRegions"), tolerances = document.getElementById("trackingThresholds");
+      if (regions && tolerances) {
+        const details = document.createElement("details"); details.id = "trackingSetup";
+        const summary = document.createElement("summary"); summary.textContent = "Regions and tolerances";
+        regions.before(details); details.append(summary, regions, tolerances);
+      }
+    }
 
-      latencyHud.style.display =
-        showProjectedOverlay ? "none" : "block";
+    // The panel under the video shows one of: the imaging views (DRR, CT), the latency table, the projected overlay.
+    const SECONDARY_MODES = ["imaging", "latency", "overlay"];
+    let secondaryMode = "imaging";
 
-      toggleSecondaryView.textContent =
-        showProjectedOverlay
-          ? "Show latency"
-          : "Show overlay";
+    function setSecondaryView(mode) {
+      if (mode === true) mode = "overlay";
+      if (mode === false || !SECONDARY_MODES.includes(mode)) mode = "imaging";
+      secondaryMode = mode;
+      imagingVisible = mode === "imaging";
+      imagingView.style.display = mode === "imaging" ? "flex" : "none";
+      latencyHud.style.display = mode === "latency" ? "block" : "none";
+      overlayCanvas.style.display = mode === "overlay" ? "block" : "none";
 
-      toggleSecondaryView.setAttribute(
-        "aria-pressed",
-        String(showProjectedOverlay)
-      );
+      const next = SECONDARY_MODES[(SECONDARY_MODES.indexOf(mode) + 1) % SECONDARY_MODES.length];
+      toggleSecondaryView.textContent = "Show " + next;
+      toggleSecondaryView.setAttribute("aria-pressed", String(mode !== "imaging"));
 
-      showOverlay.checked = showProjectedOverlay;
+      showOverlay.checked = mode === "overlay";
 
-      if (!showProjectedOverlay) {
+      if (mode !== "overlay") {
         overlayContext.clearRect(
           0,
           0,
@@ -2683,16 +3325,13 @@
     }
 
     toggleSecondaryView.onclick = () => {
-      const overlayIsVisible =
-        overlayCanvas.style.display !== "none";
-
-      setSecondaryView(!overlayIsVisible);
+      setSecondaryView(SECONDARY_MODES[(SECONDARY_MODES.indexOf(secondaryMode) + 1) % SECONDARY_MODES.length]);
     };
 
     /*
-     * Default secondary pane: latency.
+     * Default: the imaging views. The latency table is one click away.
      */
-    setSecondaryView(false);
+    setSecondaryView("imaging");
 
     function clearTrackingReadout() {
       resetTrackingFilters();
@@ -2718,6 +3357,8 @@
     }
 
     captureReferenceButton.onclick = () => {
+      if (latestVertices) for (const v of Object.values(xrayViews)) v.captureReference();     // the DRR keeps this pose as its green reference
+      if (ctVolView && latestVertices) ctVolView.captureReference();   // and so do the CT slice and the CT-voxel DRR
       if (!latestVertices) {
         referenceStatus.textContent =
           "Reference unavailable: no mesh received";
@@ -2755,6 +3396,8 @@
     };
 
     clearReferenceButton.onclick = () => {
+      for (const v of Object.values(xrayViews)) v.clearReference();
+      if (ctVolView) ctVolView.clearReference();
       referenceVertices = null;
       referencePredCamT = null;
       referenceCapturedAt = null;
@@ -2886,6 +3529,9 @@
     };
 
     resetMeshCamera.onclick = () => {
+      insetCentreCam = null;
+      if (xrayView) xrayView.clearReference();
+      if (ctVolView) ctVolView.clearReference();
       meshFramed = false;
     };
 
@@ -2894,6 +3540,13 @@
       if (mediaStream) mediaStream.getTracks().forEach(track => track.stop());
       mediaStream = null;
       video.srcObject = null;
+      if (videoObjectUrl) {
+        video.pause();
+        video.removeAttribute("src");
+        video.load();
+        URL.revokeObjectURL(videoObjectUrl);
+        videoObjectUrl = null;
+      }
 
       if (streamSocket) {
         streamSocket.close();
@@ -2904,44 +3557,96 @@
       uploadBusy = false;
       stopButton.disabled = true;
       button.disabled = false;
-      status.textContent = "Webcam stopped";
+      videoButton.disabled = false;
+      status.textContent = sourceLabel + " stopped";
     };
 
-    button.onclick = async () => {
+    /*
+     * One session, two possible sources: the webcam, or a video file played in the same <video> element
+     * (looped, muted). Everything after the source is identical: frames are grabbed from the element, so a
+     * file is processed at the estimator's rate, taking whichever frame is showing when the last mesh returns.
+     */
+    async function startSession(label, sourceKey, attachSource) {
       try {
         button.disabled = true;
-        status.textContent = "Starting camera...";
+        videoButton.disabled = true;
+        sourceLabel = label;
+        status.textContent = "Starting " + label.toLowerCase() + "...";
 
-        mediaStream =
-          await navigator.mediaDevices.getUserMedia({
-            video: {
-              width: { ideal: 1280 },
-              height: { ideal: 720 }
-            },
-            audio: false
-          });
-
-        video.srcObject = mediaStream;
+        await attachSource();
         await video.play();
 
-        initializeRenderer();
-        status.textContent = "Loading mesh topology...";
-
-        await loadTopology();
+        // Built once and kept across stop/start: a second renderer, body mesh and anatomy panel
+        // would otherwise pile up every time a new source is started.
+        if (!renderer) initializeRenderer();
+        if (!bodyMesh) {
+          status.textContent = "Loading mesh topology...";
+          await loadTopology();
+        }
 
         await connectStreamSocket();
+
+        // The focal length is calibrated per camera and the server keeps it between sessions. A video
+        // file was shot with some other camera, so it always gets its own calibration; the webcam gets
+        // a new one when the previous source on this page was a file.
+        if (
+          sourceKey !== lastSourceKey &&
+          (sourceKey !== "webcam" || lastSourceKey !== null)
+        ) {
+          recalibrateButton.onclick();
+        }
+        lastSourceKey = sourceKey;
+        framesSent = 0;
 
         running = true;
         stopButton.disabled = false;
         status.textContent =
-          "Camera active. Waiting for first mesh...";
+          label + " active. Waiting for first mesh...";
 
         sendFrame();
       } catch (error) {
         button.disabled = false;
+        videoButton.disabled = false;
         status.textContent =
           error.name + ": " + error.message;
       }
+    }
+
+    button.onclick = () => startSession("Camera", "webcam", async () => {
+      mediaStream =
+        await navigator.mediaDevices.getUserMedia({
+          video: {
+            width: { ideal: 1280 },
+            height: { ideal: 720 }
+          },
+          audio: false
+        });
+
+      video.loop = false;
+      video.srcObject = mediaStream;
+    });
+
+    videoButton.onclick = () => {
+      videoFileInput.value = "";
+      videoFileInput.click();
+    };
+
+    videoFileInput.onchange = () => {
+      const file = videoFileInput.files && videoFileInput.files[0];
+      if (!file) return;
+      if (running) stopButton.onclick();
+
+      startSession("Video", "file:" + file.name + ":" + file.size, async () => {
+        videoObjectUrl = URL.createObjectURL(file);
+        video.srcObject = null;
+        video.loop = true;
+        video.muted = true;
+        video.src = videoObjectUrl;
+        await new Promise((resolve, reject) => {
+          video.onloadeddata = () => resolve();
+          video.onerror = () => reject(new Error("This browser cannot play that video file"));
+        });
+      });
     };
   </script>
 
@@ -3669,11 +4374,11 @@
 <style>
   #controls {
     display: grid;
-    grid-template-columns: auto auto 1fr;
+    grid-template-columns: auto auto auto 1fr;
   }
 
   #controls #status {
-    grid-column: 3;
+    grid-column: 4;
   }
 
   #views {
@@ -4235,4 +4940,101 @@
       line-height: 1.34;
     }
   }
+
+  /* bottom-left cell of the dashboard (where the latency table used to be); scrolls when the cell is short */
+  #anatomyPanel {
+    grid-column: 1; grid-row: 4; min-width: 0; min-height: 0; margin: 0; padding: 10px; box-sizing: border-box;
+    overflow-y: auto; overflow-x: hidden; border: 1px solid #333; border-radius: 6px;
+    background: rgba(20,20,20,0.85); color: #ddd; font-size: 12px;
+  }
+  #anatomyPanel .panelTitle { font-weight: 600; margin-bottom: 6px; }
+  #anatomyPanel .anaRow { display: flex; gap: 6px; align-items: center; margin: 4px 0; }
+  #anatomyPanel .anaRow input[type=range] { flex: 1; }
+  #anatomyPanel .anaChip { display: inline-block; margin: 2px 8px 2px 0; }
+  #anatomyPanel select { flex: 1; min-width: 0; }
+  #secondaryView #imagingView {
+    position: absolute; inset: 0; display: flex; gap: 8px; padding: 8px; box-sizing: border-box;
+    align-items: center; justify-content: center; background: #0c0c0c;
+  }
+  #secondaryView #imagingView figure {
+    position: relative; margin: 0; height: 100%; aspect-ratio: 1 / 1; max-width: calc(50% - 4px); min-width: 0;
+  }
+  #secondaryView #imagingView canvas {
+    display: block; width: 100%; height: 100%; object-fit: contain; background: #000; border: 1px solid #333;
+  }
+  #secondaryView #imagingView figcaption {
+    position: absolute; top: 4px; left: 6px; right: 6px; z-index: 2; padding: 2px 6px; pointer-events: none;
+    font: 11px/16px system-ui, sans-serif; color: #d8d8d8; background: rgba(0, 0, 0, 0.55);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  #mesh .insetLabel {
+    position: absolute; z-index: 3; box-sizing: border-box; padding: 2px 6px; pointer-events: none;
+    font: 11px/16px system-ui, sans-serif; color: #d8d8d8; background: rgba(0, 0, 0, 0.55);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  #anatomyPanel .anaNote { margin-top: 8px; color: #e0b050; line-height: 1.35; }
 </style>
+
+<style id="leftColumnLayout">
+  /*
+   * Left column, last word on the layout: toggle, runtime parameters (collapsible), then the reference panel and the
+   * anatomy panel sharing whatever height is left, each scrolling on its own. The video/imaging column and the 3-D view
+   * span all four rows.
+   */
+  #views { grid-template-rows: auto auto minmax(0, 1fr) minmax(0, 1fr); }
+  #toggleRuntimePanel { grid-column: 1; grid-row: 1; }
+  #runtimePanel { grid-column: 1; grid-row: 2; }
+  #referencePanel { grid-column: 1; grid-row: 3; min-height: 0; margin: 0; overflow-y: auto; overflow-x: hidden; }
+  #anatomyPanel { grid-column: 1; grid-row: 4; min-height: 0; margin: 0; overflow-y: auto; overflow-x: hidden; }
+  #leftViews { grid-column: 2; grid-row: 1 / 5; }
+  #mesh { grid-column: 3; grid-row: 1 / 5; }
+</style>
+
+<style id="controlsInViews">
+  /* top bar: start/stop, status, and the two panel toggles pushed to the right */
+  #controls { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 8px 12px; }
+  #controls #status { flex: 1 1 200px; margin: 0; font-size: 14px; font-weight: 600; }
+  #controls #toggleRuntimePanel, #controls #toggleSecondaryView {
+    position: static; width: auto; min-width: 0; margin: 0; padding: 5px 9px; font-size: 11px; font-weight: 600; line-height: 1;
+    color: #cfcfcf; background: #262626; border: 1px solid #555; border-radius: 3px;
+  }
+  /* left column: parameters (when shown), then the reference panel */
+  #views { grid-template-rows: auto minmax(0, 1fr); height: calc(100vh - 70px); }
+  #runtimePanel { grid-column: 1; grid-row: 1; }
+  #referencePanel { grid-column: 1; grid-row: 2; }
+  #leftViews { grid-column: 2; grid-row: 1 / 3; }
+  #mesh { grid-column: 3; grid-row: 1 / 3; }
+  #trackingSetup { margin: 6px 0; }
+  #trackingSetup > summary { cursor: pointer; padding: 4px 0; color: #bdbdbd; font-size: 12px; }
+
+  /* options of a view: a gear in its corner, a pop-over under it */
+  .viewMenuButton {
+    position: absolute; top: 4px; z-index: 6; width: 24px; height: 22px; padding: 0; font-size: 14px; line-height: 20px;
+    color: #e6e6e6; background: rgba(30, 30, 30, 0.8); border: 1px solid #666; border-radius: 3px; cursor: pointer;
+  }
+  .viewMenuButton.right { right: 6px; }  .viewMenuButton.left { left: 6px; }
+  .viewMenuButton:hover, .viewMenuButton[aria-expanded="true"] { background: #3a3a3a; }
+  .viewMenu {
+    position: absolute; top: 30px; z-index: 7; box-sizing: border-box; width: min(300px, calc(100% - 12px));
+    max-height: calc(100% - 40px); overflow-y: auto; overflow-x: hidden; padding: 8px 10px;
+    color: #ddd; background: rgba(16, 16, 16, 0.94); border: 1px solid #555; border-radius: 4px; font: 12px/1.3 system-ui, sans-serif;
+  }
+  .viewMenu.right { right: 6px; }  .viewMenu.left { left: 6px; }
+  .viewMenu[hidden] { display: none; }
+  .viewMenuTitle { margin-bottom: 6px; font-weight: 600; color: #fff; }
+  .viewMenu .anaRow, .viewStrip .anaRow { display: flex; gap: 6px; align-items: center; margin: 4px 0; }
+  .viewMenu .anaRow input[type=range], .viewStrip .anaRow input[type=range] { flex: 1; min-width: 40px; }
+  .viewMenu select { flex: 1; min-width: 0; }
+  .viewMenu .anaChip { display: inline-block; margin: 2px 8px 2px 0; }
+  .viewMenu .anaNote { margin-top: 8px; color: #e0b050; line-height: 1.35; }
+  /* the controls used all the time: a strip along the bottom of the picture */
+  .viewStrip {
+    position: absolute; left: 6px; right: 6px; bottom: 6px; z-index: 5; display: flex; gap: 12px; align-items: center;
+    padding: 1px 8px; color: #e0e0e0; background: rgba(0, 0, 0, 0.6); border-radius: 3px; font: 11px/1.2 system-ui, sans-serif;
+  }
+  .viewStrip .anaRow { margin: 2px 0; white-space: nowrap; }
+  .viewStrip .anaRow:has(input[type=range]) { flex: 1; min-width: 0; }
+  .viewStrip output { min-width: 4.5em; text-align: right; color: #bbb; }
+  #secondaryView #imagingView figcaption { right: 36px; }
+</style>
+

@@ -1,4 +1,7 @@
+import argparse
+import contextlib
 import json
+import os
 import threading
 import time
 
@@ -10,6 +13,96 @@ from flask_sock import Sock
 
 from mocap.core.setup_estimator import build_default_estimator
 
+# ---- local real-time settings (all optional, set through the environment) ----
+# IMG_SIZE        model input size (512 upstream default; 384 with a TensorRT backbone is the fast setting)
+# YOLO_PATH       person/pose detector weights
+# TRACK_BOX=1     take the person box from the previous mesh instead of running the detector on every frame
+# DETECT_EVERY    with TRACK_BOX, run the detector every N frames only to confirm the person is still there
+# QUIET=1         drop the estimator's per-frame debug prints (slow on a Windows console)
+MODEL_IMG_SIZE = int(os.environ.get("IMG_SIZE", "512"))
+YOLO_PATH = os.environ.get("YOLO_PATH", "checkpoints/yolo/yolo11m-pose.pt")
+TRACK_BOX = os.environ.get("TRACK_BOX", "0") == "1"
+DETECT_EVERY = int(os.environ.get("DETECT_EVERY", "30"))
+QUIET = os.environ.get("QUIET", "0") == "1"
+
+if QUIET:
+    # upstream empties the CUDA cache on every frame; with one model and fixed shapes that only costs time
+    torch.cuda.empty_cache = lambda: None
+
+
+class _NullWriter:
+    def write(self, _text):
+        return 0
+
+    def flush(self):
+        pass
+
+
+def box_from_mesh(vertices, cam_t, focal, width, height):
+    """Image-space bounding box of the predicted mesh (pinhole, principal point at the image centre)."""
+    X = vertices + np.asarray(cam_t, dtype=np.float32).reshape(1, 3)
+    z = np.maximum(X[:, 2], 1e-3)
+    u = focal * X[:, 0] / z + width / 2.0
+    v = focal * X[:, 1] / z + height / 2.0
+    box = np.array([max(0.0, u.min()), max(0.0, v.min()), min(width - 1.0, u.max()), min(height - 1.0, v.max())], dtype=np.float32)
+    if box[2] - box[0] < 16 or box[3] - box[1] < 16:
+        return None
+    return box.reshape(1, 4)
+
+
+def box_iou(a, b):
+    a = np.asarray(a, dtype=np.float32).reshape(-1)[:4]
+    b = np.asarray(b, dtype=np.float32).reshape(-1)[:4]
+    iw = max(0.0, min(a[2], b[2]) - max(a[0], b[0]))
+    ih = max(0.0, min(a[3], b[3]) - max(a[1], b[1]))
+    union = (a[2] - a[0]) * (a[3] - a[1]) + (b[2] - b[0]) * (b[3] - b[1]) - iw * ih
+    return float(iw * ih / union) if union > 0 else 0.0
+
+# One person only. The page shows one body, so when the detector finds several the model must run on one of them (it used to run
+# on all of them and the frame was then thrown away). The person followed on the previous frame is kept (largest overlap with
+# their box); with nobody followed yet, the largest box near the middle of the image wins. The detector wrapper does not return
+# confidences, so size and position stand in for "most confident".
+person_pick = {"last": None, "seen": 0}
+
+
+def pick_person(boxes, image_shape, last=None):
+    """Index of the box to keep. boxes: (n, 4) x0, y0, x1, y1."""
+    boxes = np.asarray(boxes, dtype=np.float32).reshape(-1, 4)
+    if len(boxes) <= 1:
+        return 0
+    if last is not None:
+        overlap = [box_iou(b, last) for b in boxes]
+        if max(overlap) > 0.2:
+            return int(np.argmax(overlap))
+    h, w = image_shape[:2]
+    area = (boxes[:, 2] - boxes[:, 0]) * (boxes[:, 3] - boxes[:, 1]) / float(w * h)
+    off = np.hypot(((boxes[:, 0] + boxes[:, 2]) / 2 - w / 2) / (w / 2), ((boxes[:, 1] + boxes[:, 3]) / 2 - h / 2) / (h / 2))
+    return int(np.argmax(area * (1.0 - 0.5 * np.clip(off, 0.0, 1.0))))
+
+
+def single_person_detector(detector):
+    """Make detector.run_human_detection return at most one person (see pick_person)."""
+    run = detector.run_human_detection
+
+    def run_one(img, **kwargs):
+        result = run(img, **kwargs)
+        boxes = result["boxes"] if isinstance(result, dict) else result
+        n = 0 if boxes is None else len(boxes)
+        person_pick["seen"] = n
+        if n <= 1:
+            return result
+        i = pick_person(np.asarray(boxes)[:, :4], img.shape, person_pick["last"])
+        if isinstance(result, dict):
+            return {k: (v[i:i + 1] if v is not None and hasattr(v, "__len__") and len(v) == n else v) for k, v in result.items()}
+        return boxes[i:i + 1]
+
+    detector.run_human_detection = run_one
+
+
+# Optional Femto Bolt / depth fusion (see depth/). Off unless --depth is given.
+depth_source = None
+depth_fusion = None
+
 app = Flask(__name__)
 sock = Sock(app)
 
@@ -18,6 +111,7 @@ frame_event = threading.Event()
 mesh_condition = threading.Condition(state_lock)
 
 latest_frame = None
+latest_frame_owner = None   # which connection sent latest_frame (box tracking is per camera stream)
 latest_mesh = None
 frame_id = 0
 mesh_id = 0
@@ -26,9 +120,26 @@ last_inference_seconds = None
 last_error = None
 estimator_ready = False
 faces = None
-focal_length_history = []
-cached_cam_intrinsics = None
 FOCAL_CALIBRATION_FRAMES = 30
+
+# Focal calibration belongs to a camera, so it is kept per stream (per WebSocket connection, or "http" for the
+# POST /frame route): two browsers, or a webcam and a video file, no longer share one median.
+calibrations = {}
+last_calibration_owner = None
+
+
+def calibration_for(owner):
+    """Calibration state of one stream. Call with state_lock held."""
+    state = calibrations.get(owner)
+    if state is None:
+        state = calibrations[owner] = {
+            "history": [],             # focal lengths estimated so far
+            "cam": None,               # fixed intrinsics once calibrated (torch tensor)
+            "mode": "fixed",           # "fixed": use cam when available; "dynamic": estimate every frame
+            "frames": FOCAL_CALIBRATION_FRAMES,
+            "fixed_when_ready": False,  # set by "recalibrate": go back to fixed as soon as the median is in
+        }
+    return state
 
 runtime_config = {
     "inference_mode": "body",
@@ -52,28 +163,41 @@ def inference_worker():
     global last_error
     global estimator_ready
     global faces
-    global focal_length_history
-    global cached_cam_intrinsics
     global runtime_config
+    global depth_fusion
+    global last_calibration_owner
 
     print("Loading persistent Fast SAM 3D Body estimator...", flush=True)
 
     estimator = build_default_estimator(
-        image_size=512,
-        yolo_model_path="checkpoints/yolo/yolo11m-pose.pt",
+        image_size=MODEL_IMG_SIZE,
+        yolo_model_path=YOLO_PATH,
         fov_model_size="s",
         fov_resolution_level=0,
         fov_fixed_size=512,
         fov_fast_mode=True,
     )
 
+    if getattr(estimator, "detector", None) is not None:
+        single_person_detector(estimator.detector)
     faces = np.asarray(estimator.faces, dtype=np.int32)
+    if depth_source is not None:
+        from depth.fusion import DepthFusion
+        depth_fusion = DepthFusion(faces, **depth_fusion_args)
     estimator_ready = True
 
     print(
-        f"ESTIMATOR_READY vertices=18439 faces={len(faces)}",
+        f"ESTIMATOR_READY vertices=18439 faces={len(faces)} "
+        f"img_size={MODEL_IMG_SIZE} track_box={TRACK_BOX} "
+        f"gpu={torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'cpu'}",
         flush=True,
     )
+
+    quiet_out = _NullWriter()
+    tracked_box = None          # person box derived from the previous mesh
+    tracked_owner = None
+    frames_since_detect = 0
+    inference_window = []
 
     while True:
         frame_event.wait()
@@ -81,7 +205,14 @@ def inference_worker():
 
         with state_lock:
             item = latest_frame
+            item_owner = latest_frame_owner
             latest_frame = None
+
+        if item_owner != tracked_owner:
+            # a different camera stream: its person box has nothing to do with the last one
+            tracked_owner = item_owner
+            tracked_box = None
+            person_pick["last"] = None
 
         if item is None:
             continue
@@ -109,24 +240,44 @@ def inference_worker():
         try:
             with state_lock:
                 inference_mode = runtime_config["inference_mode"]
-                intrinsics_mode = runtime_config["intrinsics_mode"]
+                calibration = calibration_for(item_owner)
+                last_calibration_owner = item_owner
+                intrinsics_mode = calibration["mode"]
+                active_cam_intrinsics = (
+                    calibration["cam"]
+                    if intrinsics_mode == "fixed"
+                    else None
+                )
 
-            active_cam_intrinsics = (
-                cached_cam_intrinsics
-                if intrinsics_mode == "fixed"
-                else None
+            # Box tracking: the detector costs about 18 ms a frame. Once a person is found, the next
+            # frame's box comes from the previous mesh. The detector still runs every DETECT_EVERY
+            # frames, only to confirm that somebody is there and that the tracked box is on them.
+            use_tracked = (
+                TRACK_BOX
+                and inference_mode == "body"
+                and tracked_box is not None
+                and frames_since_detect < DETECT_EVERY
             )
 
-            outputs = estimator.process_one_image(
-                image_rgb,
-                cam_int=active_cam_intrinsics,
-                inference_type=inference_mode,
-                hand_box_source="yolo_pose",
-            )
+            with contextlib.redirect_stdout(quiet_out) if QUIET else contextlib.nullcontext():
+                outputs = estimator.process_one_image(
+                    image_rgb,
+                    bboxes=tracked_box if use_tracked else None,
+                    cam_int=active_cam_intrinsics,
+                    inference_type=inference_mode,
+                    hand_box_source="yolo_pose",
+                )
             torch.cuda.synchronize()
             elapsed = time.perf_counter() - start
 
+            if use_tracked:
+                frames_since_detect += 1
+            else:
+                frames_since_detect = 0
+
             if len(outputs) != 1:
+                tracked_box = None
+                person_pick["last"] = None
                 with mesh_condition:
                     mesh_id += 1
 
@@ -152,27 +303,27 @@ def inference_worker():
                 )
                 continue
 
-            print("KEYPOINT_SHAPE", np.asarray(outputs[0]["pred_keypoints_2d"]).shape, flush=True)
             focal_length = float(
                 np.asarray(outputs[0]["focal_length"]).reshape(-1)[0]
             )
+            focal_length_history = calibration["history"]
             focal_length_history.append(focal_length)
             if len(focal_length_history) > 300:
                 del focal_length_history[:-300]
 
             if (
-                cached_cam_intrinsics is None
-                and len(focal_length_history) >= runtime_config["calibration_frames"]
+                calibration["cam"] is None
+                and len(focal_length_history) >= calibration["frames"]
             ):
                 calibrated_focal = float(
                     np.median(
                         focal_length_history[
-                            :runtime_config["calibration_frames"]
+                            :calibration["frames"]
                         ]
                     )
                 )
                 height, width = image_rgb.shape[:2]
-                cached_cam_intrinsics = torch.tensor(
+                calibration["cam"] = torch.tensor(
                     [[
                         [calibrated_focal, 0.0, width / 2.0],
                         [0.0, calibrated_focal, height / 2.0],
@@ -180,8 +331,12 @@ def inference_worker():
                     ]],
                     dtype=torch.float32,
                 )
+                if calibration["fixed_when_ready"]:
+                    # a recalibration is finished: stop estimating the focal length on every frame
+                    calibration["mode"] = "fixed"
+                    calibration["fixed_when_ready"] = False
                 print(
-                    f"FOCAL_CALIBRATED frames={FOCAL_CALIBRATION_FRAMES} "
+                    f"FOCAL_CALIBRATED frames={calibration['frames']} "
                     f"focal={calibrated_focal:.3f} "
                     f"size={width}x{height}",
                     flush=True,
@@ -197,13 +352,61 @@ def inference_worker():
                     f"Unexpected vertex shape: {vertices.shape}"
                 )
 
+            # MHR skeleton for the rig: 127 joint positions (same frame as the vertices) and global rotations.
+            # The rotations come in the MHR model frame; the vertices are flipped (x, -y, -z), so R -> F R F.
+            joints = None
+            try:
+                joint_pos = to_numpy(outputs[0]["pred_joint_coords"]).reshape(-1, 3)
+                joint_rot = to_numpy(outputs[0]["pred_global_rots"]).reshape(-1, 3, 3).copy()
+                joint_rot[:, 0, 1:] *= -1.0
+                joint_rot[:, 1:, 0] *= -1.0
+                if len(joint_pos) == len(joint_rot):
+                    joints = np.concatenate([joint_pos.reshape(-1), joint_rot.reshape(-1)]).astype("<f4")
+            except (KeyError, TypeError, ValueError):
+                joints = None
+
+            if "bbox" in outputs[0]:
+                person_pick["last"] = to_numpy(outputs[0]["bbox"]).reshape(-1)[:4].copy()      # the person to stay with
+            if TRACK_BOX:
+                image_height, image_width = image_rgb.shape[:2]
+                tracked_box = box_from_mesh(
+                    vertices,
+                    to_numpy(outputs[0]["pred_cam_t"]).reshape(-1),
+                    focal_length,
+                    image_width,
+                    image_height,
+                )
+                if not use_tracked and tracked_box is not None and "bbox" in outputs[0]:
+                    # detector frame: if the mesh box is not on the detected person, start again
+                    if box_iou(tracked_box, to_numpy(outputs[0]["bbox"])) < 0.3:
+                        tracked_box = None
+
+            depth_info = None
+            if depth_source is not None and depth_fusion is not None:
+                try:
+                    from depth.fusion import mhr_to_camera_mm
+                    depth_frame, depth_ts_us = depth_source.read()
+                    if depth_frame is not None:
+                        cam_t_np = to_numpy(outputs[0]["pred_cam_t"]).reshape(-1)
+                        v_mm = mhr_to_camera_mm(vertices, cam_t_np)
+                        fused_mm, depth_info = depth_fusion.process(v_mm, depth_frame)
+                        depth_info["device_ts_us"] = depth_ts_us
+                        if depth_info.get("ok"):
+                            # report the metric camera translation: centroid shift in metres
+                            shift = (fused_mm.mean(0) - v_mm.mean(0)) / 1000.0
+                            depth_info["cam_t_shift_m"] = (shift * np.array([1.0, -1.0, -1.0])).tolist()
+                except Exception as exc:  # depth must never take the RGB pipeline down
+                    depth_info = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+
             with state_lock:
                 mesh_id += 1
                 latest_mesh = {
+                    "depth": depth_info,
                     "mesh_id": mesh_id,
                     "source_frame_id": current_frame_id,
                     "no_person": False,
                     "vertices": vertices,
+                    "joints": joints,
                     "server_receive_wall_ms": server_receive_wall_ms,
                     "encode_ms": float(encode_ms),
                     "queue_wait_ms": queue_wait_ms,
@@ -212,16 +415,24 @@ def inference_worker():
                     "pred_cam_t": to_numpy(outputs[0]["pred_cam_t"]).reshape(-1),
                     "focal_length": focal_length,
                     "client_timestamp_ms": client_timestamp_ms,
+                    "intrinsics_mode": calibration["mode"],
+                    "calibrated": calibration["cam"] is not None,
+                    "calibration_samples": len(focal_length_history),
                 }
                 last_inference_seconds = elapsed
                 last_error = None
                 mesh_condition.notify_all()
 
-            print(
-                f"MESH {mesh_id} frame={current_frame_id} "
-                f"inference={elapsed:.3f}s",
-                flush=True,
-            )
+            inference_window.append(elapsed * 1000.0)
+            if len(inference_window) >= 60:
+                window = np.asarray(inference_window)
+                print(
+                    f"MESH {mesh_id} inference median={np.median(window):.1f} ms "
+                    f"p90={np.percentile(window, 90):.1f} ms "
+                    f"tracked_box={use_tracked}",
+                    flush=True,
+                )
+                inference_window.clear()
 
         except Exception as exc:
             with state_lock:
@@ -234,9 +445,61 @@ def index():
     return send_from_directory(".", "webcam.html")
 
 
+@app.get("/anatomy/<name>")
+def anatomy_js(name):
+    if name not in ("anatomy.js", "stream.js", "xray.js", "ct.js", "ctvol.js"):
+        return Response("Not found", status=404)
+    return send_from_directory("anatomy", name, mimetype="text/javascript")
+
+
+@app.get("/atlas/<name>")
+def atlas_file(name):
+    if name not in ("atlas.json", "atlas.bin", "skel.json", "skel.bin", "ct_volume.json", "ct_volume.bin", "ct_pet.json", "ct_pet.bin"):
+        return Response("Not found", status=404)
+    return send_from_directory("atlas", name)
+
+
+ATLAS_FILES = ("atlas.json", "atlas.bin", "skel.json", "skel.bin", "ct_volume.json", "ct_volume.bin", "ct_pet.json", "ct_pet.bin")
+SUBJECTS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "atlas", "subjects")
+
+
+@app.get("/subjects")
+def subjects():
+    """Reference CTs that have a rig built: one folder each under atlas/subjects (tools/build_ct_volume.py)."""
+    out = []
+    if os.path.isdir(SUBJECTS_DIR):
+        for sid in sorted(os.listdir(SUBJECTS_DIR)):
+            d = os.path.join(SUBJECTS_DIR, sid)
+            if not sid.replace("_", "").replace("-", "").isalnum() or not os.path.exists(os.path.join(d, "atlas.json")):
+                continue
+            try:
+                with open(os.path.join(d, "atlas.json"), encoding="utf-8") as f:
+                    src = json.load(f).get("source", {})
+                pet = None; rigid = None
+                if os.path.exists(os.path.join(d, "ct_volume.json")):
+                    with open(os.path.join(d, "ct_volume.json"), encoding="utf-8") as f:
+                        rigid = bool(json.load(f).get("rigid"))
+                if os.path.exists(os.path.join(d, "ct_pet.json")):
+                    with open(os.path.join(d, "ct_pet.json"), encoding="utf-8") as f:
+                        pet = "simulated" if json.load(f).get("simulated") else "measured"
+                out.append({"id": sid, "dataset": str(src.get("dataset", ""))[:80], "subject": str(src.get("subject", sid)),
+                            "ct": os.path.exists(os.path.join(d, "ct_volume.bin")), "pet": pet, "rigid": rigid})
+            except (OSError, ValueError):
+                continue
+    return jsonify(out)
+
+
+@app.get("/atlas/subjects/<sid>/<name>")
+def subject_file(sid, name):
+    if name not in ATLAS_FILES or not sid.replace("_", "").replace("-", "").isalnum():
+        return Response("Not found", status=404)
+    return send_from_directory(os.path.join(SUBJECTS_DIR, sid), name)
+
+
 @app.post("/frame")
 def receive_frame():
     global latest_frame
+    global latest_frame_owner
     global frame_id
     global dropped_frames
 
@@ -255,6 +518,7 @@ def receive_frame():
         if latest_frame is not None:
             dropped_frames += 1
         latest_frame = (frame_id, client_timestamp_ms, encode_ms, server_receive_ns, server_receive_wall_ms, jpeg_bytes)
+        latest_frame_owner = "http"
         accepted_frame_id = frame_id
 
     frame_event.set()
@@ -316,10 +580,18 @@ def mesh():
     if current is None or current["mesh_id"] <= requested_id:
         return Response(status=204)
 
+    payload = current["vertices"].astype("<f4", copy=False).tobytes()
+    joint_count = 0
+    if request.args.get("joints") and current.get("joints") is not None:
+        # same layout as the WebSocket message: vertices, then n*3 joint positions, then n*9 rotation entries
+        payload += current["joints"].tobytes()
+        joint_count = len(current["joints"]) // 12
+
     response = Response(
-        current["vertices"].astype("<f4", copy=False).tobytes(),
+        payload,
         content_type="application/octet-stream",
     )
+    response.headers["X-Joints"] = str(joint_count)
     response.headers["X-Mesh-Id"] = str(current["mesh_id"])
     response.headers["X-Source-Frame-Id"] = str(current["source_frame_id"])
     response.headers["X-Inference-Seconds"] = str(inference_seconds)
@@ -335,16 +607,22 @@ def mesh():
 
 @app.get("/focal-stats")
 def focal_stats():
-    values = np.asarray(focal_length_history, dtype=np.float64)
+    with state_lock:
+        state = calibrations.get(last_calibration_owner)
+        history = list(state["history"]) if state else []
+        is_calibrated = bool(state and state["cam"] is not None)
+        stream_count = len(calibrations)
+    values = np.asarray(history, dtype=np.float64)
 
     if values.size == 0:
-        return jsonify({"count": 0})
+        return jsonify({"count": 0, "streams": stream_count})
 
     median = float(np.median(values))
 
     return jsonify({
         "count": int(values.size),
-        "calibrated": cached_cam_intrinsics is not None,
+        "calibrated": is_calibrated,
+        "streams": stream_count,
         "median": median,
         "mean": float(np.mean(values)),
         "std": float(np.std(values)),
@@ -370,20 +648,30 @@ def status():
             "mesh_id": mesh_id,
             "inference_seconds": last_inference_seconds,
             "error": last_error,
+            "img_size": MODEL_IMG_SIZE,
+            "track_box": TRACK_BOX,
+            "gpu": torch.cuda.get_device_name(0) if torch.cuda.is_available() else "cpu",
         })
 
 
 @sock.route("/stream")
 def stream_socket(ws):
-    global cached_cam_intrinsics
     global latest_frame
+    global latest_frame_owner
     global frame_id
     global dropped_frames
 
+    owner = id(ws)
+
     while True:
-        metadata_text = ws.receive()
+        try:
+            metadata_text = ws.receive()
+        except Exception:
+            metadata_text = None
 
         if metadata_text is None:
+            with state_lock:
+                calibrations.pop(owner, None)     # the stream is gone, and so is its camera
             break
 
         try:
@@ -393,6 +681,7 @@ def stream_socket(ws):
                 action = metadata.get("action")
 
                 with state_lock:
+                    calibration = calibration_for(owner)
                     if action == "set_inference_mode":
                         value = metadata.get("value")
                         if value not in ("body", "full"):
@@ -407,13 +696,15 @@ def stream_socket(ws):
                             raise ValueError(
                                 "intrinsics mode must be dynamic or fixed"
                             )
-                        runtime_config["intrinsics_mode"] = value
+                        calibration["mode"] = value
+                        calibration["fixed_when_ready"] = False
 
                     elif action == "recalibrate":
-                        focal_length_history.clear()
-                        cached_cam_intrinsics = None
-                        runtime_config["intrinsics_mode"] = "dynamic"
-                        runtime_config["calibration_frames"] = int(
+                        calibration["history"].clear()
+                        calibration["cam"] = None
+                        calibration["mode"] = "dynamic"
+                        calibration["fixed_when_ready"] = True
+                        calibration["frames"] = int(
                             metadata.get("frames", 30)
                         )
 
@@ -425,14 +716,16 @@ def stream_socket(ws):
                     response_config = {
                         "type": "config",
                         **runtime_config,
-                        "calibrated": cached_cam_intrinsics is not None,
+                        "intrinsics_mode": calibration["mode"],
+                        "calibration_frames": calibration["frames"],
+                        "calibrated": calibration["cam"] is not None,
                         "focal_length": (
-                            float(cached_cam_intrinsics[0, 0, 0])
-                            if cached_cam_intrinsics is not None
+                            float(calibration["cam"][0, 0, 0])
+                            if calibration["cam"] is not None
                             else None
                         ),
                         "calibration_samples": len(
-                            focal_length_history
+                            calibration["history"]
                         ),
                     }
 
@@ -466,6 +759,7 @@ def stream_socket(ws):
                     0.0,
                     jpeg_bytes,
                 )
+                latest_frame_owner = owner
 
             frame_event.set()
 
@@ -516,29 +810,53 @@ def stream_socket(ws):
                 "pred_cam_t": current["pred_cam_t"].tolist(),
                 "focal_length": current["focal_length"],
                 "inference_mode": runtime_config["inference_mode"],
-                "intrinsics_mode": runtime_config["intrinsics_mode"],
-                "calibrated": cached_cam_intrinsics is not None,
-                "calibration_samples": len(focal_length_history),
+                "intrinsics_mode": current.get("intrinsics_mode", "fixed"),
+                "calibrated": current.get("calibrated", False),
+                "calibration_samples": current.get("calibration_samples", 0),
+                "depth": current.get("depth"),
+                # number of MHR joints appended to the binary message after the vertices
+                # (n * 3 positions, then n * 9 rotation-matrix entries, float32); 0 = none
+                "joints": (
+                    len(current["joints"]) // 12
+                    if current.get("joints") is not None else 0
+                ),
             }))
 
-            ws.send(
-                current["vertices"]
-                .astype("<f4", copy=False)
-                .tobytes()
-            )
+            payload = current["vertices"].astype("<f4", copy=False).tobytes()
+            if current.get("joints") is not None:
+                payload += current["joints"].tobytes()
+            ws.send(payload)
 
         except Exception as exc:
             ws.send(json.dumps({
                 "error": f"{type(exc).__name__}: {exc}"
             }))
 
+def _setup_depth(spec):
+    """--depth femto | recorded:<file.npz>"""
+    global depth_source, depth_fusion
+    from depth.source import FemtoBoltSource, RecordedSource
+    from depth.fusion import DepthFusion
+    depth_source = FemtoBoltSource() if spec == "femto" else RecordedSource(spec.split(":", 1)[1])
+    depth_fusion_args["K"] = depth_source.K
+
+
+depth_fusion_args = {}
+
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--depth", default=None, help="femto | recorded:<file.npz>")
+    parser.add_argument("--cloth-mm", type=float, default=0.0, help="gown/blanket thickness for depth ICP")
+    cli = parser.parse_args()
+    if cli.depth:
+        _setup_depth(cli.depth)
+        depth_fusion_args["cloth_mm"] = cli.cloth_mm
     worker = threading.Thread(target=inference_worker, daemon=True)
     worker.start()
 
     app.run(
-        host="0.0.0.0",
-        port=8097,
+        host=os.environ.get("HOST", "0.0.0.0"),
+        port=int(os.environ.get("PORT", "8097")),
         threaded=True,
         debug=False,
         use_reloader=False,
