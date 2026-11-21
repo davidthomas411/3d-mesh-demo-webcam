@@ -248,6 +248,14 @@ export class CtVolumeView {
     const k = this.anchor ? 1 + this.layer.atlas.chain.indexOf(this.anchor.s.name) : 0;      // soft frames: pelvis, then the chain
     if (bodyAligned && k > 0) {
       u.uPlaneFrame.value = k; u.uCentre.value.set(0, -1.3, 0); u.uZ.value = this.anchor.s.centroid[2] + offsetM;
+      if (this.followCentre && centre && u.uHasFrames.value > 0.5) {
+        // a zoomed picture is centred on a point of the POSED body: here the plane is drawn in rest coordinates, so that
+        // point is taken back through the frame that carries the plane (rest = c + R^T (p - cp) / s)
+        const THREE = this.THREE, R = u.uR.value[k].clone().transpose();
+        const rest = new THREE.Vector3(centre[0], centre[1], centre.length > 2 && centre[2] ? centre[2] : this.anchorZ()).sub(u.uCp.value[k]).applyMatrix3(R)
+          .multiplyScalar(1 / (u.uS.value[k] || 1)).add(u.uC.value[k]);
+        u.uCentre.value.set(rest.x, rest.y, 0);
+      }
     } else {
       u.uPlaneFrame.value = -1; u.uCentre.value.set(centre[0], centre[1], 0); u.uZ.value = this.anchorZ() + offsetM;
     }

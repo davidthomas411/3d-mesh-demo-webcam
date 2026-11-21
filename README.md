@@ -641,6 +641,17 @@ view (DRR, CT, 3-D) has a gear in its corner that opens its options, and the con
 the bottom of the picture (DRR: CT-to-bones blend; CT: PET and slice position). The left column holds only the reference panel,
 with its regions and tolerances folded away. "Show parameters" and "Show latency" are in the top bar.
 
+**Maximise.** The button next to each picture's gear swaps that picture with the large 3-D frame on the right; the 3-D view
+becomes a live miniature in its place (click it, or the button again, to swap back). The DRR can still be turned by dragging
+while it is large.
+
+**Zoom, linked.** The DRR and the CT slice always show the same part of the body at the same size. The mouse wheel zooms
+either picture (1x to 8x); dragging the CT, or shift-dragging the DRR, moves the zoomed picture; a double-click returns to
+the whole picture. "Zoom to region" (DRR strip) centres and sizes both pictures on the regions ticked under "Regions and
+tolerances" in the reference panel and follows the body; while a reference is held it stops following, so the green/magenta
+comparison is of one fixed place. Changing the view drops a held imaging reference. The regions are the reference panel's own
+(bands of the body's height), so on a seated person "pelvis" sits lower than the real pelvis.
+
 `run_local.cmd` starts the server on http://127.0.0.1:8097; run it in a terminal of your own so that it stays up.
 
 ### Reference CT

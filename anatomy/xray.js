@@ -76,9 +76,9 @@ export class XrayView {
     if (orbit) {
       const cp = Math.cos(orbit.pitch), sp = Math.sin(orbit.pitch);
       cam.position.set(c[0] + d * Math.sin(orbit.yaw) * cp, c[1] + d * sp, c[2] - d * Math.cos(orbit.yaw) * cp);
-      cam.lookAt(c[0], c[1], c[2]); cam.left = -this.half; cam.right = this.half;
-    } else if (view === "ap") { cam.position.set(c[0], c[1], c[2] - d); cam.lookAt(c[0], c[1], c[2]); cam.left = -this.half; cam.right = this.half; }
-    else { cam.position.set(c[0] + d, c[1], c[2]); cam.lookAt(c[0], c[1], c[2]); cam.left = -this.half; cam.right = this.half; }
+      cam.lookAt(c[0], c[1], c[2]); cam.left = -this.half; cam.right = this.half; cam.top = this.half; cam.bottom = -this.half;
+    } else if (view === "ap") { cam.position.set(c[0], c[1], c[2] - d); cam.lookAt(c[0], c[1], c[2]); cam.left = -this.half; cam.right = this.half; cam.top = this.half; cam.bottom = -this.half; }
+    else { cam.position.set(c[0] + d, c[1], c[2]); cam.lookAt(c[0], c[1], c[2]); cam.left = -this.half; cam.right = this.half; cam.top = this.half; cam.bottom = -this.half; }
     cam.near = 0; cam.far = 2 * d; cam.updateProjectionMatrix(); cam.updateMatrixWorld();
     for (const sh of this.shells) {                                          // centre of each hollow bone in its current pose
       const a = sh.g.attributes.position.array; let x = 0, y = 0, z = 0, n = 0;

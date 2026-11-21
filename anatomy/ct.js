@@ -81,6 +81,7 @@ export class CtSliceView {
       if (Math.abs(v) > 1e-6) { const s = v > 0 ? 1 : -1; this.skinMats[0].uniforms.uV.value = s * SOFT; this.skinMats[1].uniforms.uV.value = -s * SOFT; this.skinWindingKnown = true; }
     }
     cam.up.set(0, -1, 0);                                  // MHR y points down
+    cam.left = -this.half; cam.right = this.half; cam.top = this.half; cam.bottom = -this.half;      // the extent may change (zoom)
     cam.position.set(centre[0], centre[1], z0); cam.lookAt(centre[0], centre[1], z0 + 1);   // from the front, looking back; near plane = slice plane
     cam.updateProjectionMatrix(); cam.updateMatrixWorld();
     const prev = renderer.getRenderTarget(), pc = renderer.getClearColor(new THREE.Color()), pa = renderer.getClearAlpha(), autoClear = renderer.autoClear;
