@@ -1,0 +1,22 @@
+[11/20 21:22:19.541569][info][14420][HostTimestampProvider.cpp:36] Update clock type to: realtime(0)
+[11/20 21:22:19.564826][info][14420][DeviceManager.cpp:25] Current found device(s): (1)
+[11/20 21:22:19.564832][info][14420][DeviceManager.cpp:34] 	- Name: FemtoBolt, PID: 0x066b, SN/ID: CL8RC530057, Connection: USB3.1
+[11/20 21:22:19.564838][info][14420][DeviceManager.cpp:488] Enable net device enumeration: true
+[11/20 21:22:20.591014][info][14420][DeviceManager.cpp:25] Current device(s) list: (1)
+[11/20 21:22:20.591034][info][14420][DeviceManager.cpp:34] 	- Name: FemtoBolt, PID: 0x066b, SN/ID: CL8RC530057, Connection: USB3.1
+[11/20 21:22:21.023033][info][14420][DeviceManager.cpp:200] Device created successfully! Name: Femto Bolt, PID: 0x066b, SN/ID: CL8RC530057 FW: 1.1.3
+[11/20 21:22:21.023078][info][14420][Pipeline.cpp:54] [CL8RC530057] Pipeline created with device: {name: Femto Bolt, sn: CL8RC530057}, @0x272DF243DA0
+[11/20 21:22:21.028940][info][14420][RawPhaseStreamer.cpp:482] Succeed to load depth engine plugin
+[11/20 21:22:21.248084][info][11340][RawPhaseStreamer.cpp:512] initNvramData: metadataHeader.size: 485688, metadataHeader.width: 0, metadataHeader.height: 0
+[11/20 21:22:21.920032][info][14420][Pipeline.cpp:228] [CL8RC530057] Check and set config done!
+[11/20 21:22:21.920056][info][14420][Pipeline.cpp:266] [CL8RC530057] Try to start streams!
+[11/20 21:22:21.920067][info][14420][VideoSensor.cpp:62] [CL8RC530057] Try to start stream: {type: Depth, format: Y16, width: 640, height: 576, fps: 30}
+[11/20 21:22:21.920075][info][14420][SensorBase.cpp:224] [CL8RC530057] Stream state changed from STOPPED to STARTING@Depth
+[11/20 21:22:21.920078][info][14420][VideoSensor.cpp:131] [CL8RC530057] Start backend stream: {type: Depth, format: Y16, width: 640, height: 576, fps: 30}
+[11/20 21:22:22.210605][info][14420][Pipeline.cpp:293] [CL8RC530057] Start streams done!
+[11/20 21:22:22.210630][info][14420][Pipeline.cpp:250] [CL8RC530057] Pipeline start done!
+[11/20 21:22:22.420866][warning][14420][Pipeline.cpp:335] [CL8RC530057] Wait for frame timeout, you can try to increase the wait time! current timeout=200
+[11/20 21:22:22.610126][info][25100][SensorBase.cpp:224] [CL8RC530057] Stream state changed from STARTING to STREAMING@Depth
+[11/20 21:22:27.471776][info][14420][Pipeline.cpp:367] [CL8RC530057] Try to stop pipeline!
+[11/20 21:22:27.471795][info][14420][Pipeline.cpp:343] [CL8RC530057] Try to stop streams!
+[11/20 21:22:27.471819][info][14420][SensorBase.cpp:224] [CL8RC530057] Stream state changed from STREAMING to STOPPING@Depth

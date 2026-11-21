@@ -654,6 +654,32 @@ def status():
         })
 
 
+cloud_source = None
+
+
+@app.get("/cloud")
+def cloud():
+    """Latest Femto Bolt point cloud: int16 mm triples in the colour camera's frame (depth/cloud.py). 204 while there is nothing
+    newer than ?after=SEQ, 503 with the reason when the camera or its SDK is not available. Capture runs only while this is polled."""
+    global cloud_source
+    if cloud_source is None:
+        from depth.cloud import FemtoCloud
+        cloud_source = FemtoCloud()
+    item = cloud_source.get()
+    if cloud_source.error:
+        return jsonify({"error": cloud_source.error}), 503
+    try:
+        after = int(request.args.get("after", "0"))
+    except ValueError:
+        after = 0
+    if item is None or item[0] <= after:
+        return Response(status=204)
+    info = cloud_source.status()
+    return Response(item[1], mimetype="application/octet-stream", headers={
+        "X-Cloud-Seq": str(item[0]), "X-Cloud-Points": str(item[2]), "X-Cloud-Fps": str(info.get("fps", "")),
+        "X-Cloud-Link": str(info.get("connection", "")), "Cache-Control": "no-store"})
+
+
 @sock.route("/stream")
 def stream_socket(ws):
     global latest_frame

@@ -909,6 +909,8 @@
         '<span>Scale skeleton to the body (off: atlas size)</span></label>' +
         '<label class="anaRow"><input id="anaPredict" type="checkbox" checked>' +
         '<span>Predict between updates (low latency)</span></label>' +
+        '<label class="anaRow"><input id="anaCloud" type="checkbox">' +
+        '<span>Depth point cloud (Femto Bolt) <output id="anaCloudStatus"></output></span></label>' +
         '<label class="anaRow"><input id="anaXray" type="checkbox" checked>' +
         '<span>Live DRR X-ray</span></label>' +
         '<label class="anaRow"><input id="anaCt" type="checkbox" checked>' +
@@ -1105,7 +1107,71 @@
         });
         startJawTracking(jawStatus);
       }
+      document.querySelector("#anaCloud").addEventListener("change", (e) => setCloud(e.target.checked));
       placeControls(panel);
+    }
+
+    /*
+     * Depth point cloud of a Femto Bolt (server: depth/cloud.py, GET /cloud). Points arrive in the Bolt's colour-camera frame
+     * (x right, y down, z forward, mm); the 3-D view's camera space is that frame with y and z flipped, which is also where
+     * the mesh is placed, so the cloud and the mesh share a space when the page's webcam is the Bolt's colour camera. The
+     * cloud is metric and the mesh's distance is an estimate from the picture, so they need not coincide.
+     */
+    const CLOUD_MAX = 30000;
+    let cloudOn = false, cloudObject = null, cloudSeq = 0;
+
+    function setCloud(on) {
+      const statusEl = document.querySelector("#anaCloudStatus");
+      if (on && !cloudObject) {
+        const geometry = new THREE.BufferGeometry();
+        geometry.setAttribute("position", new THREE.BufferAttribute(new Float32Array(CLOUD_MAX * 3), 3));
+        geometry.setAttribute("color", new THREE.BufferAttribute(new Float32Array(CLOUD_MAX * 3), 3));
+        geometry.setDrawRange(0, 0);
+        cloudObject = new THREE.Points(geometry, new THREE.PointsMaterial({ size: 2, sizeAttenuation: false, vertexColors: true }));
+        cloudObject.frustumCulled = false;
+        scene.add(cloudObject);
+      }
+      if (cloudObject) cloudObject.visible = on;
+      const start = on && !cloudOn;
+      cloudOn = on;
+      if (start) cloudLoop(statusEl);
+      if (!on && statusEl) statusEl.textContent = "";
+    }
+
+    async function cloudLoop(statusEl) {
+      const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+      while (cloudOn) {
+        let pause = 40;
+        try {
+          const r = await fetch("/cloud?after=" + cloudSeq, { cache: "no-store" });
+          if (r.status === 200) {
+            const mm = new Int16Array(await r.arrayBuffer());
+            cloudSeq = Number(r.headers.get("X-Cloud-Seq")) || cloudSeq;
+            const n = Math.min(Math.floor(mm.length / 3), CLOUD_MAX), g = cloudObject.geometry;
+            const P = g.attributes.position.array, C = g.attributes.color.array;
+            for (let i = 0; i < n; i++) {
+              const z = mm[i * 3 + 2] / 1000;
+              P[i * 3] = mm[i * 3] / 1000; P[i * 3 + 1] = -mm[i * 3 + 1] / 1000; P[i * 3 + 2] = -z;
+              const t = Math.min(1, Math.max(0, (z - 0.5) / 3.0));          // near: warm, far: cool
+              C[i * 3] = 1.0 - 0.8 * t; C[i * 3 + 1] = 0.85 - 0.35 * Math.abs(t - 0.4); C[i * 3 + 2] = 0.35 + 0.65 * t;
+            }
+            g.setDrawRange(0, n); g.attributes.position.needsUpdate = true; g.attributes.color.needsUpdate = true;
+            const fps = r.headers.get("X-Cloud-Fps"), link = r.headers.get("X-Cloud-Link") || "";
+            if (statusEl) statusEl.textContent = n + " points" + (fps ? ", " + fps + " fps" : "") + (link.includes("2.") ? " (" + link + ": use USB 3 for 30 fps)" : "");
+          } else if (r.status === 503) {
+            const info = await r.json().catch(() => ({}));
+            if (statusEl) statusEl.textContent = "unavailable: " + (info.error || "no camera");
+            pause = 1500;
+          } else if (r.status === 404) {
+            if (statusEl) statusEl.textContent = "the server needs a restart for this option";
+            pause = 3000;
+          }
+        } catch (error) {
+          pause = 1000;
+        }
+        await wait(pause);
+      }
+      cloudSeq = 0;
     }
 
     /*
@@ -1154,7 +1220,7 @@
         window.location.search = q.toString();
       });
       addMenu(document.getElementById("mesh"), "3-D view and anatomy", [
-        row("anaEnable"), row("anaSkeleton"), row("anaSkin"), row("anaOpacity"), row("anaXray"), row("anaCt"),
+        row("anaEnable"), row("anaSkeleton"), row("anaSkin"), row("anaOpacity"), row("anaCloud"), row("anaXray"), row("anaCt"),
         row("anaJaw"), row("anaJoints"), row("anaScale"), row("anaPredict"), notes[0], groups, notes[1],
       ], "left");
       panel.style.display = "none";
@@ -3613,14 +3679,14 @@
     }
 
     button.onclick = () => startSession("Camera", "webcam", async () => {
-      mediaStream =
-        await navigator.mediaDevices.getUserMedia({
-          video: {
-            width: { ideal: 1280 },
-            height: { ideal: 720 }
-          },
-          audio: false
-        });
+      // A Femto Bolt's colour camera is preferred when there is one: the depth point cloud is in its frame. (Camera names are
+      // only readable once the page has been allowed to use a camera, so the very first start may use the default one.)
+      const wanted = { width: { ideal: 1280 }, height: { ideal: 720 } };
+      try {
+        const bolt = (await navigator.mediaDevices.enumerateDevices()).find((d) => d.kind === "videoinput" && /femto|orbbec/i.test(d.label));
+        if (bolt) wanted.deviceId = { exact: bolt.deviceId };
+      } catch (error) { /* default camera */ }
+      mediaStream = await navigator.mediaDevices.getUserMedia({ video: wanted, audio: false });
 
       video.loop = false;
       video.srcObject = mediaStream;

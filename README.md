@@ -328,6 +328,19 @@ These values are deployment observations, not guaranteed benchmarks.
 - Body-only mode avoids the two additional hand crops used by full mode.
 - The independent mesh can use a fixed center without temporal smoothing.
 
+## Femto Bolt point cloud in the page
+
+With an Orbbec Femto Bolt attached, the 3-D view's gear menu has "Depth point cloud (Femto Bolt)". The server opens the Bolt's
+depth stream only (640 x 576, 30 fps on USB 3; about 7 fps on a USB 2 link), turns each frame into points with the SDK's own
+filter (factory calibration, lens distortion included), moves them into the colour camera's frame with the factory extrinsics,
+thins them to 30,000 and serves the latest at `GET /cloud` (`depth/cloud.py`). Capture runs only while the option is on.
+
+- Needs `pip install pyorbbecsdk2` (tested: wrapper 2.1.3, Bolt firmware 1.1.3, Windows). Without it, or without a camera, the
+  option says why it is unavailable.
+- The page asks for the Bolt's colour camera as its webcam when one is present, because the cloud is in that camera's frame.
+- The cloud is metric. The mesh's distance from the camera is the RGB model's estimate, so the two share a space but need not
+  coincide; correcting the mesh with the depth is what the fusion below does, and that is not wired to this option.
+
 ## Femto Bolt depth fusion (experimental)
 
 The RGB-only mesh has an ambiguous overall scale/depth (`pred_cam_t`). An Orbbec Femto Bolt
