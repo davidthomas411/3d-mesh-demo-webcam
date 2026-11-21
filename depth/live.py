@@ -72,3 +72,102 @@ class LiveAnchor:
         if self.scale is not None:
             info["scale"] = round(float(self.scale), 4)        # the last good value keeps being applied through a dropout
         return info
+
+
+class ArticulatedAnchor:
+    """Depth fit of the body, part by part, along the camera's rays.
+
+    One scale about the camera is right only if the model's pose is right and its overall distance is the one unknown. A
+    monocular pose has more to give than that: the picture fixes where each joint is in the IMAGE, so what it cannot know is how
+    far along its ray each joint is. That is one number per joint, and the depth camera measures it. Here every joint j gets its
+    own scale s_j about the camera origin:
+
+        joint'  = s_j * joint                      (same pixel, measured distance)
+        vertex' = (sum_j w_vj s_j) * vertex        (w: the body model's own skinning weights)
+
+    so a forearm reaching towards the camera comes forward, a leaning trunk leans, and the outline in the picture does not
+    move. A part's size changes with its scale, which is what perspective demands: something nearer that covers the same pixels
+    is smaller. s_j is the weighted mean of measured depth / mesh depth over the visible vertices joint j carries. A joint with
+    little or no evidence (legs under a desk, the far side of the body) takes its parent's value, a child may not differ from
+    its parent by more than max_step, and the values are filtered in time.
+
+    What it does not do: move anything across the image (an error in the model's 2-D pose stays), or change a part's shape.
+    """
+
+    def __init__(self, faces, parents, w_joint, w_vert, w, n0=25.0, max_step=0.15, alpha=0.35, limits=(0.6, 1.6),
+                 min_points=400, max_rms_mm=60.0):
+        from scipy.sparse import csr_matrix
+        self.faces = np.asarray(faces, np.int64)
+        self.parents = np.asarray(parents, np.int64)
+        nj, nv = len(self.parents), int(np.max(w_vert)) + 1
+        W = csr_matrix((np.asarray(w, np.float64), (np.asarray(w_vert), np.asarray(w_joint))), shape=(nv, nj))
+        self.W = W.multiply(1.0 / np.maximum(np.asarray(W.sum(1)), 1e-9)).tocsr()       # rows sum to one
+        self.Wt = self.W.T.tocsr()
+        self.order = list(np.argsort(self._depths(), kind="stable"))                    # parents before children
+        self.n0, self.max_step, self.alpha, self.limits = n0, max_step, alpha, limits
+        self.min_points, self.max_rms_mm = min_points, max_rms_mm
+        self.s = None
+
+    def _depths(self):
+        d = np.zeros(len(self.parents), np.int64)
+        for j in range(len(self.parents)):
+            k, n = j, 0
+            while self.parents[k] >= 0 and self.parents[k] != k and n < 200:
+                k = self.parents[k]; n += 1
+            d[j] = n
+        return d
+
+    def joint_scales(self, verts_cam_mm, depth_mm, K):
+        """-> (s_j or None, info). Not filtered in time."""
+        h, w = depth_mm.shape
+        vis = fast_visible(verts_cam_mm, self.faces, K, (h, w))
+        uv, z = project(verts_cam_mm, K)
+        ui, vi = np.round(uv[:, 0]).astype(np.int64), np.round(uv[:, 1]).astype(np.int64)
+        ok = vis & (ui >= 0) & (ui < w) & (vi >= 0) & (vi < h) & (z > 1.0)
+        d = np.zeros(len(z)); d[ok] = depth_mm[vi[ok], ui[ok]]
+        ok &= d > 0
+        info = {"ok": False, "visible": int(vis.sum()), "samples": int(ok.sum())}
+        if ok.sum() < self.min_points:
+            info["reason"] = "the body is not in the depth image"
+            return None, info
+        r = np.zeros(len(z)); r[ok] = d[ok] / z[ok]
+        g = float(np.median(r[ok]))
+        if not (self.limits[0] < g < self.limits[1]):
+            info["reason"] = f"implausible scale {g:.2f}"
+            return None, info
+        ok &= np.abs(r - g) < 0.25 * g                          # background seen past the outline, an object in front
+        m = ok.astype(np.float64)
+        n_j = self.Wt @ m                                       # evidence per joint (sum of skinning weights)
+        mean_j = (self.Wt @ (m * r)) / np.maximum(n_j, 1e-9)
+        s = np.empty(len(self.parents))
+        for j in self.order:
+            p = self.parents[j]
+            prior = g if (p < 0 or p == j) else s[p]
+            c = n_j[j] / (n_j[j] + self.n0)
+            s[j] = np.clip(c * mean_j[j] + (1.0 - c) * prior, prior * (1 - self.max_step), prior * (1 + self.max_step))
+        sv = self.W @ s
+        res_one, res_art = d[ok] - g * z[ok], d[ok] - sv[ok] * z[ok]
+        seen = n_j > self.n0
+        info.update(global_scale=round(g, 4), rms_single_mm=round(float(np.sqrt(np.mean(res_one ** 2))), 1),
+                    rms_mm=round(float(np.sqrt(np.mean(res_art ** 2))), 1), samples=int(ok.sum()), parts_seen=int(seen.sum()),
+                    part_range=[round(float(s[seen].min()), 3), round(float(s[seen].max()), 3)] if seen.any() else None)
+        if info["rms_mm"] > self.max_rms_mm:
+            info["reason"] = f"depth does not match the mesh (fit {info['rms_mm']:.0f} mm rms)"
+            return None, info
+        info["ok"] = True
+        return s, info
+
+    def update(self, verts_cam_mm, depth_mm, K):
+        """-> (per-joint scales, filtered; None while there has never been a fit, info)."""
+        s, info = self.joint_scales(verts_cam_mm, depth_mm, K)
+        if s is not None:
+            self.s = s if self.s is None else (1 - self.alpha) * self.s + self.alpha * s
+        if self.s is not None:
+            info["scale"] = round(float(np.median(self.s)), 4)
+        return self.s, info
+
+    def apply(self, verts_cam_mm, joints_cam_mm=None, s=None):
+        """Scaled vertices (and joints) in the camera frame."""
+        s = self.s if s is None else s
+        v = verts_cam_mm * (self.W @ s)[:, None]
+        return (v, None) if joints_cam_mm is None else (v, joints_cam_mm * s[:, None])

@@ -426,6 +426,26 @@ def inference_worker():
                 except Exception as exc:  # depth must never take the RGB pipeline down
                     depth_info = {"ok": False, "reason": f"{type(exc).__name__}: {exc}"}
 
+            if recording["left"] > 0:
+                # Recorder (GET /record): the picture, what the model made of it, and the Femto Bolt depth frame of the moment,
+                # for working on the mesh's placement offline (tools/analyse_depth_recording.py).
+                try:
+                    cam = active_cam_intrinsics
+                    dframe = get_cloud().get()
+                    recording["frames"].append({
+                        "jpeg": bytes(jpeg_bytes), "verts": vertices.astype(np.float32),
+                        "cam_t": to_numpy(outputs[0]["pred_cam_t"]).reshape(-1).astype(np.float32),
+                        "focal": focal_length, "K": None if cam is None else cam.reshape(3, 3).numpy().astype(np.float32),
+                        "kp2d": to_numpy(outputs[0]["pred_keypoints_2d"]).astype(np.float32),
+                        "depth": None if dframe is None else dframe[1], "depth_seq": 0 if dframe is None else dframe[0],
+                        "t": time.time(), "factory": bool(calibration.get("factory")), "anchor": depth_info,
+                    })
+                    recording["left"] -= 1
+                    if recording["left"] == 0:
+                        _save_recording()
+                except Exception as exc:
+                    recording.update(left=0, error=f"{type(exc).__name__}: {exc}")
+
             with state_lock:
                 mesh_id += 1
                 latest_mesh = {
@@ -720,6 +740,45 @@ def cloud():
     return Response(item[1], mimetype="application/octet-stream", headers={
         "X-Cloud-Seq": str(item[0]), "X-Cloud-Fps": str(info.get("fps", "")), "X-Cloud-Link": str(info.get("connection", "")),
         "Cache-Control": "no-store"})
+
+
+recording = {"left": 0, "frames": [], "path": None, "error": None, "saved": None}
+
+
+def _save_recording():
+    fr, c = recording["frames"], cloud_source
+    has_depth = [f["depth"] is not None for f in fr]
+    w, h = (c.calibration["w"], c.calibration["h"]) if c is not None and c.calibration else (0, 0)
+    out = {
+        "jpeg": np.array([np.frombuffer(f["jpeg"], np.uint8) for f in fr], dtype=object),
+        "verts": np.stack([f["verts"] for f in fr]), "cam_t": np.stack([f["cam_t"] for f in fr]),
+        "focal": np.array([f["focal"] for f in fr]), "kp2d": np.stack([f["kp2d"] for f in fr]),
+        "K": np.stack([f["K"] if f["K"] is not None else np.zeros((3, 3), np.float32) for f in fr]),
+        "t": np.array([f["t"] for f in fr]), "depth_seq": np.array([f["depth_seq"] for f in fr]),
+        "factory": np.array([f["factory"] for f in fr]), "has_depth": np.array(has_depth),
+        "anchor": np.array([json.dumps(f["anchor"]) for f in fr]), "faces": faces,
+    }
+    if w and any(has_depth):
+        out["depth"] = np.stack([np.frombuffer(f["depth"], np.uint16).reshape(h, w) if f["depth"] is not None else np.zeros((h, w), np.uint16) for f in fr])
+        out["rays"] = c.rays
+        out["calibration"] = np.array(json.dumps(c.calibration))
+    os.makedirs(os.path.dirname(recording["path"]), exist_ok=True)
+    np.savez_compressed(recording["path"], **out)
+    recording.update(frames=[], saved=recording["path"])
+    print(f"RECORDED {len(fr)} frames -> {recording['path']}", flush=True)
+
+
+@app.get("/record")
+def record():
+    """?frames=N&name=NAME starts recording the next N inferred frames of whichever stream is running (picture, mesh, camera
+    translation, intrinsics used, Femto Bolt depth frame) into ../recordings/NAME.npz. Without ?frames: the state."""
+    n = request.args.get("frames")
+    if n is not None and recording["left"] == 0:
+        name = "".join(ch for ch in request.args.get("name", time.strftime("rec_%Y%m%d_%H%M%S")) if ch.isalnum() or ch in "_-")
+        get_cloud().get()                                      # depth camera on
+        recording.update(left=max(1, min(int(n), 600)), frames=[], error=None, saved=None,
+                         path=os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "recordings", name + ".npz")))
+    return jsonify({k: recording[k] for k in ("left", "path", "error", "saved")} | {"captured": len(recording["frames"])})
 
 
 @app.get("/cloud/calibration")
