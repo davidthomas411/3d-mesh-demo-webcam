@@ -13,3 +13,4 @@ atlas/ct_pet.bin
 atlas/subjects/*/ct_volume.*
 atlas/subjects/*/ct_pet.*
 atlas/subjects/*/skel.*
+Log/
