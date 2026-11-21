@@ -249,6 +249,16 @@ the chest's 95% is 3.4 mm instead of 2.4; `--angles planes`.)
   accurate it is. Against the fused reference the same test is off by 2.6 mm for the head and 0.4 mm for the chest:
   a head-sized region slides on a 4 mm fused surface. Regions need to be large and the fused surface finer.
 
+### In the web app
+
+`http://127.0.0.1:8097/gantry` plays an exported recording: the colour picture (head up) with the tracked regions tinted,
+slices across head and chest with the frame's depth over the reference surface, the six shifts of each region for the
+frame on screen, and charts of the shifts and the gantry angle over time (click or drag in a chart to go to that moment;
+space plays, arrow keys step). `tools/gantry_export.py` makes the export, one frame at a time against the surface fused
+from the reference sweep. The export is pictures of a person, so it is written outside the repository and the server
+reads it from `GANTRY_WEB` (default `../recordings/gantry/web`). This is a player for a finished analysis; uploading
+depth, infrared and colour files through the page is still not built.
+
 What this means for the tool: the pose model names the regions and follows gross motion (its orientation holds to
 2.4-10 degrees through the sweep); the numbers come from registering each frame's depth in the room frame; the reference
 is one still sweep; the gantry angle comes from the machine (here, read off its console; a direct feed would also give
@@ -264,6 +274,7 @@ the timing the console's repaint rate hides).
     python tools/gantry_recording.py FOLDER pose OUT_DIR --frames 4410:5560:36      (needs the demo server running)
     python tools/gantry_pose.py FOLDER OUT_DIR --frames 4410:5560:36 --rot 270        (after cube and fuse person_iso; needs the demo server)
     python tools/gantry_track.py FOLDER OUT_DIR --ref 4500:5004:3 --live 5010:5508:12  (reference pass, live pass; --angles planes|linac)
+    python tools/gantry_export.py FOLDER OUT_DIR ../recordings/gantry/web --frames 4380:5580:3   (then open /gantry in the web app)
     python tools/gantry_console.py read VIDEO CONSOLE_DIR ; ... digits CONSOLE_DIR ; ... angle CONSOLE_DIR
     python tools/gantry_console.py sync CONSOLE_DIR FOLDER OUT_DIR                     (linac angle per frame of the recording)
     python tools/gantry_recording.py FOLDER cube OUT_DIR --frames 0:2500:5          (after calibrate; --config for an aprilcube config.json)

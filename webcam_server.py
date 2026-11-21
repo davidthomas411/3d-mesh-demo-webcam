@@ -499,6 +499,23 @@ def index():
     return send_from_directory(".", "webcam.html")
 
 
+# A recorded gantry sweep with its tracking (tools/gantry_export.py). The export holds pictures of a person, so it lives
+# outside the repository: GANTRY_WEB, by default ../recordings/gantry/web.
+GANTRY_WEB = os.path.abspath(os.environ.get("GANTRY_WEB") or os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "recordings", "gantry", "web"))
+
+
+@app.get("/gantry")
+def gantry_page():
+    return send_from_directory(".", "gantry.html")
+
+
+@app.get("/gantry-data/<path:name>")
+def gantry_data(name):
+    if not (name == "index.json" or (name.startswith("f/") and name.endswith(".jpg"))):
+        return Response("Not found", status=404)
+    return send_from_directory(GANTRY_WEB, name)
+
+
 @app.get("/anatomy/<name>")
 def anatomy_js(name):
     if name not in ("anatomy.js", "stream.js", "xray.js", "ct.js", "ctvol.js"):

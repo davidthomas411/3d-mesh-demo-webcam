@@ -1,0 +1,175 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Gantry recording</title>
+<style>
+  :root { --ink: #1a1a1a; --mute: #666; --line: #ddd; --bg: #fff; --x: #c0392b; --y: #2471a3; --z: #1e8449; }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 15px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; color: var(--ink); background: var(--bg); }
+  header { display: flex; gap: 16px; align-items: baseline; padding: 10px 16px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+  header h1 { font-size: 17px; margin: 0; font-weight: 600; }
+  header a { color: var(--y); }
+  header .sub { color: var(--mute); font-size: 13px; }
+  main { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(320px, 1fr); gap: 16px; padding: 12px 16px; max-width: 1700px; }
+  @media (max-width: 1000px) { main { grid-template-columns: 1fr; } }
+  #pic { width: 100%; height: auto; display: block; border: 1px solid var(--line); background: #f4f4f4; aspect-ratio: 1080 / 960; }
+  .bar { display: flex; gap: 10px; align-items: center; margin: 8px 0; flex-wrap: wrap; }
+  button, select { font: inherit; padding: 5px 12px; border: 1px solid #999; background: #fff; border-radius: 4px; cursor: pointer; }
+  button:hover { background: #f2f2f2; }
+  input[type=range] { flex: 1; min-width: 160px; }
+  .read { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; margin: 4px 0 10px; }
+  .read div { border: 1px solid var(--line); border-radius: 4px; padding: 6px 8px; }
+  .read b { display: block; font-size: 20px; font-variant-numeric: tabular-nums; font-weight: 600; }
+  .read span { color: var(--mute); font-size: 12px; }
+  table { border-collapse: collapse; width: 100%; font-variant-numeric: tabular-nums; margin-bottom: 10px; }
+  th, td { text-align: right; padding: 4px 8px; border-bottom: 1px solid var(--line); }
+  th:first-child, td:first-child { text-align: left; }
+  th { font-weight: 600; font-size: 13px; color: var(--mute); }
+  canvas { width: 100%; display: block; border: 1px solid var(--line); margin-bottom: 4px; cursor: crosshair; }
+  h2 { font-size: 14px; margin: 10px 0 4px; font-weight: 600; }
+  .key { font-size: 12px; color: var(--mute); margin-bottom: 8px; }
+  .key i { display: inline-block; width: 14px; height: 3px; vertical-align: middle; margin: 0 4px 0 10px; }
+  .note { color: var(--mute); font-size: 13px; margin-top: 8px; }
+  #err { padding: 24px 16px; color: #900; display: none; }
+  .tag { font-size: 12px; padding: 1px 7px; border-radius: 10px; border: 1px solid var(--line); }
+</style>
+</head>
+<body>
+<header>
+  <h1>Gantry recording: tracking while the gantry turns</h1>
+  <span class="sub" id="sub"></span>
+  <a href="/">live camera page</a>
+</header>
+<div id="err"></div>
+<main id="main">
+  <section>
+    <img id="pic" alt="colour frame with tracked regions, and slices through head and chest">
+    <div class="bar">
+      <button id="play">Play</button>
+      <button id="prev" title="previous frame">&lsaquo;</button>
+      <button id="next" title="next frame">&rsaquo;</button>
+      <input id="seek" type="range" min="0" max="0" value="0" aria-label="frame">
+      <select id="speed" aria-label="speed"><option value="0.5">0.5x</option><option value="1" selected>1x</option><option value="2">2x</option><option value="4">4x</option></select>
+    </div>
+    <div class="note">Top: the camera's colour picture, head up, with the tracked regions tinted (head blue, chest yellow).
+      Bottom: 30 mm slices across the head and the chest in the room frame: the reference sweep in grey, this frame's depth in red.</div>
+  </section>
+  <section>
+    <div class="read">
+      <div><span>gantry angle (<span id="src"></span>)</span><b id="ang">–</b></div>
+      <div><span>time</span><b id="tim">–</b></div>
+      <div><span>frame</span><b id="frm">–</b></div>
+      <div><span>pass</span><b id="pas">–</b></div>
+    </div>
+    <table>
+      <thead><tr><th>region</th><th>left-right</th><th>along couch</th><th>up</th><th>size</th><th>turn</th></tr></thead>
+      <tbody id="tab"></tbody>
+    </table>
+    <div class="key">shift from the reference, mm: <i style="background:var(--x)"></i>left-right <i style="background:var(--y)"></i>along couch <i style="background:var(--z)"></i>up <i style="background:#000"></i>size</div>
+    <h2>Head</h2><canvas id="c_head" height="190"></canvas>
+    <h2>Chest</h2><canvas id="c_chest" height="190"></canvas>
+    <h2>Gantry angle</h2><canvas id="c_ang" height="110"></canvas>
+    <div class="note" id="note"></div>
+  </section>
+</main>
+<script>
+(async function () {
+  const $ = id => document.getElementById(id);
+  let D;
+  try {
+    const r = await fetch("gantry-data/index.json");
+    if (!r.ok) throw new Error(r.status);
+    D = await r.json();
+  } catch (e) {
+    $("main").style.display = "none"; $("err").style.display = "block";
+    $("err").textContent = "No exported recording found. Make one with: python tools/gantry_export.py FOLDER OUT_DIR WEB_DIR (see docs/GANTRY_RECORDING.md), then reload.";
+    return;
+  }
+  const F = D.frames, M = D.meta, REG = ["head", "chest"];
+  $("sub").textContent = M.recording + " · " + F.length + " frames · reference sweep = frames " + M.reference_frames.join("–");
+  $("src").textContent = M.angle_from === "linac" ? "linac console" : "from depth";
+  $("note").textContent = M.note + " Shading in the charts marks the reference sweep.";
+  $("seek").max = F.length - 1;
+  let cur = 0, playing = false, last = 0, acc = 0;
+  const pic = $("pic"), cache = new Map();
+  function load(i) {                                   // keep a few frames ahead decoded
+    if (i < 0 || i >= F.length || cache.has(i)) return;
+    const im = new Image(); im.src = "gantry-data/" + F[i].img; cache.set(i, im);
+    if (cache.size > 80) cache.delete(cache.keys().next().value);
+  }
+  const fmt = (v, d = 1) => v == null ? "–" : (v >= 0 ? "+" : "") + v.toFixed(d);
+  function chart(cv, series, lo, hi, unit) {
+    const dpr = window.devicePixelRatio || 1, w = cv.clientWidth, h = cv.height / (cv._dpr || 1);
+    if (cv._w !== w) { cv._w = w; cv._dpr = dpr; cv.width = w * dpr; cv.height = h * dpr; }
+    const g = cv.getContext("2d"); g.setTransform(dpr, 0, 0, dpr, 0, 0); g.clearRect(0, 0, w, h);
+    const L = 34, R = 6, T = 6, B = 18, t0 = F[0].t, t1 = F[F.length - 1].t;
+    const X = t => L + (t - t0) / (t1 - t0) * (w - L - R), Y = v => T + (hi - v) / (hi - lo) * (h - T - B);
+    cv._inv = px => t0 + (px - L) / (w - L - R) * (t1 - t0);
+    g.fillStyle = "#f1f1f1";                            // the reference sweep
+    const a = F.find(f => f.pass === "reference"), b = [...F].reverse().find(f => f.pass === "reference");
+    if (a) g.fillRect(X(a.t), T, X(b.t) - X(a.t), h - T - B);
+    g.strokeStyle = "#ddd"; g.fillStyle = "#666"; g.font = "11px system-ui"; g.lineWidth = 1;
+    const step = (hi - lo) > 60 ? 45 : 2;
+    for (let v = Math.ceil(lo / step) * step; v <= hi; v += step) {
+      g.beginPath(); g.moveTo(L, Y(v)); g.lineTo(w - R, Y(v)); g.strokeStyle = v === 0 ? "#999" : "#e6e6e6"; g.stroke();
+      g.textAlign = "right"; g.fillText(v, L - 5, Y(v) + 4);
+    }
+    g.textAlign = "center";
+    for (let s = Math.ceil(t0 / 5) * 5; s <= t1; s += 5) g.fillText(s + " s", X(s), h - 4);
+    for (const s of series) {
+      g.beginPath(); g.strokeStyle = s.c; g.lineWidth = s.w || 1.4; let pen = false;
+      for (const f of F) { const v = s.f(f); if (v == null) { pen = false; continue; } const x = X(f.t), y = Y(Math.max(lo, Math.min(hi, v))); pen ? g.lineTo(x, y) : g.moveTo(x, y); pen = true; }
+      g.stroke();
+    }
+    g.strokeStyle = "#000"; g.lineWidth = 1; g.beginPath(); g.moveTo(X(F[cur].t), T); g.lineTo(X(F[cur].t), h - B); g.stroke();
+    g.textAlign = "left"; g.fillStyle = "#666"; g.fillText(unit, L + 4, T + 11);
+  }
+  function col(n) { return getComputedStyle(document.documentElement).getPropertyValue(n).trim(); }
+  function draw() {
+    const f = F[cur];
+    load(cur); for (let k = 1; k <= 12; k++) load(cur + k);
+    pic.src = cache.get(cur).src;
+    $("seek").value = cur;
+    $("ang").textContent = (f.linac != null ? f.linac : f.angle).toFixed(1) + "°";
+    $("tim").textContent = f.t.toFixed(1) + " s"; $("frm").textContent = f.frame; $("pas").textContent = f.pass;
+    $("tab").innerHTML = REG.map(k => { const r = f[k];
+      return "<tr><td>" + k + "</td>" + (r ? r.shift.map(v => "<td>" + fmt(v) + "</td>").join("") + "<td>" + r.size.toFixed(1) + " mm</td><td>" + r.turn.toFixed(1) + "°</td>"
+        : "<td colspan=5>not in view</td>") + "</tr>"; }).join("");
+    for (const k of REG) chart($("c_" + k), [
+      { c: col("--x"), f: f => f[k] && f[k].shift[0] }, { c: col("--y"), f: f => f[k] && f[k].shift[1] },
+      { c: col("--z"), f: f => f[k] && f[k].shift[2] }, { c: "#000", w: 1, f: f => f[k] && f[k].size }], -4, 8, "mm");
+    chart($("c_ang"), [{ c: "#000", f: f => f.linac != null ? f.linac : f.angle }], -10, 180, "degrees");
+  }
+  function go(i) { cur = Math.max(0, Math.min(F.length - 1, i)); draw(); }
+  function tick(now) {
+    if (!playing) return;
+    acc += (now - last) / 1000 * parseFloat($("speed").value); last = now;
+    let n = cur;
+    while (n < F.length - 1 && F[n + 1].t - F[cur].t <= acc) n++;
+    if (n !== cur) { acc -= F[n].t - F[cur].t; go(n); }
+    if (cur >= F.length - 1) { playing = false; $("play").textContent = "Play"; return; }
+    requestAnimationFrame(tick);
+  }
+  $("play").onclick = () => {
+    playing = !playing; $("play").textContent = playing ? "Pause" : "Play";
+    if (playing) { if (cur >= F.length - 1) go(0); last = performance.now(); acc = 0; requestAnimationFrame(tick); }
+  };
+  $("prev").onclick = () => go(cur - 1); $("next").onclick = () => go(cur + 1);
+  $("seek").oninput = e => go(+e.target.value);
+  for (const id of ["c_head", "c_chest", "c_ang"]) {
+    const cv = $(id), pick = e => { const t = cv._inv(e.offsetX); let b = 0; F.forEach((f, i) => { if (Math.abs(f.t - t) < Math.abs(F[b].t - t)) b = i; }); go(b); };
+    cv.onmousedown = e => { pick(e); cv.onmousemove = pick; };
+    window.addEventListener("mouseup", () => { cv.onmousemove = null; });
+  }
+  document.addEventListener("keydown", e => {
+    if (e.target.tagName === "SELECT") return;
+    if (e.key === "ArrowLeft") go(cur - 1); else if (e.key === "ArrowRight") go(cur + 1); else if (e.key === " ") { e.preventDefault(); $("play").click(); }
+  });
+  window.addEventListener("resize", draw);
+  draw();
+})();
+</script>
+</body>
+</html>
