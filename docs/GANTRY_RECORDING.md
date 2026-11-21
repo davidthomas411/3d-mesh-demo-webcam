@@ -263,9 +263,14 @@ aligned to the colour picture, so the replay's "depth camera" is the colour came
 every picture and the server serves the depth frame of that moment, so the two stay in step (`RecordedCloud.seek`).
 
 On this recording the depth fit reports the skin a median 0.7 mm from the depth, 87% within 2 mm, at about 30 fits a
-second. Two things to know: the 3-D view's default camera is set for a person 1.5-2 m away, so the body sits off-centre
-until the view is turned or zoomed; and the page's views are in the CAMERA's frame, which rides on the gantry, so the
-whole scene appears to turn. Showing it in the room frame (the cube calibration) is not done.
+second.
+
+**Room frame.** The camera rides on the gantry, so in its own frame the whole scene turns. With `--geo OUT_DIR`,
+`gantry_replay.py` also writes the camera's pose for every frame (cube calibration, linac angle), and the page then shows
+the 3-D view in the room frame: the patient lies still on the couch, origin at the cube's centre, and the treatment head
+and the picture's viewpoint go round. Mesh, skeleton and point cloud are all still computed in the camera's frame; the
+scene as a whole is moved, frame by frame. `&room=0` in the address shows the camera's frame again. The picture panel,
+the DRR and the CT are views from the camera or of the body itself and are unchanged.
 
 ### The tracking analysis as a player
 
@@ -292,7 +297,7 @@ the timing the console's repaint rate hides).
     python tools/gantry_recording.py FOLDER pose OUT_DIR --frames 4410:5560:36      (needs the demo server running)
     python tools/gantry_pose.py FOLDER OUT_DIR --frames 4410:5560:36 --rot 270        (after cube and fuse person_iso; needs the demo server)
     python tools/gantry_track.py FOLDER OUT_DIR --ref 4500:5004:3 --live 5010:5508:12  (reference pass, live pass; --angles planes|linac)
-    python tools/gantry_replay.py FOLDER ../recordings/gantry/web --frames 4380:5580:2 ; run_gantry_replay.cmd   (the live page on the recording)
+    python tools/gantry_replay.py FOLDER ../recordings/gantry/web --frames 4380:5580:2 --geo OUT_DIR ; run_gantry_replay.cmd   (the live page on the recording)
     python tools/gantry_export.py FOLDER OUT_DIR ../recordings/gantry/web --frames 4380:5580:3   (then open /gantry in the web app)
     python tools/gantry_console.py read VIDEO CONSOLE_DIR ; ... digits CONSOLE_DIR ; ... angle CONSOLE_DIR
     python tools/gantry_console.py sync CONSOLE_DIR FOLDER OUT_DIR                     (linac angle per frame of the recording)

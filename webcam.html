@@ -1591,6 +1591,39 @@
     let lastModelInferenceMs = 0;
     let websocketRequestStartMs = 0;
     let meshFramed = false;
+
+    // A recorded gantry sweep (?video=...): the camera rides on the gantry, so in its own frame the whole scene turns. With the
+    // camera's pose for every frame (replay_pose.json, from the cube calibration) the 3-D view is shown in the ROOM frame
+    // instead: the patient stays where they are and the picture's viewpoint goes round. Everything in the scene is in the
+    // camera's frame, so the scene as a whole is moved; the viewer's own camera is not part of it. ?room=0 turns it off.
+    let roomPose = null, roomOn = false, roomFramed = false;
+    const ROOM_DELAY_S = 0.06;                                   // what is drawn is about this much older than the video
+    async function roomFrameLoad() {
+      if (new URLSearchParams(window.location.search).get("room") === "0") return;
+      try {
+        const r = await fetch("/gantry-data/replay_pose.json", { cache: "no-store" });
+        if (r.ok) { roomPose = await r.json(); roomOn = true; }
+      } catch (error) { /* no calibration for this replay: camera frame */ }
+    }
+    function roomFrameTick() {
+      if (!scene) return;
+      if (!roomOn || !roomPose || video.srcObject || !video.duration) {
+        if (!scene.matrixAutoUpdate) { scene.matrixAutoUpdate = true; scene.matrix.identity(); }
+        return;
+      }
+      const n = roomPose.pose.length;
+      const i = Math.max(0, Math.min(n - 1, Math.round((video.currentTime - ROOM_DELAY_S) * roomPose.fps)));
+      const p = roomPose.pose[i];
+      scene.matrixAutoUpdate = false;
+      scene.matrix.set(p[0], p[1], p[2], p[3], p[4], p[5], p[6], p[7], p[8], p[9], p[10], p[11], 0, 0, 0, 1);
+      scene.matrixWorldNeedsUpdate = true;
+      if (!roomFramed && meshFramed) {                           // look at the isocentre from the foot of the couch, a little above
+        camera.position.set(0.9, 0.9, 1.5);
+        controls.target.set(0, 0.05, -0.1);
+        controls.update();
+        roomFramed = true;
+      }
+    }
     let latestVertices = null;
     let latestPredCamT = null;
     let referenceVertices = null;
@@ -1722,6 +1755,7 @@
       function animate() {
         requestAnimationFrame(animate);
         anatomyTick();
+        roomFrameTick();
         controls.update();
         xrayDraw();
         cloudPreRender();
@@ -3235,7 +3269,7 @@
        * the viewer target. When disabled, leave the viewer
        * fixed so movement is visible within the 3D scene.
        */
-      if (lockMeshCenter.checked) {
+      if (lockMeshCenter.checked && !(roomOn && roomPose)) {
         controls.target.copy(bodyMesh.position);
         controls.update();
       }
@@ -4091,6 +4125,7 @@
     const replayVideo = new URLSearchParams(window.location.search).get("video");
     if (replayVideo && replayVideo.startsWith("/")) {
       window.addEventListener("load", () => startSession("Video", "url:" + replayVideo, async () => {
+        await roomFrameLoad();
         boltCamera = new URLSearchParams(window.location.search).get("bolt") === "1";
         video.srcObject = null;
         video.loop = true;

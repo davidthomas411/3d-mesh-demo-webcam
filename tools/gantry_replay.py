@@ -11,7 +11,11 @@ the Femto Bolt (CLOUD_REPLAY). This writes both from a gantry recording:
 The page tells the server the video's time with every picture, and the server serves the depth frame of that moment, so
 the two cannot drift.
 
-    python tools/gantry_replay.py FOLDER WEB_DIR [--frames 4380:5580:2] [--turn 180]
+    python tools/gantry_replay.py FOLDER WEB_DIR [--frames 4380:5580:2] [--turn 180] [--geo OUT_DIR]
+
+--geo OUT_DIR (the folder of the cube calibration) also writes WEB_DIR/replay_pose.json: for every frame, the motion that
+takes the page's 3-D view from the camera's frame to the ROOM frame (origin at the cube's centre, up is up), so that the
+page can show the patient still and the camera going round.
     run_gantry_replay.cmd            then open http://127.0.0.1:8096/?bolt=1&video=/gantry-data/replay.mp4
 """
 import json
@@ -59,6 +63,20 @@ def main():
            "k": [K[0, 0] / W, K[1, 1] / H, K[0, 2] / W, K[1, 2] / H], "kd": kd, "dist": [0.0] * 8}
     np.savez_compressed(os.path.join(web, "replay.npz"), depth=D, has_depth=np.ones(len(frames), bool), t=np.arange(len(frames)) / fps,
                         rays=rays, calibration=np.array(json.dumps(cal)), source_frames=np.array(frames))
+    if arg("--geo"):
+        from gantry_cube import CubeGantry, frame_angles
+        cg = CubeGantry(os.path.join(arg("--geo"), "cube_geometry.npz")); ang, src = frame_angles(arg("--geo"))
+        F = np.diag([1.0, -1.0, -1.0])                           # the page's view: camera frame with y and z flipped, metres
+        T = np.diag([-1.0, -1.0, 1.0]) if turn == 180 else np.eye(3)   # turned picture -> the real camera
+        G = np.array([[1.0, 0, 0], [0, 0, 1.0], [0, -1.0, 0]])    # room (Z up, Y along the couch) -> a y-up view
+        poses = []
+        for i in frames:
+            Rc, C = cg.pose(ang(i))
+            A = G @ cg.room_R @ Rc @ T @ F; b = G @ cg.room_R @ C / 1000.0
+            poses.append([round(float(x), 6) for x in np.c_[A, b].ravel()])
+        json.dump({"fps": fps, "angle_from": src, "angle": [round(float(ang(i)), 2) for i in frames], "pose": poses},
+                  open(os.path.join(web, "replay_pose.json"), "w"))
+        print("wrote replay_pose.json (gantry angle from", src + ")")
     print("wrote", video, "and replay.npz:", len(frames), "frames at", fps, "a second, depth", w, "x", h)
 
 

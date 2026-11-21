@@ -511,7 +511,7 @@ def gantry_page():
 
 @app.get("/gantry-data/<path:name>")
 def gantry_data(name):
-    if not (name in ("index.json", "replay.mp4", "replay.webm") or (name.startswith("f/") and name.endswith(".jpg"))):
+    if not (name in ("index.json", "replay.mp4", "replay.webm", "replay_pose.json") or (name.startswith("f/") and name.endswith(".jpg"))):
         return Response("Not found", status=404)
     return send_from_directory(GANTRY_WEB, name)
 
