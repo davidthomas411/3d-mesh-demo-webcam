@@ -138,6 +138,7 @@ class BodyFit:
         names = [p[0] for p in PARTS]
         self.parent = np.array([-1 if p[1] is None else names.index(p[1]) for p in PARTS])
         self.n0, self.max_step, self.pose_points = n0, max_step, pose_points
+        self.part_verts = [(np.where(self.W[:, g] > 0)[0], self.W[self.W[:, g] > 0, g][:, None]) for g in range(G)]
         # where a part meets its parent: the vertices both of them carry
         self.seam = [np.where((self.W[:, g] > 0.15) & (self.W[:, self.parent[g]] > 0.15))[0] if self.parent[g] >= 0 else np.array([], np.int64)
                      for g in range(G)]
@@ -275,11 +276,9 @@ class BodyFit:
     def blend(self, V, M):
         """Vertices carried by their parts' transforms M (G, 4, 4), blended by the skinning weights."""
         X = np.zeros_like(V)
-        for g in range(self.G):
-            wg = self.W[:, g]
-            m = wg > 0
-            if m.any():
-                X[m] += wg[m, None] * (V[m] @ M[g, :3, :3].T + M[g, :3, 3])
+        for g, (idx, wg) in enumerate(self.part_verts):          # only the vertices each part carries
+            if len(idx):
+                X[idx] += wg * (V[idx] @ M[g, :3, :3].T + M[g, :3, 3])
         return X
 
     # ---- stage 3

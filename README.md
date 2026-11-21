@@ -392,13 +392,17 @@ seated 55 cm from the camera (360 frames; head, shoulders, upper arms in view) a
   does not hold a smooth surface against sliding along itself.
 - Stability: on an unchanged frame the fit stops moving entirely. With 1 mm of depth noise per pixel on a still body, a
   vertex changes by a median 0.24 mm between frames and the fitted surface is a median 0.39 mm from the true one.
-- Speed: 25-31 ms a fit when tracking (56 ms from scratch) on its own; 43 ms inside the server, where it shares the Python
-  interpreter with the model loop. The model loop is not slowed (114-117 ms inference, as without it).
-- Latency, replaying a recording through the server (the depth frames served as if live, thirty a second): 22 fitted meshes
-  a second; the depth frame is a median 64 ms old (95th percentile 85 ms) when its fitted mesh reaches the client. In a
-  headless browser on the same computer the page reported 104 ms from depth frame to screen. Not included, because it
+- Speed: 18 ms a fit on a still body and 24 ms on a moving one when tracking (56 ms from scratch), measured alone. Beside
+  the model loop, which competes for the processor, 33 ms. The fit runs in a process of its own (`depth/fitproc.py`); the
+  model loop got faster for it (92 ms inference, 114-117 ms when the fit shared its process).
+- Latency, replaying a recording through the server (the depth frames served as if live, thirty a second): 26 fitted meshes
+  a second; the depth frame is a median 54 ms old (95th percentile 77 ms) when its fitted mesh reaches the client. In a
+  headless browser on the same computer the page reported 82 ms from depth frame to screen. Not included, because it
   cannot be measured from here: the time from the scene to the depth frame arriving at the computer (exposure, read-out,
-  USB). **Not yet run against the live camera**: it was unplugged before this path was written.
+  USB; about one frame, 33 ms, is typical for such cameras). **Not yet run against the live camera**: it was unplugged
+  before this path was written.
+- That replay cannot show live accuracy: its pictures and depth frames run on separate clocks, so the model mesh and the
+  depth often belong to different moments. The accuracy figures are the paired, offline ones above.
 
 Limits, plainly:
 - The surface it matches is whatever the depth camera sees. Through clothing that is cloth, not skin.

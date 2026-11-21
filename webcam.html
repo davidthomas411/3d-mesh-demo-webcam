@@ -1174,7 +1174,10 @@
       updateMesh(vertices, m.pred_cam_t, depthArrivedMs);
       const total = Date.now() - depthArrivedMs + (performance.now() - t0);
       const tNow = performance.now();
-      if (fitStats.last) fitStats.rate = 0.9 * fitStats.rate + 0.1 * (1000 / Math.max(1, tNow - fitStats.last));
+      if (fitStats.last) {
+        const r = 1000 / Math.max(1, tNow - fitStats.last);
+        fitStats.rate = fitStats.rate ? 0.9 * fitStats.rate + 0.1 * r : r;
+      }
       fitStats.last = tNow; fitStats.n++;
       fitStats.total = fitStats.total ? 0.9 * fitStats.total + 0.1 * total : total;
       window.demoFit = { n: fitStats.n, rate: fitStats.rate, totalMs: fitStats.total, info: m.depth, modelAgeMs: m.model_age_ms };

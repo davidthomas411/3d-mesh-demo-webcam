@@ -747,8 +747,8 @@ def get_live_fit():
         from depth.fit import BodyFit
         from depth.tracker import LiveFit
         mhr = MHR(os.environ.get("MHR_MODEL", "checkpoints/sam-3d-body-dinov3/assets/mhr_model.pt"))
-        body = BodyFit(faces, list(mhr.m.character_torch.skeleton.joint_names), mhr.w_joint, mhr.w_vert, mhr.w)
-        live_fit = LiveFit(get_cloud(), body)
+        args = (np.asarray(faces), list(mhr.m.character_torch.skeleton.joint_names), mhr.w_joint, mhr.w_vert, mhr.w)
+        live_fit = LiveFit(get_cloud(), BodyFit(*args), body_args=args)
     return live_fit
 
 

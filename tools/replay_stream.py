@@ -41,7 +41,8 @@ def main():
                 n_expected = 18439 * 12 + int(m.get("joints", 0)) * 48
                 fitted.append({"t": time.time(), "age": m["depth_age_ms"] + (time.time() * 1000 - m["sent_ms"]), "fit_ms": m["depth"].get("fit_ms"),
                                "median": m["depth"].get("median_mm"), "within2": m["depth"].get("within_2mm"), "model_age": m["model_age_ms"],
-                               "bytes_ok": len(msg) == n_expected, "scale": m["depth"].get("scale"), "tracked": m["depth"].get("tracked")})
+                               "bytes_ok": len(msg) == n_expected, "scale": m["depth"].get("scale"), "tracked": m["depth"].get("tracked"),
+                               "core": m["depth"].get("core_ms"), "reused": m["depth"].get("reused")})
             continue
         m = json.loads(msg)
         if m.get("type") == "config":
@@ -71,6 +72,9 @@ def main():
     print(f"   fitted meshes: {len(fitted)} ({len(f) / (f[-1]['t'] - f[0]['t']):.1f} a second; gap median {np.median(gaps):.0f} ms, 95th pct {np.percentile(gaps, 95):.0f} ms)")
     print(f"   fit time {np.median([x['fit_ms'] for x in f]):.0f} ms (95th pct {np.percentile([x['fit_ms'] for x in f], 95):.0f}); depth frame age when the mesh "
           f"reaches the client: median {np.median([x['age'] for x in f]):.0f} ms, 95th pct {np.percentile([x['age'] for x in f], 95):.0f} ms")
+    core = [x["core"] for x in f if x["core"] is not None]
+    if core:
+        print(f"   of the fit time, the fit itself (in its own process): median {np.median(core):.0f} ms; measurements reused in {100 * np.mean([bool(x['reused']) for x in f]):.0f}% of fits")
     print(f"   model mesh age behind each fit: median {np.median([x['model_age'] for x in f]):.0f} ms; tracked {100 * np.mean([bool(x['tracked']) for x in f]):.0f}% of fits")
     print(f"   fit on the depth: median error {np.median([x['median'] for x in f if x['median'] is not None]):.2f} mm, "
           f"{100 * np.median([x['within2'] for x in f if x['within2'] is not None]):.0f}% of visible vertices within 2 mm; payload sizes ok: {all(x['bytes_ok'] for x in f)}")
