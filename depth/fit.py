@@ -128,7 +128,7 @@ def _rodrigues(w):
 
 
 class BodyFit:
-    def __init__(self, faces, joint_names, w_joint, w_vert, w, n0=25.0, max_step=0.15, pose_points=3500):
+    def __init__(self, faces, joint_names, w_joint, w_vert, w, n0=25.0, max_step=0.15, pose_points=2500):
         self.faces = np.asarray(faces, np.int64)
         self.jpart = joint_parts(list(joint_names))
         nv, G = int(np.max(w_vert)) + 1, len(PARTS)
@@ -198,11 +198,13 @@ class BodyFit:
         return s, {"global_scale": g, "samples": int(ok.sum()), "evidence": n_g}
 
     # ---- stage 2
-    def pose_step(self, X, frame, use=None, max_mm=60.0, damp=2.0, seam_w=3.0):
+    def pose_step(self, X, frame, use=None, max_mm=60.0, damp=2.0, seam_w=3.0, keep=None):
         """One Gauss-Newton step of articulated point-to-plane ICP at the mesh X.
         -> (increment of each part as (G, 4, 4), number of vertices used) or (None, n)."""
         G, Wn = self.G, self.W
         o = self.observe(X, frame, normals=True)
+        if keep is not None:
+            keep["o"] = o                                        # the caller may reuse what was measured
         ok = o["ok"] & (np.linalg.norm(o["q"] - X, axis=1) < max_mm)
         if use is not None:
             ok &= use
@@ -236,8 +238,12 @@ class BodyFit:
         H = (J * wr[:, None]).T @ J
         b = -J.T @ (wr * r)
         scale = len(idx) / 1000.0
-        # damping: rotations in radians are small numbers, translations in mm large ones
-        H[np.diag_indices(n6)] += np.tile([damp * scale * 2.5e5] * 3 + [damp * scale] * 3, len(act))
+        # Damping, per part: strong where the camera sees little of the part (its motion is then set by the seam to its
+        # parent), light where it sees a lot, so a well-observed part reaches the measurement in one or two steps instead
+        # of creeping towards it. Rotations in radians are small numbers, translations in mm large ones.
+        ev = Wi.sum(0)[act]
+        dg = damp * scale * np.maximum(0.03, 40.0 / (ev + 40.0))
+        H[np.diag_indices(n6)] += (dg[:, None] * np.array([2.5e5] * 3 + [1.0] * 3)[None]).ravel()
         # seams: where a part meets its parent the two motions must give the same displacement
         rows = []
         for g in act:
@@ -277,9 +283,11 @@ class BodyFit:
         return X
 
     # ---- stage 3
-    def surface_step(self, X, frame, use=None, max_mm=40.0, near_mm=80.0, rounds=12, pull=1.0):
-        """Spread each visible vertex's remaining error along its ray over the mesh. -> X', number of vertices measured."""
-        o = self.observe(X, frame)
+    def surface_step(self, X, frame, use=None, max_mm=40.0, near_mm=80.0, rounds=12, pull=1.0, o=None, track=None, alpha=0.5):
+        """Spread each visible vertex's remaining error along its ray over the mesh.
+        -> X', number of vertices measured, their remaining error along the ray (mm)."""
+        if o is None:
+            o = self.observe(X, frame)
         dz = o["q"][:, 2] - X[:, 2]
         ok = o["ok"] & (dz < max_mm) & (dz > -near_mm)            # a measurement in front (cloth, a hand) is followed further
         if use is not None:                                      # than one behind (the background past the outline)
@@ -289,12 +297,19 @@ class BodyFit:
         u = e.copy()
         for _ in range(rounds):                                  # u ~ argmin pull*m*(u - e)^2 + (u - neighbour average)^2
             u = (self.A @ u + m * e) / (1.0 + m)
-        return X * (1.0 + u)[:, None], int(ok.sum())
+        if track is not None:
+            # Over time: the offsets are averaged with the previous frame's (the depth camera's noise is new every frame, the
+            # shape it measures is not). Bulk motion is the pose stage's and is not delayed by this.
+            if track.get("u") is not None:
+                u = (1.0 - alpha) * track["u"] + alpha * u
+            track["u"] = u
+        return X * (1.0 + u)[:, None], int(ok.sum()), (e[ok] - u[ok]) * X[ok, 2]      # what is left at the measured vertices, mm
 
     # ---- all three
-    def fit(self, V, frame, use=None, init=None, pose_iters=2, surface=True):
+    def fit(self, V, frame, use=None, init=None, pose_iters=2, surface=True, dead_mm=0.8, track=None):
         """V: (nv, 3) mesh in the colour camera's frame, mm. use: optional mask of the vertices allowed to see the depth (for
-        testing). init: the part transforms of a previous fit of (nearly) this mesh, to start from.
+        testing). init: the part transforms of a previous fit of (nearly) this mesh, to start from. track: a dict kept by the
+        caller from frame to frame (the surface offsets are averaged over time through it); start a new one with init=None.
         -> (fitted vertices, part transforms M (G, 4, 4): the similarity of each part, or None, info)."""
         info = {"ok": False}
         if init is None:
@@ -308,20 +323,37 @@ class BodyFit:
         else:
             M = np.array(init, np.float64)
         X = self.blend(V, M)
-        n_pose = 0
+        n_pose, seen = 0, {}
         for _ in range(pose_iters):
-            D, n = self.pose_step(X, frame, use)
+            D, n = self.pose_step(X, frame, use, keep=seen)
             if D is None:
                 if init is not None and n_pose == 0:
                     info["reason"] = "the body is not in the depth image"
                     return V, None, info
                 break
-            M = D @ M
-            X = self.blend(V, M)
+            Mn = D @ M
+            Xn = self.blend(V, Mn)
+            ov = seen["o"]["ok"]                                  # how far this step would carry what the camera sees, mm
+            moved = float(np.percentile(np.abs(Xn[ov] - X[ov]).max(1), 95)) if ov.any() else 0.0
             n_pose += 1
+            if init is not None and moved < dead_mm:
+                # Dead band. Point-to-plane ICP never quite stops: along a surface the data does not hold a part, and it
+                # creeps by a fraction of a millimetre a frame, which shows as shimmer and as skin sliding over the
+                # anatomy. A step this small is not taken; what it would have corrected along the ray, stage 3 corrects.
+                moved = 0.0
+                break
+            M, X = Mn, Xn
         if surface:
-            X, n = self.surface_step(X, frame, use)
+            # When tracking at the camera's rate one pose step moves the mesh by less than a depth pixel (about 1 mm at half
+            # a metre), so the measurements it was made from serve the surface stage too and the depth image is read once.
+            reuse = seen.get("o") if (init is not None and n_pose == 1 and moved < 1.0) else None      # (moved is 0 in the dead band)
+            info["reused"] = reuse is not None
+            info["moved_mm"] = round(moved, 2) if n_pose else None
+            X, n, left = self.surface_step(X, frame, use, o=reuse, track=track)
             info["surface_vertices"] = n
+            if n:
+                info["median_mm"] = round(float(np.median(np.abs(left))), 2)
+                info["within_2mm"] = round(float((np.abs(left) < 2.0).mean()), 3)
         info.update(ok=True, pose_steps=n_pose, part_scale=[round(float(np.cbrt(np.linalg.det(M[g, :3, :3]))), 3) for g in (0, 2, 4)])
         return X, M, info
 

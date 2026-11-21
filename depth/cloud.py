@@ -73,7 +73,7 @@ class FemtoCloud:
         self.size, self.fps, self.idle_stop_s, self.map_interval = (width, height), fps, idle_stop_s, 1.0 / map_rate
         self.lock = threading.Lock()
         self.thread = None
-        self.latest = None            # (seq, depth bytes)
+        self.latest = None            # (seq, depth bytes, arrival time)
         self.seq = 0
         self.last_request = 0.0
         self.error = None
@@ -124,7 +124,9 @@ class FemtoCloud:
             di, dd, ci = dp.get_intrinsic(), dp.get_distortion(), cprof.get_intrinsic()
             self.rays = ray_table(di.fx, di.fy, di.cx, di.cy, (dd.k1, dd.k2, dd.p1, dd.p2, dd.k3, dd.k4, dd.k5, dd.k6), w, h)
             k = [ci.fx / cprof.get_width(), ci.fy / cprof.get_height(), ci.cx / cprof.get_width(), ci.cy / cprof.get_height()]
-            self.calibration = {"w": w, "h": h, "R": [float(x) for x in R.ravel()], "t": [float(x) for x in t], "k": k}
+            self.calibration = {"w": w, "h": h, "R": [float(x) for x in R.ravel()], "t": [float(x) for x in t], "k": k,
+                                "kd": [float(di.fx), float(di.fy), float(di.cx), float(di.cy)],
+                                "dist": [float(x) for x in (dd.k1, dd.k2, dd.p1, dd.p2, dd.k3, dd.k4, dd.k5, dd.k6)]}
             cfg = ob.Config(); cfg.enable_stream(dp)
             pipe.start(cfg)
             dev = pipe.get_device().get_device_info()
@@ -145,7 +147,7 @@ class FemtoCloud:
                 if abs(scale - 1.0) > 1e-6:
                     depth = np.clip(depth.astype(np.float32) * scale, 0, 65535).astype(np.uint16)
                 self.seq += 1
-                self.latest = (self.seq, depth.tobytes())
+                self.latest = (self.seq, depth.tobytes(), t_frame)   # t_frame: when the frame reached this computer
                 if t_frame < self.map_until and t_frame - t_map >= self.map_interval:
                     t_map = t_frame
                     pts = to_colour_frame(points_from_depth(depth.reshape(h, w), self.rays, step=2), R, t)
@@ -162,3 +164,53 @@ class FemtoCloud:
                     pipe.stop()
             except Exception:
                 pass
+
+
+# Depth lens model of the Femto Bolt the first recordings were made with (narrow unbinned mode); recordings made before the
+# calibration carried "kd" and "dist" use these.
+BOLT_KD = (505.34368896484375, 505.4107666015625, 336.45892333984375, 325.3226623535156)
+BOLT_DIST = (15.141837120056152, 8.009384155273438, 1.3242264685686678e-05, -2.4030552594922483e-05,
+             0.3177873492240906, 15.448055267333984, 13.116472244262695, 1.9120935201644897)
+
+
+class RecordedCloud:
+    """Stands in for FemtoCloud with the depth frames of a recording (GET /record), for testing without the camera. The
+    recording has one depth frame per model result (about five a second); each is served as a NEW frame thirty times a second
+    until the next one is due, so the fit loop is loaded as it would be live."""
+
+    def __init__(self, path, fps=30.0, loop=True):
+        import json
+        z = np.load(path, allow_pickle=True)
+        keep = np.where(z["has_depth"])[0]
+        self.frames, self.times = z["depth"][keep], z["t"][keep] - z["t"][keep][0]
+        self.rays = z["rays"]
+        cal = json.loads(str(z["calibration"]))
+        cal.setdefault("kd", list(BOLT_KD)); cal.setdefault("dist", list(BOLT_DIST))
+        self.calibration = cal
+        self.info = {"device": "recording " + path, "connection": "file", "depth": [cal["w"], cal["h"]], "colour_k": cal["k"], "fps": fps}
+        self.error, self.fps, self.loop = None, fps, loop
+        self.t0 = None
+        self.map_latest = None
+
+    def restart(self):
+        self.t0 = time.time()
+
+    def get(self):
+        if self.t0 is None:
+            self.t0 = time.time()
+        el = time.time() - self.t0
+        if self.loop:
+            el = el % (self.times[-1] + 0.2)
+        i = int(np.clip(np.searchsorted(self.times, el, side="right") - 1, 0, len(self.frames) - 1))
+        seq = int((time.time() - self.t0) * self.fps) + 1
+        return (seq, self.frames[i].tobytes(), self.t0 + (seq - 1) / self.fps)   # when this frame became the newest
+
+    @property
+    def latest(self):
+        return self.get()
+
+    def depth_map(self):
+        return None
+
+    def status(self):
+        return {"running": True, "error": None, **self.info}

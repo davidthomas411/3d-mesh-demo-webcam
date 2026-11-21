@@ -911,8 +911,10 @@
         '<span>Predict between updates (low latency)</span></label>' +
         '<label class="anaRow"><input id="anaCloud" type="checkbox">' +
         '<span>Depth point cloud (Femto Bolt) <output id="anaCloudStatus"></output></span></label>' +
+        '<label class="anaRow"><input id="anaCloudPerson" type="checkbox">' +
+        '<span>Point cloud: only the person</span></label>' +
         '<label class="anaRow"><input id="anaFuse" type="checkbox">' +
-        '<span>Mesh distance and size from depth <output id="anaFuseStatus"></output></span></label>' +
+        '<span>Fit the mesh to the depth (low latency) <output id="anaFuseStatus"></output></span></label>' +
         '<label class="anaRow"><input id="anaXray" type="checkbox" checked>' +
         '<span>Live DRR X-ray</span></label>' +
         '<label class="anaRow"><input id="anaCt" type="checkbox" checked>' +
@@ -1110,9 +1112,10 @@
         startJawTracking(jawStatus);
       }
       document.querySelector("#anaCloud").addEventListener("change", (e) => setCloud(e.target.checked));
+      document.querySelector("#anaCloudPerson").addEventListener("change", (e) => { cloudPersonOnly = e.target.checked; });
       document.querySelector("#anaFuse").addEventListener("change", (e) => {
         depthFuse = e.target.checked;
-        if (!depthFuse) { depthScale = 1; document.querySelector("#anaFuseStatus").textContent = ""; }
+        if (!depthFuse) { depthScale = 1; fitStats.n = 0; fitStats.last = 0; document.querySelector("#anaFuseStatus").textContent = ""; }
         sendDepthConfig();
       });
       placeControls(panel);
@@ -1136,13 +1139,95 @@
     }
 
     function handleDepthInfo(info) {
+      // A model reply's note about the depth fit. The fitted meshes themselves arrive on their own (applyFittedMesh).
       if (!depthFuse) { depthScale = 1; return; }
+      depthScale = 1;                                // fitted meshes are already where they belong
       const el = document.querySelector("#anaFuseStatus");
-      if (info && info.scale) depthScale = info.scale;
-      if (!el) return;
-      if (!info) el.textContent = "";
-      else if (info.ok) el.textContent = "x" + info.scale.toFixed(3) + ", fit " + info.rms_mm.toFixed(0) + " mm rms";
-      else el.textContent = (info.scale ? "holding x" + info.scale.toFixed(3) + ": " : "") + (info.reason || "no depth");
+      if (el && info && !info.ok) el.textContent = info.reason || "no fit";
+    }
+
+    /*
+     * A mesh from the low-latency path (server: depth/tracker.py): the newest model mesh fitted to one depth frame. It
+     * replaces the mesh on screen, with its joints for the skeleton. Its age is the depth frame's age, not the picture's.
+     */
+    const fitStats = { last: 0, rate: 0, total: 0, n: 0 };
+    function applyFittedMesh(m, data) {
+      const received = new Float32Array(data);
+      if (received.length < 18439 * 3) return;
+      const vertices = received.subarray(0, 18439 * 3);
+      latestRigInput = received;
+      if (bodyMesh) bodyMesh.visible = true;
+      latestVertices = new Float32Array(vertices);
+      latestPredCamT = new Float32Array(m.pred_cam_t);
+      lastMeshId = m.mesh_id;
+      depthScale = 1;
+      const nowMs = Date.now();
+      const depthArrivedMs = nowMs - (m.depth_age_ms + Math.max(0, nowMs - m.sent_ms));   // when the depth frame reached the computer
+      const t0 = performance.now();
+      updateMesh(vertices, m.pred_cam_t, depthArrivedMs);
+      const total = Date.now() - depthArrivedMs + (performance.now() - t0);
+      const tNow = performance.now();
+      if (fitStats.last) fitStats.rate = 0.9 * fitStats.rate + 0.1 * (1000 / Math.max(1, tNow - fitStats.last));
+      fitStats.last = tNow; fitStats.n++;
+      fitStats.total = fitStats.total ? 0.9 * fitStats.total + 0.1 * total : total;
+      window.demoFit = { n: fitStats.n, rate: fitStats.rate, totalMs: fitStats.total, info: m.depth, modelAgeMs: m.model_age_ms };
+      const d = m.depth || {};
+      status.textContent = "Depth fit active | " + fitStats.rate.toFixed(0) + " fits/s | depth frame to screen: " +
+        fitStats.total.toFixed(0) + " ms (fit " + (d.fit_ms || 0).toFixed(0) + " ms) | model: " + lastModelInferenceMs.toFixed(0) + " ms";
+      const el = document.querySelector("#anaFuseStatus");
+      if (el) el.textContent = d.median_mm !== undefined && d.median_mm !== null
+        ? "median " + d.median_mm.toFixed(1) + " mm from the depth, " + Math.round(100 * (d.within_2mm || 0)) + "% within 2 mm"
+        : "on";
+    }
+
+    /*
+     * Person only: a point of the cloud is kept if it lies on the body mesh as the colour camera sees it. The mesh's depth is
+     * drawn from that camera (the Bolt's factory intrinsics) into a small target; the cloud's shader looks its point up there.
+     * With the depth fit on, the mesh is on the measured surface and the test is tight; without it the mesh's distance is only
+     * an estimate, so the test is loose.
+     */
+    let cloudPersonOnly = false, bodyMask = null;
+    function ensureBodyMask(k) {
+      if (bodyMask || !bodyMesh) return bodyMask;
+      const target = new THREE.WebGLRenderTarget(320, 180, { type: THREE.HalfFloatType, format: THREE.RGBAFormat, depthBuffer: true,
+        minFilter: THREE.NearestFilter, magFilter: THREE.NearestFilter });
+      const cam = new THREE.Camera(), n = 0.1, f = 12.0;
+      // the colour camera as a projection: u = k0 x / z + k2, v = k1 y / z + k3 (fractions of the picture), looking down -z here
+      cam.projectionMatrix.set(
+        2 * k[0], 0, -(2 * k[2] - 1), 0,
+        0, 2 * k[1], -(1 - 2 * k[3]), 0,
+        0, 0, -(f + n) / (f - n), -2 * f * n / (f - n),
+        0, 0, -1, 0);
+      cam.projectionMatrixInverse.copy(cam.projectionMatrix).invert();
+      const material = new THREE.ShaderMaterial({
+        side: THREE.DoubleSide,
+        vertexShader: "varying float vDepth; void main(){ vec4 mv = modelViewMatrix * vec4(position, 1.0); vDepth = -mv.z; gl_Position = projectionMatrix * mv; }",
+        fragmentShader: "varying float vDepth; void main(){ gl_FragColor = vec4(vDepth, 0.0, 0.0, 1.0); }",
+      });
+      const mesh = new THREE.Mesh(bodyMesh.geometry, material);
+      mesh.frustumCulled = false; mesh.matrixAutoUpdate = false;
+      const maskScene = new THREE.Scene();
+      maskScene.add(mesh);
+      bodyMask = { target, cam, mesh, scene: maskScene };
+      return bodyMask;
+    }
+
+    function cloudPreRender() {
+      if (!cloudObject || !cloudObject.visible) return;
+      const u = cloudObject.material.uniforms;
+      const on = cloudPersonOnly && bodyMesh && bodyMesh.visible && latestVertices;
+      u.uPersonOnly.value = on ? 1 : 0;
+      if (!on) return;
+      const mask = ensureBodyMask(cloudObject.userData.k);
+      bodyMesh.updateMatrixWorld();
+      mask.mesh.matrix.copy(bodyMesh.matrixWorld); mask.mesh.matrixWorld.copy(bodyMesh.matrixWorld);
+      const prev = renderer.getRenderTarget(), pc = renderer.getClearColor(new THREE.Color()), pa = renderer.getClearAlpha();
+      renderer.setRenderTarget(mask.target); renderer.setClearColor(0x000000, 0); renderer.clear();
+      renderer.render(mask.scene, mask.cam);
+      renderer.setRenderTarget(prev); renderer.setClearColor(pc, pa);
+      u.uBody.value = mask.target.texture;
+      u.uPersonTol.value = depthFuse && fitStats.n ? 0.05 : 0.30;      // metres, or a fraction of the distance when loose
+      u.uPersonLoose.value = depthFuse && fitStats.n ? 0 : 1;
     }
 
     /*
@@ -1181,6 +1266,7 @@
       const R = calib.R, material = new THREE.ShaderMaterial({
         uniforms: {
           uDepth: { value: depthTex }, uVideo: { value: videoTex }, uUseVideo: { value: 0 }, uSize: { value: 1.5 },
+          uBody: { value: null }, uPersonOnly: { value: 0 }, uPersonTol: { value: 0.05 }, uPersonLoose: { value: 0 },
           uR: { value: new THREE.Matrix3().set(R[0], R[1], R[2], R[3], R[4], R[5], R[6], R[7], R[8]) },
           uT: { value: new THREE.Vector3(calib.t[0], calib.t[1], calib.t[2]) },
           uK: { value: new THREE.Vector4(calib.k[0], calib.k[1], calib.k[2], calib.k[3]) },
@@ -1188,6 +1274,7 @@
         vertexShader: `
           attribute vec2 duv;
           uniform sampler2D uDepth; uniform mat3 uR; uniform vec3 uT; uniform vec4 uK; uniform float uSize;
+          uniform sampler2D uBody; uniform float uPersonOnly; uniform float uPersonTol; uniform float uPersonLoose;
           varying vec2 vUv; varying float vZ; varying float vOk;
           void main() {
             vec2 b = texture2D(uDepth, duv).rg;
@@ -1196,6 +1283,17 @@
             vec3 pc = uR * vec3(position.xy * z, z) + uT;                                    // colour camera frame, mm
             vUv = vec2(uK.x * pc.x / pc.z + uK.z, uK.y * pc.y / pc.z + uK.w);                // where it lands in the picture
             vZ = pc.z / 1000.0;
+            if (uPersonOnly > 0.5 && vOk > 0.5) {
+              // the body mesh's depth where this point falls in the picture, and a few pixels around (the outline, hair, cloth)
+              float keep = 0.0;
+              for (int i = 0; i < 5; i++) {
+                vec2 o = i == 0 ? vec2(0.0) : (i == 1 ? vec2(0.012, 0.0) : (i == 2 ? vec2(-0.012, 0.0) : (i == 3 ? vec2(0.0, 0.02) : vec2(0.0, -0.02))));
+                float mz = texture2D(uBody, vec2(vUv.x + o.x, 1.0 - vUv.y + o.y)).r;
+                float tol = uPersonLoose > 0.5 ? uPersonTol * mz : uPersonTol;
+                if (mz > 0.0 && abs(vZ - mz) < tol) keep = 1.0;
+              }
+              vOk = keep;
+            }
             // the 3-D view's camera space is the colour camera's frame with y and z flipped (as for the mesh)
             gl_Position = vOk > 0.5 ? projectionMatrix * modelViewMatrix * vec4(pc.x / 1000.0, -pc.y / 1000.0, -pc.z / 1000.0, 1.0)
                                     : vec4(2.0, 2.0, 2.0, 1.0);
@@ -1219,7 +1317,7 @@
       });
       cloudObject = new THREE.Points(geometry, material);
       cloudObject.frustumCulled = false;
-      cloudObject.userData = { depthTex, pixels: n };
+      cloudObject.userData = { depthTex, pixels: n, k: calib.k };
       scene.add(cloudObject);
       return true;
     }
@@ -1313,7 +1411,7 @@
         window.location.search = q.toString();
       });
       addMenu(document.getElementById("mesh"), "3-D view and anatomy", [
-        row("anaEnable"), row("anaSkeleton"), row("anaSkin"), row("anaOpacity"), row("anaCloud"), row("anaFuse"), row("anaXray"), row("anaCt"),
+        row("anaEnable"), row("anaSkeleton"), row("anaSkin"), row("anaOpacity"), row("anaCloud"), row("anaCloudPerson"), row("anaFuse"), row("anaXray"), row("anaCt"),
         row("anaJaw"), row("anaJoints"), row("anaScale"), row("anaPredict"), notes[0], groups, notes[1],
       ], "left");
       panel.style.display = "none";
@@ -1328,6 +1426,8 @@
     let mediaStream = null;
     let streamSocket = null;
     let pendingMeshMetadata = null;
+    let pendingFitMetadata = null;
+    let lastModelInferenceMs = 0;
     let websocketRequestStartMs = 0;
     let meshFramed = false;
     let latestVertices = null;
@@ -1463,6 +1563,7 @@
         anatomyTick();
         controls.update();
         xrayDraw();
+        cloudPreRender();
         renderer.render(scene, camera);
       }
 
@@ -3224,6 +3325,11 @@
           if (typeof event.data === "string") {
             const metadata = JSON.parse(event.data);
 
+            if (metadata.fitted) {                 // a mesh fitted to the depth is coming: its data is the next message
+              pendingFitMetadata = metadata;
+              return;
+            }
+
             if (metadata.error) {
               uploadBusy = false;
               status.textContent =
@@ -3269,7 +3375,26 @@
 
             updateCalibrationStatus(metadata);
             handleDepthInfo(metadata.depth);
+            if (metadata.skip_mesh) {
+              // The model's own mesh is not sent while fitted meshes are: it is only the prior of the depth fit.
+              framesSent++;
+              recordLatency("encode", metadata.encode_ms);
+              recordLatency("queue", metadata.queue_wait_ms);
+              recordLatency("decode", metadata.decode_ms);
+              recordLatency("inference", metadata.inference_ms);
+              lastModelInferenceMs = metadata.inference_ms;
+              uploadBusy = false;
+              if (running) window.setTimeout(sendFrame, 0);
+              return;
+            }
             pendingMeshMetadata = metadata;
+            return;
+          }
+
+          if (pendingFitMetadata) {
+            const fitMetadata = pendingFitMetadata;
+            pendingFitMetadata = null;
+            applyFittedMesh(fitMetadata, event.data);
             return;
           }
 
@@ -3786,7 +3911,8 @@
         if (bolt) wanted.deviceId = { exact: bolt.deviceId };
       } catch (error) { /* default camera */ }
       mediaStream = await navigator.mediaDevices.getUserMedia({ video: wanted, audio: false });
-      boltCamera = /femto|orbbec/i.test((mediaStream.getVideoTracks()[0] || {}).label || "");
+      boltCamera = /femto|orbbec/i.test((mediaStream.getVideoTracks()[0] || {}).label || "")
+        || new URLSearchParams(window.location.search).get("bolt") === "1";      // ?bolt=1: for replaying a Bolt recording
 
       video.loop = false;
       video.srcObject = mediaStream;

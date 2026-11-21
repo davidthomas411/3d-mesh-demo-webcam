@@ -408,21 +408,26 @@ def inference_worker():
                     depth_info = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
 
             if depth_info is None and calibration.get("depth_fusion"):
-                # Femto Bolt: one filtered scale about the camera puts the mesh at its measured distance and size (depth/live.py)
+                # Femto Bolt: this mesh becomes the shape and pose prior of the low-latency path, which fits it to every depth
+                # frame and sends the fitted mesh itself (depth/tracker.py). The page does not show this one while that runs.
                 try:
                     if not calibration.get("bolt"):
                         depth_info = {"ok": False, "reason": "the webcam is not the Femto Bolt's colour camera"}
                     else:
-                        dm = get_cloud().depth_map()
-                        if dm is None:
-                            depth_info = {"ok": False, "reason": cloud_source.error or "waiting for the depth camera"}
-                        else:
-                            if calibration.get("anchor") is None:
-                                from depth.live import LiveAnchor
-                                calibration["anchor"] = LiveAnchor(faces)
-                            cam_t_np = to_numpy(outputs[0]["pred_cam_t"]).reshape(-1)
-                            depth_info = calibration["anchor"].update((vertices + cam_t_np) * 1000.0, dm[0], dm[1])
-                            depth_info["factory_intrinsics"] = bool(calibration.get("factory"))
+                        lf = get_live_fit()
+                        cam_t_mm = to_numpy(outputs[0]["pred_cam_t"]).reshape(-1).astype(np.float64) * 1000.0
+                        jp = jr = None
+                        if joints is not None:
+                            nj = len(joints) // 12
+                            jp = joints[:nj * 3].reshape(nj, 3).astype(np.float64) * 1000.0 + cam_t_mm
+                            jr = joints[nj * 3:].reshape(nj, 3, 3).astype(np.float64)
+                        lf.set_model(item_owner, vertices.astype(np.float64) * 1000.0 + cam_t_mm, jp, jr, mesh_id + 1,
+                                     {"cam_t_mm": cam_t_mm, "focal_length": focal_length, "client_timestamp_ms": client_timestamp_ms})
+                        last = lf.result
+                        depth_info = {"ok": lf.active(item_owner), "fit": True, "factory_intrinsics": bool(calibration.get("factory")),
+                                      "reason": None if lf.active(item_owner) else (cloud_source.error or "no fit yet: is the body in the depth image?")}
+                        if last is not None:
+                            depth_info.update(scale=last["info"].get("scale"), median_mm=last["info"].get("median_mm"))
                 except Exception as exc:  # depth must never take the RGB pipeline down
                     depth_info = {"ok": False, "reason": f"{type(exc).__name__}: {exc}"}
 
@@ -438,6 +443,7 @@ def inference_worker():
                         "focal": focal_length, "K": None if cam is None else cam.reshape(3, 3).numpy().astype(np.float32),
                         "kp2d": to_numpy(outputs[0]["pred_keypoints_2d"]).astype(np.float32),
                         "depth": None if dframe is None else dframe[1], "depth_seq": 0 if dframe is None else dframe[0],
+                        "joints": joints,
                         "t": time.time(), "factory": bool(calibration.get("factory")), "anchor": depth_info,
                     })
                     recording["left"] -= 1
@@ -715,11 +721,35 @@ __import__("logging").getLogger("werkzeug").addFilter(_QuietCloudLog())
 
 
 def get_cloud():
+    """The depth camera, or a recording standing in for it (CLOUD_REPLAY=path.npz, for testing without the camera)."""
     global cloud_source
     if cloud_source is None:
-        from depth.cloud import FemtoCloud
-        cloud_source = FemtoCloud()
+        replay = os.environ.get("CLOUD_REPLAY")
+        if replay:
+            from depth.cloud import RecordedCloud
+            cloud_source = RecordedCloud(replay)
+        else:
+            from depth.cloud import FemtoCloud
+            cloud_source = FemtoCloud()
     return cloud_source
+
+
+live_fit = None
+
+
+def get_live_fit():
+    """The low-latency path (depth/tracker.py): fits the newest model mesh to every depth frame."""
+    global live_fit
+    if live_fit is None:
+        import sys as _sys
+        _sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "tools"))
+        from bind_mhr_joints import MHR
+        from depth.fit import BodyFit
+        from depth.tracker import LiveFit
+        mhr = MHR(os.environ.get("MHR_MODEL", "checkpoints/sam-3d-body-dinov3/assets/mhr_model.pt"))
+        body = BodyFit(faces, list(mhr.m.character_torch.skeleton.joint_names), mhr.w_joint, mhr.w_vert, mhr.w)
+        live_fit = LiveFit(get_cloud(), body)
+    return live_fit
 
 
 @app.get("/cloud")
@@ -758,6 +788,8 @@ def _save_recording():
         "factory": np.array([f["factory"] for f in fr]), "has_depth": np.array(has_depth),
         "anchor": np.array([json.dumps(f["anchor"]) for f in fr]), "faces": faces,
     }
+    if all(f.get("joints") is not None for f in fr):
+        out["joints"] = np.stack([f["joints"] for f in fr])
     if w and any(has_depth):
         out["depth"] = np.stack([np.frombuffer(f["depth"], np.uint16).reshape(h, w) if f["depth"] is not None else np.zeros((h, w), np.uint16) for f in fr])
         out["rays"] = c.rays
@@ -808,6 +840,40 @@ def stream_socket(ws):
     global dropped_frames
 
     owner = id(ws)
+    ws_lock = threading.Lock()                    # a mesh is two messages (description, then data): never interleave them
+    closed = threading.Event()
+
+    def push_fitted():
+        """Sends every fitted mesh of the low-latency path to this connection as it is made."""
+        last_id = 0
+        while not closed.is_set():
+            lf = live_fit
+            if lf is None:
+                time.sleep(0.05)
+                continue
+            r = lf.wait(last_id, timeout=0.25)
+            if r is None or r["owner"] != owner:
+                continue
+            last_id = r["id"]
+            payload = r["verts_m"].tobytes()
+            nj = 0
+            if r["joints"] is not None:
+                P, Rj = r["joints"]
+                nj = len(P)
+                payload += (P / 1000.0).astype("<f4").tobytes() + (Rj if Rj is not None else np.tile(np.eye(3), (nj, 1, 1))).astype("<f4").tobytes()
+            now = time.time()
+            meta = {"fitted": True, "mesh_id": r["mesh_id"], "fit_id": r["id"], "pred_cam_t": [float(x) for x in r["cam_t_m"]],
+                    "joints": nj, "depth": r["info"], "focal_length": r["extra"].get("focal_length"),
+                    "depth_age_ms": (now - r["t_depth"]) * 1000.0, "model_age_ms": (now - r["model_t"]) * 1000.0,
+                    "sent_ms": now * 1000.0}
+            try:
+                with ws_lock:
+                    ws.send(json.dumps(meta))
+                    ws.send(payload)
+            except Exception:
+                return
+
+    threading.Thread(target=push_fitted, name="push-fitted", daemon=True).start()
 
     while True:
         try:
@@ -816,6 +882,7 @@ def stream_socket(ws):
             metadata_text = None
 
         if metadata_text is None:
+            closed.set()
             with state_lock:
                 calibrations.pop(owner, None)     # the stream is gone, and so is its camera
             break
@@ -886,13 +953,15 @@ def stream_socket(ws):
                         ),
                     }
 
-                ws.send(json.dumps(response_config))
+                with ws_lock:
+                    ws.send(json.dumps(response_config))
                 continue
 
             jpeg_bytes = ws.receive()
 
             if not isinstance(jpeg_bytes, bytes) or len(jpeg_bytes) < 100:
-                ws.send(json.dumps({"error": "Invalid JPEG frame"}))
+                with ws_lock:
+                    ws.send(json.dumps({"error": "Invalid JPEG frame"}))
                 continue
 
             server_receive_ns = time.perf_counter_ns()
@@ -931,17 +1000,19 @@ def stream_socket(ws):
                 )
 
                 if not completed:
-                    ws.send(json.dumps({
-                        "error": "Inference timeout",
-                        "source_frame_id": accepted_frame_id,
-                    }))
+                    with ws_lock:
+                        ws.send(json.dumps({
+                            "error": "Inference timeout",
+                            "source_frame_id": accepted_frame_id,
+                        }))
                     continue
 
                 current = latest_mesh
                 inference_seconds = last_inference_seconds
 
             if current.get("no_person", False):
-                ws.send(json.dumps({
+                with ws_lock:
+                  ws.send(json.dumps({
                     "no_person": True,
                     "mesh_id": current["mesh_id"],
                     "source_frame_id": current["source_frame_id"],
@@ -954,8 +1025,11 @@ def stream_socket(ws):
                 }))
                 continue
 
-            ws.send(json.dumps({
+            # while the low-latency path is sending fitted meshes for this stream, the model's own mesh is not sent
+            skip_mesh = live_fit is not None and live_fit.active(owner)
+            reply = json.dumps({
                 "no_person": False,
+                "skip_mesh": skip_mesh,
                 "mesh_id": current["mesh_id"],
                 "source_frame_id": current["source_frame_id"],
                 "encode_ms": current["encode_ms"],
@@ -977,17 +1051,25 @@ def stream_socket(ws):
                     len(current["joints"]) // 12
                     if current.get("joints") is not None else 0
                 ),
-            }))
+            })
 
             payload = current["vertices"].astype("<f4", copy=False).tobytes()
             if current.get("joints") is not None:
                 payload += current["joints"].tobytes()
-            ws.send(payload)
+            with ws_lock:
+                ws.send(reply)
+                if not skip_mesh:
+                    ws.send(payload)
 
         except Exception as exc:
-            ws.send(json.dumps({
-                "error": f"{type(exc).__name__}: {exc}"
-            }))
+            try:
+                with ws_lock:
+                    ws.send(json.dumps({
+                        "error": f"{type(exc).__name__}: {exc}"
+                    }))
+            except Exception:
+                closed.set()
+                break
 
 def _setup_depth(spec):
     """--depth femto | recorded:<file.npz>"""

@@ -10,8 +10,8 @@ set PYTHONPATH=%FAST%
 set PYTHONIOENCODING=utf-8
 set OMP_NUM_THREADS=8
 set MKL_NUM_THREADS=8
-set HOST=127.0.0.1
-set PORT=8097
+if not defined HOST set HOST=127.0.0.1
+if not defined PORT set PORT=8097
 rem model: 384 input, TensorRT FP16 backbone, all three intermediate body predictions (accuracy)
 set IMG_SIZE=384
 set USE_TRT_BACKBONE=1
