@@ -754,6 +754,7 @@ def get_cloud():
 
 
 live_fit = None
+stream_active = None                                           # the one page whose pictures the model works on (the newest)
 picture_media = {}                                             # capture timestamp of a picture -> its time in the video file, s
 
 
@@ -865,7 +866,12 @@ def stream_socket(ws):
     global frame_id
     global dropped_frames
 
+    global stream_active
     owner = id(ws)
+    # One page at a time. There is one model, one picture queue and one depth fit: two pages streaming at once (the same
+    # address open in a second window, or left running in a hidden tab) take each other's turns, and both see timeouts and
+    # a fit that comes and goes. The newest page wins; the older one is told and stops.
+    stream_active = owner
     ws_lock = threading.Lock()                    # a mesh is two messages (description, then data): never interleave them
     closed = threading.Event()
 
@@ -916,6 +922,17 @@ def stream_socket(ws):
             closed.set()
             with state_lock:
                 calibrations.pop(owner, None)     # the stream is gone, and so is its camera
+            break
+
+        if stream_active != owner:                # a newer page has taken over
+            try:
+                with ws_lock:
+                    ws.send(json.dumps({"superseded": True}))
+            except Exception:
+                pass
+            closed.set()
+            with state_lock:
+                calibrations.pop(owner, None)
             break
 
         try:

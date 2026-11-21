@@ -1537,38 +1537,43 @@
       if (!material || material.userData.depthClip || material.isShaderMaterial) return;
       material.userData.depthClip = true;
       const before = material.onBeforeCompile;
+      // The test is made once per VERTEX, not per pixel: nine depth lookups for every pixel of every layer of the body and
+      // skeleton loaded the graphics card in proportion to the size of the window, and the pose model, which shares that
+      // card, slowed from 0.13 s to seconds a picture. Per vertex it costs the same in any window.
       material.onBeforeCompile = (shader, r) => {
         if (before) before(shader, r);
         if (!shader.vertexShader.includes("#include <project_vertex>") || !shader.fragmentShader.includes("#include <clipping_planes_fragment>")) return;
         Object.assign(shader.uniforms, depthClip);
-        shader.vertexShader = "uniform mat4 uDcSceneInv; varying vec3 vDcCam;\n" + shader.vertexShader.replace("#include <project_vertex>",
-          "#include <project_vertex>\n vDcCam = (uDcSceneInv * modelMatrix * vec4(transformed, 1.0)).xyz;");
-        shader.fragmentShader = `uniform float uDcOn; uniform float uDcHide; uniform sampler2D uDcDepth; uniform mat3 uDcR; uniform vec3 uDcT; uniform vec4 uDcKd;
-          uniform vec2 uDcSize; uniform float uDcDist[8]; varying vec3 vDcCam;\n` + shader.fragmentShader.replace("#include <clipping_planes_fragment>",
-          `#include <clipping_planes_fragment>
-          if (uDcHide > 0.5) discard;
+        shader.vertexShader = `uniform mat4 uDcSceneInv; uniform float uDcOn; uniform sampler2D uDcDepth; uniform mat3 uDcR; uniform vec3 uDcT;
+          uniform vec4 uDcKd; uniform vec2 uDcSize; uniform float uDcDist[8]; varying float vDcKeep;\n` + shader.vertexShader.replace("#include <project_vertex>",
+          `#include <project_vertex>
+          vDcKeep = 1.0;
           if (uDcOn > 0.5) {
-            vec3 pc = vec3(vDcCam.x, -vDcCam.y, -vDcCam.z) * 1000.0;                       // colour camera frame, mm
+            vec3 dcP = (uDcSceneInv * modelMatrix * vec4(transformed, 1.0)).xyz;
+            vec3 pc = vec3(dcP.x, -dcP.y, -dcP.z) * 1000.0;                                 // colour camera frame, mm
             vec3 pd = transpose(uDcR) * (pc - uDcT);                                        // depth camera frame
-            if (pd.z < 100.0) discard;
-            vec2 a = pd.xy / pd.z; float r2 = dot(a, a);
-            float rad = (1.0 + r2 * (uDcDist[0] + r2 * (uDcDist[1] + r2 * uDcDist[4]))) / (1.0 + r2 * (uDcDist[5] + r2 * (uDcDist[6] + r2 * uDcDist[7])));
-            vec2 dd = a * rad + vec2(2.0 * uDcDist[2] * a.x * a.y + uDcDist[3] * (r2 + 2.0 * a.x * a.x),
-                                     uDcDist[2] * (r2 + 2.0 * a.y * a.y) + 2.0 * uDcDist[3] * a.x * a.y);
-            vec2 uv = (uDcKd.xy * dd + uDcKd.zw + 0.5) / uDcSize;
-            if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) discard;
-            float keep = 0.0;
-            for (int i = 0; i < 9; i++) {                                                   // the pixel and a ring 4 pixels out
-              vec2 o = i == 0 ? vec2(0.0) : 4.0 * vec2(cos(0.7853982 * float(i)), sin(0.7853982 * float(i))) / uDcSize;
-              vec2 b = texture2D(uDcDepth, uv + o).rg;
-              float z = floor(b.r * 255.0 + 0.5) + 256.0 * floor(b.g * 255.0 + 0.5);
-              if (z > 250.0 && pd.z - z > -80.0 && pd.z - z < 450.0) keep = 1.0;
+            vDcKeep = 0.0;
+            if (pd.z > 100.0) {
+              vec2 a = pd.xy / pd.z; float r2 = dot(a, a);
+              float rad = (1.0 + r2 * (uDcDist[0] + r2 * (uDcDist[1] + r2 * uDcDist[4]))) / (1.0 + r2 * (uDcDist[5] + r2 * (uDcDist[6] + r2 * uDcDist[7])));
+              vec2 dd = a * rad + vec2(2.0 * uDcDist[2] * a.x * a.y + uDcDist[3] * (r2 + 2.0 * a.x * a.x),
+                                       uDcDist[2] * (r2 + 2.0 * a.y * a.y) + 2.0 * uDcDist[3] * a.x * a.y);
+              vec2 uv = (uDcKd.xy * dd + uDcKd.zw + 0.5) / uDcSize;
+              if (uv.x > 0.0 && uv.x < 1.0 && uv.y > 0.0 && uv.y < 1.0) {
+                for (int i = 0; i < 5; i++) {                                               // the pixel and four round it, 4 pixels out
+                  vec2 o = i == 0 ? vec2(0.0) : 4.0 * vec2(cos(1.5707963 * float(i)), sin(1.5707963 * float(i))) / uDcSize;
+                  vec2 b = texture2D(uDcDepth, uv + o).rg;
+                  float z = floor(b.r * 255.0 + 0.5) + 256.0 * floor(b.g * 255.0 + 0.5);
+                  if (z > 250.0 && pd.z - z > -80.0 && pd.z - z < 450.0) vDcKeep = 1.0;
+                }
+              }
             }
-            if (keep < 0.5) discard;
           }`);
+        shader.fragmentShader = "uniform float uDcHide; varying float vDcKeep;\n" + shader.fragmentShader.replace("#include <clipping_planes_fragment>",
+          "#include <clipping_planes_fragment>\n if (uDcHide > 0.5 || vDcKeep < 0.5) discard;");
       };
       const key = material.customProgramCacheKey ? material.customProgramCacheKey.bind(material) : () => "";
-      material.customProgramCacheKey = () => key() + "|depthclip";
+      material.customProgramCacheKey = () => key() + "|depthclip2";
       material.needsUpdate = true;
     }
     let depthClipSwept = 0;
@@ -1741,10 +1746,13 @@
      * distrusted (the fit holding its last result, depth or pose running late, a shift outside tolerance). Refreshed five
      * times a second. H hides it.
      */
-    let hudEl = null, hudLast = 0, hudHidden = false, hudWhy = null, hudWhyAt = 0;
+    let hudEl = null, hudLast = 0, hudHidden = false, hudWhy = null, hudWhyAt = 0, hudDraws = 0;
+    const hudFrames = [], hudDrawTimes = [];
     window.addEventListener("keydown", (e) => { if (e.key === "h" && !/INPUT|SELECT|TEXTAREA/.test(e.target.tagName)) { hudHidden = !hudHidden; hudLast = 0; } });
     function hudTick() {
       const now = performance.now();
+      hudDrawTimes.push(now); while (hudDrawTimes.length && now - hudDrawTimes[0] > 2000) hudDrawTimes.shift();
+      hudDraws = hudDrawTimes.length;
       if (now - hudLast < 200 || !renderer) return;
       hudLast = now;
       if (!hudEl) {
@@ -1769,6 +1777,12 @@
         L.push(row("frame", "room, origin at cube centre"));
       } else L.push(row("frame", warn("camera") + dim(replay ? "  (no camera poses for this replay)" : "")));
       if (replay && video.duration) L.push(row("video", video.currentTime.toFixed(1) + " / " + video.duration.toFixed(1) + " s"));
+      hudFrames.push(now); while (hudFrames.length && now - hudFrames[0] > 2000) hudFrames.shift();
+      {
+        const ms = lastModelInferenceMs || 0, fps = hudDraws / 2, c = renderer.domElement;
+        L.push(row("model", (ms < 250 ? ok : ms < 600 ? warn : bad)(ms.toFixed(0) + " ms a picture") + (ms >= 600 ? dim("  (graphics card busy)") : "")));
+        L.push(row("drawing", (fps > 40 ? ok : fps > 20 ? warn : bad)(fps.toFixed(0) + " frames/s") + dim("  " + c.width + " x " + c.height)));
+      }
       const fit = window.demoFit, fresh = fit && fitStats.last && now - fitStats.last < 1500, d = (fit && fit.info) || {};
       if (!meshLive()) {
         L.push(row("body", bad("NOT LIVE: hidden") + dim("  (shifts frozen)")));
@@ -1972,7 +1986,8 @@
         alpha: false
       });
 
-      renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+      // one device pixel per pixel at most: on a high-density screen four times the pixels cost the pose model its share of the card
+      renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1));
       renderer.setSize(
         meshView.clientWidth,
         meshView.clientHeight
@@ -3867,13 +3882,22 @@
               return;
             }
 
+            if (metadata.superseded) {
+              // the server works for one page at a time, and a newer one has started: stop here, so as not to take its turns
+              stopButton.onclick();
+              setCloud(false); setDepthClip(false);
+              for (const id of ["anaCloud", "anaDepthClip"]) { const el = document.querySelector("#" + id); if (el) el.checked = false; }
+              status.textContent = "Stopped: this recording was opened in another window or tab, and only one page can use the model at a time";
+              return;
+            }
+
             if (metadata.error) {
               uploadBusy = false;
               status.textContent =
                 "Inference error: " + metadata.error;
 
               if (running) {
-                window.setTimeout(sendFrame, 0);
+                soon(sendFrame);
               }
               return;
             }
@@ -3904,7 +3928,7 @@
               status.textContent = "No person detected";
 
               if (running) {
-                window.setTimeout(sendFrame, 0);
+                soon(sendFrame);
               }
 
               return;
@@ -3921,7 +3945,7 @@
               recordLatency("inference", metadata.inference_ms);
               lastModelInferenceMs = metadata.inference_ms;
               uploadBusy = false;
-              if (running) window.setTimeout(sendFrame, 0);
+              if (running) soon(sendFrame);
               return;
             }
             pendingMeshMetadata = metadata;
@@ -4015,11 +4039,18 @@
           uploadBusy = false;
 
           if (running) {
-            window.setTimeout(sendFrame, 0);
+            soon(sendFrame);
           }
         };
       });
     }
+
+    // The next picture is sent as soon as the last one is answered. A zero timeout did that, but a browser holds the timers
+    // of a window that is not in front (covered, minimised, or watched from another device) back to one a second, and the
+    // model then starved: a mesh a second, too old for the depth fit. A message to oneself is not held back.
+    const soonChannel = new MessageChannel(), soonQueue = [];
+    soonChannel.port1.onmessage = () => { const f = soonQueue.shift(); if (f) f(); };
+    function soon(f) { soonQueue.push(f); soonChannel.port2.postMessage(0); }
 
     async function sendFrame() {
       if (
@@ -4051,14 +4082,17 @@
       try {
         const encodeStartMs = performance.now();
 
-        const blob = await new Promise(resolve => {
-          capture.toBlob(resolve, "image/jpeg", 0.80);
-        });
+        // Encoded on the spot. canvas.toBlob and OffscreenCanvas.convertToBlob both finish on the browser's next drawn frame,
+        // and a window that is not in front (covered, or watched from another device) draws one frame a second: measured,
+        // 1000 ms a picture against 5 ms here. The model then got a picture a second and the depth fit starved.
+        const dataUrl = capture.toDataURL("image/jpeg", 0.80), raw = atob(dataUrl.slice(dataUrl.indexOf(",") + 1));
+        const blob = new Uint8Array(raw.length);
+        for (let k = 0; k < raw.length; k++) blob[k] = raw.charCodeAt(k);
 
         const encodeMs =
           performance.now() - encodeStartMs;
 
-        if (!blob) {
+        if (blob.length < 100) {
           throw new Error("JPEG encoding failed");
         }
 
@@ -4078,7 +4112,7 @@
           "WebSocket frame error: " + error.message;
 
         if (running) {
-          window.setTimeout(sendFrame, 0);
+          soon(sendFrame);
         }
       }
     }

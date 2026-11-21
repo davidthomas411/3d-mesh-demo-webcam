@@ -291,6 +291,25 @@ starting it again took enough processor to cause the next pause, so the fit came
 now stays up for 30 s without a mesh. `GET /status` reports the fit's counters and its last reason for giving up, and the
 head-up display shows them whenever the body is not live.
 
+Three more things starved the fit, none of them to do with the gantry:
+
+- **A window that is not in front.** A browser draws a covered or unfocused window (or one watched from another device)
+  about once a second, and both ways of encoding a picture (`canvas.toBlob`, `OffscreenCanvas.convertToBlob`) finish on the
+  next drawn frame: measured, 1000 ms a picture. Zero-delay timers are held back the same way. The page now encodes on the
+  spot (`toDataURL`, 5 ms) and schedules the next picture with a message to itself. In such a window: 6.5 pictures a second
+  instead of under one, and 28 fits a second. The 3-D view itself still draws at the browser's reduced rate there.
+- **Two pages at once.** There is one model and one depth fit. A second page on the same address (another window, a tab left
+  running) took the first one's turns: "Inference timeout", and a fit that came and went. The newest page now wins and the
+  older one stops and says so.
+- **The page's own load on the graphics card**, which the pose model shares. The depth-coverage test is now done per vertex
+  instead of per pixel, and the 3-D view draws one device pixel per pixel at most. The head-up display shows the model's
+  time per picture and the drawing rate.
+
+**Known weakness.** Near the lateral ends of the sweep (gantry about 165-170 degrees) the fit degrades: skin 16 mm from the
+depth and the body rolled by tens of degrees against the reference in one check. From the side the trunk and head are
+close to a cylinder, which a rigid fit cannot hold against rolling. Since the camera's motion is known and the patient is
+expected to be nearly still, the fit should be held to its previous placement in the room there; that is not done.
+
 **Not live, not shown.** With the depth fit on, the body and skeleton are drawn only while the depth camera is placing
 them: if nothing has been fitted for 0.6 s, or the fit is only holding its last placement, they are hidden, the DRR and
 CT panels go blank and the shift bars freeze, instead of falling back to the model's own mesh (a guess at distance).
