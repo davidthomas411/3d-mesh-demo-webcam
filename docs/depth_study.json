@@ -1,0 +1,1018 @@
+{
+ "e1": {
+  "size only": {
+   "one scale": {
+    "roi_mm": 0.04,
+    "body_mm": 0.04
+   },
+   "scale + rigid": {
+    "roi_mm": 0.36,
+    "body_mm": 0.34
+   },
+   "+ surface": {
+    "roi_mm": 0.57,
+    "body_mm": 0.82
+   }
+  },
+  "+ lean 5 deg": {
+   "one scale": {
+    "roi_mm": 16.6,
+    "body_mm": 21.25
+   },
+   "scale + rigid": {
+    "roi_mm": 2.1,
+    "body_mm": 3.98
+   },
+   "+ surface": {
+    "roi_mm": 1.69,
+    "body_mm": 3.95
+   }
+  },
+  "+ shape 8 mm": {
+   "one scale": {
+    "roi_mm": 15.17,
+    "body_mm": 27.28
+   },
+   "scale + rigid": {
+    "roi_mm": 8.44,
+    "body_mm": 7.87
+   },
+   "+ surface": {
+    "roi_mm": 6.31,
+    "body_mm": 7.14
+   }
+  },
+  "+ arms 8 deg": {
+   "one scale": {
+    "roi_mm": 26.16,
+    "body_mm": 23.34
+   },
+   "scale + rigid": {
+    "roi_mm": 7.01,
+    "body_mm": 8.54
+   },
+   "+ surface": {
+    "roi_mm": 3.77,
+    "body_mm": 7.09
+   }
+  }
+ },
+ "e6": {
+  "tilt 0 deg": {
+   "lean 0 deg": {
+    "one_scale_p95_mm": 0.04,
+    "scale_rigid_p95_mm": 0.39
+   },
+   "depth_extent_mm": 133,
+   "lean 3 deg": {
+    "one_scale_p95_mm": 20.29,
+    "scale_rigid_p95_mm": 2.19
+   },
+   "lean 6 deg": {
+    "one_scale_p95_mm": 41.14,
+    "scale_rigid_p95_mm": 4.56
+   }
+  },
+  "tilt 20 deg": {
+   "lean 0 deg": {
+    "one_scale_p95_mm": 0.03,
+    "scale_rigid_p95_mm": 0.43
+   },
+   "depth_extent_mm": 113,
+   "lean 3 deg": {
+    "one_scale_p95_mm": 18.82,
+    "scale_rigid_p95_mm": 1.4
+   },
+   "lean 6 deg": {
+    "one_scale_p95_mm": 39.05,
+    "scale_rigid_p95_mm": 2.54
+   }
+  },
+  "tilt 40 deg": {
+   "lean 0 deg": {
+    "one_scale_p95_mm": 0.08,
+    "scale_rigid_p95_mm": 0.49
+   },
+   "depth_extent_mm": 171,
+   "lean 3 deg": {
+    "one_scale_p95_mm": 16.1,
+    "scale_rigid_p95_mm": 1.77
+   },
+   "lean 6 deg": {
+    "one_scale_p95_mm": 29.35,
+    "scale_rigid_p95_mm": 2.73
+   }
+  },
+  "tilt 60 deg": {
+   "lean 0 deg": {
+    "one_scale_p95_mm": 0.18,
+    "scale_rigid_p95_mm": 0.72
+   },
+   "depth_extent_mm": 225,
+   "lean 3 deg": {
+    "one_scale_p95_mm": 14.93,
+    "scale_rigid_p95_mm": 1.71
+   },
+   "lean 6 deg": {
+    "one_scale_p95_mm": 29.04,
+    "scale_rigid_p95_mm": 2.66
+   }
+  }
+ },
+ "e2": {
+  "600": {
+   "mesh, placed as one": {
+    "max_mm": {
+     "median": 1.825,
+     "p95": 2.75,
+     "n": 12
+    },
+    "centre_mm": {
+     "median": 1.058,
+     "p95": 2.237,
+     "n": 12
+    },
+    "rot_deg": {
+     "median": 0.303,
+     "p95": 0.496,
+     "n": 12
+    }
+   },
+   "mesh + surface layer": {
+    "max_mm": {
+     "median": 1.707,
+     "p95": 2.662,
+     "n": 12
+    },
+    "centre_mm": {
+     "median": 0.984,
+     "p95": 2.195,
+     "n": 12
+    },
+    "rot_deg": {
+     "median": 0.342,
+     "p95": 0.471,
+     "n": 12
+    }
+   },
+   "reference surface, 1 frame": {
+    "max_mm": {
+     "median": 0.324,
+     "p95": 0.485,
+     "n": 12
+    },
+    "centre_mm": {
+     "median": 0.174,
+     "p95": 0.362,
+     "n": 12
+    },
+    "rot_deg": {
+     "median": 0.061,
+     "p95": 0.106,
+     "n": 12
+    },
+    "ms": 65.3,
+    "points": 6421
+   },
+   "reference surface, 3 frames": {
+    "max_mm": {
+     "median": 0.167,
+     "p95": 0.259,
+     "n": 12
+    },
+    "centre_mm": {
+     "median": 0.108,
+     "p95": 0.195,
+     "n": 12
+    },
+    "rot_deg": {
+     "median": 0.039,
+     "p95": 0.059,
+     "n": 12
+    },
+    "ms": 62.9,
+    "points": 6421
+   }
+  },
+  "1000": {
+   "mesh, placed as one": {
+    "max_mm": {
+     "median": 1.47,
+     "p95": 2.33,
+     "n": 12
+    },
+    "centre_mm": {
+     "median": 1.255,
+     "p95": 1.869,
+     "n": 12
+    },
+    "rot_deg": {
+     "median": 0.111,
+     "p95": 0.351,
+     "n": 12
+    }
+   },
+   "mesh + surface layer": {
+    "max_mm": {
+     "median": 1.518,
+     "p95": 2.42,
+     "n": 12
+    },
+    "centre_mm": {
+     "median": 1.257,
+     "p95": 1.955,
+     "n": 12
+    },
+    "rot_deg": {
+     "median": 0.217,
+     "p95": 0.444,
+     "n": 12
+    }
+   },
+   "reference surface, 1 frame": {
+    "max_mm": {
+     "median": 0.315,
+     "p95": 0.556,
+     "n": 12
+    },
+    "centre_mm": {
+     "median": 0.16,
+     "p95": 0.265,
+     "n": 12
+    },
+    "rot_deg": {
+     "median": 0.069,
+     "p95": 0.143,
+     "n": 12
+    },
+    "ms": 51.2,
+    "points": 5310
+   },
+   "reference surface, 3 frames": {
+    "max_mm": {
+     "median": 0.192,
+     "p95": 0.242,
+     "n": 12
+    },
+    "centre_mm": {
+     "median": 0.093,
+     "p95": 0.189,
+     "n": 12
+    },
+    "rot_deg": {
+     "median": 0.025,
+     "p95": 0.064,
+     "n": 12
+    },
+    "ms": 50.2,
+    "points": 5310
+   }
+  },
+  "1500": {
+   "mesh, placed as one": {
+    "max_mm": {
+     "median": 1.072,
+     "p95": 2.085,
+     "n": 12
+    },
+    "centre_mm": {
+     "median": 0.878,
+     "p95": 1.702,
+     "n": 12
+    },
+    "rot_deg": {
+     "median": 0.184,
+     "p95": 0.35,
+     "n": 12
+    }
+   },
+   "mesh + surface layer": {
+    "max_mm": {
+     "median": 1.18,
+     "p95": 2.117,
+     "n": 12
+    },
+    "centre_mm": {
+     "median": 0.877,
+     "p95": 1.703,
+     "n": 12
+    },
+    "rot_deg": {
+     "median": 0.23,
+     "p95": 0.428,
+     "n": 12
+    }
+   },
+   "reference surface, 1 frame": {
+    "max_mm": {
+     "median": 0.347,
+     "p95": 0.49,
+     "n": 12
+    },
+    "centre_mm": {
+     "median": 0.151,
+     "p95": 0.314,
+     "n": 12
+    },
+    "rot_deg": {
+     "median": 0.087,
+     "p95": 0.176,
+     "n": 12
+    },
+    "ms": 30.6,
+    "points": 3086
+   },
+   "reference surface, 3 frames": {
+    "max_mm": {
+     "median": 0.196,
+     "p95": 0.328,
+     "n": 12
+    },
+    "centre_mm": {
+     "median": 0.133,
+     "p95": 0.245,
+     "n": 12
+    },
+    "rot_deg": {
+     "median": 0.044,
+     "p95": 0.077,
+     "n": 12
+    },
+    "ms": 29.6,
+    "points": 3086
+   }
+  },
+  "2000": {
+   "mesh, placed as one": {
+    "max_mm": {
+     "median": 1.211,
+     "p95": 1.869,
+     "n": 12
+    },
+    "centre_mm": {
+     "median": 1.018,
+     "p95": 1.509,
+     "n": 12
+    },
+    "rot_deg": {
+     "median": 0.138,
+     "p95": 0.352,
+     "n": 12
+    }
+   },
+   "mesh + surface layer": {
+    "max_mm": {
+     "median": 1.267,
+     "p95": 1.967,
+     "n": 12
+    },
+    "centre_mm": {
+     "median": 1.007,
+     "p95": 1.517,
+     "n": 12
+    },
+    "rot_deg": {
+     "median": 0.264,
+     "p95": 0.402,
+     "n": 12
+    }
+   },
+   "reference surface, 1 frame": {
+    "max_mm": {
+     "median": 0.605,
+     "p95": 1.025,
+     "n": 12
+    },
+    "centre_mm": {
+     "median": 0.3,
+     "p95": 0.487,
+     "n": 12
+    },
+    "rot_deg": {
+     "median": 0.144,
+     "p95": 0.313,
+     "n": 12
+    },
+    "ms": 17.4,
+    "points": 2141
+   },
+   "reference surface, 3 frames": {
+    "max_mm": {
+     "median": 0.291,
+     "p95": 0.558,
+     "n": 12
+    },
+    "centre_mm": {
+     "median": 0.119,
+     "p95": 0.26,
+     "n": 12
+    },
+    "rot_deg": {
+     "median": 0.082,
+     "p95": 0.201,
+     "n": 12
+    },
+    "ms": 21.7,
+    "points": 2141
+   }
+  },
+  "2500": {
+   "mesh, placed as one": {
+    "max_mm": {
+     "median": 1.176,
+     "p95": 2.154,
+     "n": 12
+    },
+    "centre_mm": {
+     "median": 1.082,
+     "p95": 1.673,
+     "n": 12
+    },
+    "rot_deg": {
+     "median": 0.098,
+     "p95": 0.469,
+     "n": 12
+    }
+   },
+   "mesh + surface layer": {
+    "max_mm": {
+     "median": 1.369,
+     "p95": 2.181,
+     "n": 12
+    },
+    "centre_mm": {
+     "median": 1.053,
+     "p95": 1.68,
+     "n": 12
+    },
+    "rot_deg": {
+     "median": 0.26,
+     "p95": 0.679,
+     "n": 12
+    }
+   },
+   "reference surface, 1 frame": {
+    "max_mm": {
+     "median": 0.763,
+     "p95": 1.139,
+     "n": 12
+    },
+    "centre_mm": {
+     "median": 0.448,
+     "p95": 0.656,
+     "n": 12
+    },
+    "rot_deg": {
+     "median": 0.158,
+     "p95": 0.332,
+     "n": 12
+    },
+    "ms": 11.8,
+    "points": 1594
+   },
+   "reference surface, 3 frames": {
+    "max_mm": {
+     "median": 0.335,
+     "p95": 0.87,
+     "n": 12
+    },
+    "centre_mm": {
+     "median": 0.184,
+     "p95": 0.387,
+     "n": 12
+    },
+    "rot_deg": {
+     "median": 0.089,
+     "p95": 0.234,
+     "n": 12
+    },
+    "ms": 8.8,
+    "points": 1598
+   }
+  },
+  "3000": {
+   "mesh, placed as one": {
+    "max_mm": {
+     "median": 1.344,
+     "p95": 2.462,
+     "n": 12
+    },
+    "centre_mm": {
+     "median": 1.223,
+     "p95": 2.0,
+     "n": 12
+    },
+    "rot_deg": {
+     "median": 0.163,
+     "p95": 0.467,
+     "n": 12
+    }
+   },
+   "mesh + surface layer": {
+    "max_mm": {
+     "median": 1.834,
+     "p95": 2.657,
+     "n": 12
+    },
+    "centre_mm": {
+     "median": 1.241,
+     "p95": 2.039,
+     "n": 12
+    },
+    "rot_deg": {
+     "median": 0.343,
+     "p95": 0.614,
+     "n": 12
+    }
+   },
+   "reference surface, 1 frame": {
+    "max_mm": {
+     "median": 0.913,
+     "p95": 1.401,
+     "n": 12
+    },
+    "centre_mm": {
+     "median": 0.646,
+     "p95": 1.049,
+     "n": 12
+    },
+    "rot_deg": {
+     "median": 0.238,
+     "p95": 0.358,
+     "n": 12
+    },
+    "ms": 11.2,
+    "points": 1116
+   },
+   "reference surface, 3 frames": {
+    "max_mm": {
+     "median": 0.567,
+     "p95": 0.95,
+     "n": 12
+    },
+    "centre_mm": {
+     "median": 0.297,
+     "p95": 0.535,
+     "n": 12
+    },
+    "rot_deg": {
+     "median": 0.15,
+     "p95": 0.28,
+     "n": 12
+    },
+    "ms": 11.3,
+    "points": 1119
+   }
+  }
+ },
+ "e3": {
+  "none": {
+   "absolute_mm": 0.2,
+   "shift 2 mm": {
+    "median": 0.175,
+    "p95": 0.347,
+    "n": 12
+   },
+   "shift 10 mm": {
+    "median": 0.25,
+    "p95": 0.438,
+    "n": 12
+   },
+   "shift 30 mm": {
+    "median": 0.179,
+    "p95": 0.287,
+    "n": 12
+   },
+   "shift 100 mm": {
+    "median": 0.204,
+    "p95": 0.554,
+    "n": 12
+   }
+  },
+  "scale 0.2%": {
+   "absolute_mm": 3.0,
+   "shift 2 mm": {
+    "median": 0.184,
+    "p95": 0.308,
+    "n": 12
+   },
+   "shift 10 mm": {
+    "median": 0.234,
+    "p95": 0.484,
+    "n": 12
+   },
+   "shift 30 mm": {
+    "median": 0.207,
+    "p95": 0.301,
+    "n": 12
+   },
+   "shift 100 mm": {
+    "median": 0.317,
+    "p95": 0.583,
+    "n": 12
+   }
+  },
+  "offset 5 mm": {
+   "absolute_mm": 5.0,
+   "shift 2 mm": {
+    "median": 0.167,
+    "p95": 0.295,
+    "n": 12
+   },
+   "shift 10 mm": {
+    "median": 0.255,
+    "p95": 0.46,
+    "n": 12
+   },
+   "shift 30 mm": {
+    "median": 0.186,
+    "p95": 0.337,
+    "n": 12
+   },
+   "shift 100 mm": {
+    "median": 0.29,
+    "p95": 0.519,
+    "n": 12
+   }
+  },
+  "cyclic 1.5 mm / 0.5 m": {
+   "absolute_mm": 0.36,
+   "shift 2 mm": {
+    "median": 0.163,
+    "p95": 0.246,
+    "n": 12
+   },
+   "shift 10 mm": {
+    "median": 0.25,
+    "p95": 0.37,
+    "n": 12
+   },
+   "shift 30 mm": {
+    "median": 0.601,
+    "p95": 0.673,
+    "n": 12
+   },
+   "shift 100 mm": {
+    "median": 1.745,
+    "p95": 1.816,
+    "n": 12
+   }
+  },
+  "all three": {
+   "absolute_mm": 8.01,
+   "shift 2 mm": {
+    "median": 0.185,
+    "p95": 0.303,
+    "n": 12
+   },
+   "shift 10 mm": {
+    "median": 0.308,
+    "p95": 0.431,
+    "n": 12
+   },
+   "shift 30 mm": {
+    "median": 0.641,
+    "p95": 0.73,
+    "n": 12
+   },
+   "shift 100 mm": {
+    "median": 1.937,
+    "p95": 2.024,
+    "n": 12
+   }
+  }
+ },
+ "e4": {
+  "offset": {
+   "0 mm": {
+    "max_mm": {
+     "median": 0.24,
+     "p95": 0.587,
+     "n": 12
+    },
+    "centre_mm": {
+     "median": 0.172,
+     "p95": 0.322,
+     "n": 12
+    },
+    "rot_deg": {
+     "median": 0.045,
+     "p95": 0.138,
+     "n": 12
+    },
+    "ms": 29.8,
+    "points": 3072
+   },
+   "10 mm": {
+    "max_mm": {
+     "median": 0.217,
+     "p95": 0.572,
+     "n": 12
+    },
+    "centre_mm": {
+     "median": 0.157,
+     "p95": 0.304,
+     "n": 12
+    },
+    "rot_deg": {
+     "median": 0.048,
+     "p95": 0.138,
+     "n": 12
+    },
+    "ms": 18.5,
+    "points": 2996
+   },
+   "20 mm": {
+    "max_mm": {
+     "median": 0.202,
+     "p95": 0.501,
+     "n": 12
+    },
+    "centre_mm": {
+     "median": 0.134,
+     "p95": 0.243,
+     "n": 12
+    },
+    "rot_deg": {
+     "median": 0.051,
+     "p95": 0.132,
+     "n": 12
+    },
+    "ms": 28.3,
+    "points": 2949
+   },
+   "40 mm": {
+    "max_mm": {
+     "median": 0.181,
+     "p95": 0.359,
+     "n": 12
+    },
+    "centre_mm": {
+     "median": 0.129,
+     "p95": 0.208,
+     "n": 12
+    },
+    "rot_deg": {
+     "median": 0.054,
+     "p95": 0.093,
+     "n": 12
+    },
+    "ms": 25.6,
+    "points": 3644
+   }
+  },
+  "size": {
+   "40 mm": {
+    "max_mm": {
+     "median": 3.251,
+     "p95": 4.774,
+     "n": 12
+    },
+    "centre_mm": {
+     "median": 2.553,
+     "p95": 4.581,
+     "n": 12
+    },
+    "rot_deg": {
+     "median": 1.191,
+     "p95": 2.069,
+     "n": 12
+    },
+    "ms": 5.2,
+    "points": 296
+   },
+   "70 mm": {
+    "max_mm": {
+     "median": 0.967,
+     "p95": 1.753,
+     "n": 12
+    },
+    "centre_mm": {
+     "median": 0.83,
+     "p95": 1.43,
+     "n": 12
+    },
+    "rot_deg": {
+     "median": 0.291,
+     "p95": 0.428,
+     "n": 12
+    },
+    "ms": 10.4,
+    "points": 956
+   },
+   "120 mm": {
+    "max_mm": {
+     "median": 0.24,
+     "p95": 0.587,
+     "n": 12
+    },
+    "centre_mm": {
+     "median": 0.172,
+     "p95": 0.322,
+     "n": 12
+    },
+    "rot_deg": {
+     "median": 0.045,
+     "p95": 0.138,
+     "n": 12
+    },
+    "ms": 30.3,
+    "points": 3072
+   },
+   "170 mm": {
+    "max_mm": {
+     "median": 0.213,
+     "p95": 0.312,
+     "n": 12
+    },
+    "centre_mm": {
+     "median": 0.087,
+     "p95": 0.157,
+     "n": 12
+    },
+    "rot_deg": {
+     "median": 0.056,
+     "p95": 0.073,
+     "n": 12
+    },
+    "ms": 41.2,
+    "points": 8463
+   }
+  },
+  "pose error": {
+   "lean 0 deg": {
+    "max_mm": {
+     "median": 0.252,
+     "p95": 0.578,
+     "n": 12
+    },
+    "centre_mm": {
+     "median": 0.158,
+     "p95": 0.29,
+     "n": 12
+    },
+    "rot_deg": {
+     "median": 0.055,
+     "p95": 0.141,
+     "n": 12
+    },
+    "ms": 29.7,
+    "points": 3058
+   },
+   "lean 3 deg": {
+    "max_mm": {
+     "median": 0.299,
+     "p95": 0.607,
+     "n": 12
+    },
+    "centre_mm": {
+     "median": 0.174,
+     "p95": 0.33,
+     "n": 12
+    },
+    "rot_deg": {
+     "median": 0.066,
+     "p95": 0.143,
+     "n": 12
+    },
+    "ms": 28.9,
+    "points": 3118
+   },
+   "lean 8 deg": {
+    "max_mm": {
+     "median": 0.216,
+     "p95": 0.525,
+     "n": 12
+    },
+    "centre_mm": {
+     "median": 0.117,
+     "p95": 0.249,
+     "n": 12
+    },
+    "rot_deg": {
+     "median": 0.064,
+     "p95": 0.143,
+     "n": 12
+    },
+    "ms": 22.0,
+    "points": 3148
+   },
+   "lean 15 deg": {
+    "max_mm": {
+     "median": 0.253,
+     "p95": 0.487,
+     "n": 12
+    },
+    "centre_mm": {
+     "median": 0.151,
+     "p95": 0.38,
+     "n": 12
+    },
+    "rot_deg": {
+     "median": 0.053,
+     "p95": 0.114,
+     "n": 12
+    },
+    "ms": 24.6,
+    "points": 3065
+   }
+  }
+ },
+ "e5": {
+  "one camera, in front": {
+   "max_mm": {
+    "median": 0.337,
+    "p95": 0.51,
+    "n": 12
+   },
+   "centre_mm": {
+    "median": 0.219,
+    "p95": 0.412,
+    "n": 12
+   },
+   "rot_deg": {
+    "median": 0.062,
+    "p95": 0.125,
+    "n": 12
+   },
+   "ms": 15.6,
+   "points": 2903
+  },
+  "one camera, 50 deg to the side": {
+   "max_mm": {
+    "median": 0.378,
+    "p95": 0.56,
+    "n": 12
+   },
+   "centre_mm": {
+    "median": 0.303,
+    "p95": 0.395,
+    "n": 12
+   },
+   "rot_deg": {
+    "median": 0.062,
+    "p95": 0.125,
+    "n": 12
+   },
+   "ms": 24.9,
+   "points": 2469
+  },
+  "three pods (0, +50, -50 deg)": {
+   "max_mm": {
+    "median": 0.114,
+    "p95": 0.226,
+    "n": 12
+   },
+   "centre_mm": {
+    "median": 0.073,
+    "p95": 0.186,
+    "n": 12
+   },
+   "rot_deg": {
+    "median": 0.03,
+    "p95": 0.055,
+    "n": 12
+   },
+   "ms": 60.3,
+   "points": 7814
+  },
+  "three pods, poses known to 0.3 mm / 0.03 deg": {
+   "max_mm": {
+    "median": 0.518,
+    "p95": 0.744,
+    "n": 12
+   },
+   "centre_mm": {
+    "median": 0.19,
+    "p95": 0.348,
+    "n": 12
+   },
+   "rot_deg": {
+    "median": 0.164,
+    "p95": 0.241,
+    "n": 12
+   },
+   "ms": 72.9,
+   "points": 7810
+  },
+  "three pods, poses known to 1 mm / 0.1 deg": {
+   "max_mm": {
+    "median": 1.71,
+    "p95": 2.421,
+    "n": 12
+   },
+   "centre_mm": {
+    "median": 0.895,
+    "p95": 1.52,
+    "n": 12
+   },
+   "rot_deg": {
+    "median": 0.338,
+    "p95": 0.661,
+    "n": 12
+   },
+   "ms": 75.4,
+   "points": 7780
+  }
+ }
+}

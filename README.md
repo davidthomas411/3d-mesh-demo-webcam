@@ -377,6 +377,11 @@ frame's, and start afresh when the model delivers a new mesh. The model's own me
 When a frame cannot be fitted (the body left the depth image, or came nearer than the depth mode's half metre), the last
 placement that fitted stands in for up to 45 frames, so the mesh does not jump back to the model's own, wrong, distance.
 
+**Where this should go for clinical use** is worked out on simulated data in [docs/DEPTH_STUDY.md](docs/DEPTH_STUDY.md): the
+mesh, however it is fitted, is right to a few millimetres (limited by the model's shape); a region's shift from its reference
+should be measured by registering the region's live depth onto its reference depth surface, with the mesh only selecting the
+pixels and giving the first guess (0.2 mm median at 1.5 m in simulation). That is not built yet.
+
 Two delays are on screen, and the status line shows both: WHERE the body is and its surface come from the depth frame
 (tens of milliseconds); HOW IT IS POSED comes from the picture the model last worked on (about 300 ms). A head turn
 therefore still reaches the skeleton late, while a move of the whole body does not.
