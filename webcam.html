@@ -762,7 +762,7 @@
       return { cx: (x0 + x1) / 2, cy: (y0 + y1) / 2, cz: (z0 + z1) / 2, half: Math.min(0.55, Math.max(0.1, 0.65 * Math.max(x1 - x0, y1 - y0))), names };
     }
     function imagingViewNow(insetCentre, referenceHeld) {
-      let cx = insetCentre[0], cy = insetCentre[1], cz = 0, half = 0.55, label = "";
+      let cx = insetCentre[0], cy = insetCentre[1], cz = insetCentre[2] || 0, half = 0.55, label = "";
       if (imgView.tracked) {
         const box = referenceHeld && imgView.box ? imgView.box : selectedRegionBox();
         if (box) {
@@ -876,7 +876,11 @@
         : centre;
       const refHeld = (ctVolView && (ctVolView.holdsReference("slice") || ctVolView.holdsReference("drr")))
         || Object.values(xrayViews).some((v) => v.hasReference);
-      const iv = imagingViewNow(insetCentre, refHeld), viewCentre = iv.centre;
+      // A gantry replay shown in the room frame: the radiograph's viewpoint is fixed in the ROOM (from above the couch, head
+      // up) and so is the picture's centre, so a still patient gives a still picture while the camera goes round, and a
+      // captured reference shows the patient's own movement.
+      const roomView = roomImagingView(insetCentre);
+      const iv = imagingViewNow(roomView ? roomView.centre : insetCentre, refHeld), viewCentre = iv.centre;
       for (const v of Object.values(xrayViews)) v.half = iv.half;
       if (ctVolView) { ctVolView.half = iv.half; ctVolView.followCentre = iv.custom; }
       if (ctView) ctView.half = iv.half;
@@ -895,18 +899,19 @@
         if (voxelDrr) lastVoxelDrrMs = nowMs;
         const turned = drrOrbit.yaw !== 0 || drrOrbit.pitch !== 0;
         if (voxelDrr) {
-          ctVolView.renderDrr(viewCentre, { x: 0, y: 0, w: s, h: s }, turned ? drrOrbit : null);
+          ctVolView.renderDrr(viewCentre, { x: 0, y: 0, w: s, h: s }, turned ? drrOrbit : null, roomView);
           copyTo(drrCanvas);
         }
         if (surfaceDrr) {                                      // on its own, or mixed over the voxel DRR
-          surfaceDrr.render("ap", viewCentre, { x: 0, y: 0, w: s, h: s }, turned ? drrOrbit : null);
+          surfaceDrr.render("ap", viewCentre, { x: 0, y: 0, w: s, h: s }, turned ? drrOrbit : null, roomView);
           copyTo(drrCanvas, voxelDrr ? drrBlend : 1);
         }
         const bones = drrSource === "atlas" || !(skeletonMode === "skel" && skelLayer) ? "CT atlas bones" : "SKEL skeleton";
         const what = voxelDrr && surfaceDrr ? "CT voxels + " + Math.round(drrBlend * 100) + "% " + bones + (petOn ? " + PET MIP" : "")
           : voxelDrr ? "CT voxels, atlas subject" + (petOn ? " + PET MIP" : "")
           : bones;
-        const view = turned
+        const view = roomView ? "room view from above"
+          : turned
           ? "turned " + Math.round(drrOrbit.yaw * 180 / Math.PI) + "° / " + Math.round(drrOrbit.pitch * 180 / Math.PI) + "°, double-click to reset"
           : "camera view, drag to turn";
         drrCaption.textContent = ((voxelDrr && ctVolView.holdsReference("drr")) || (surfaceDrr && surfaceDrr.hasReference))
@@ -915,7 +920,8 @@
       }
       if (showC) {
         // a reference only means something in a picture fixed to the camera: while one is held the slice is in the camera plane
-        const held = real && ctVolView.holdsReference("slice"), aligned = ctBodyAligned && !held;
+        // (in the room frame the camera plane turns with the gantry, so the slice stays with the body there)
+        const held = real && ctVolView.holdsReference("slice"), aligned = ctBodyAligned && (!held || !!roomView);
         if (real) ctVolView.render(viewCentre, ctOffsetM, { x: 0, y: 0, w: s, h: s }, aligned);
         else ctView.render(viewCentre, ctOffsetM, { x: 0, y: 0, w: s, h: s });
         copyTo(ctCanvas);
@@ -1324,6 +1330,7 @@
       fitStats.pose = fitStats.pose ? 0.9 * fitStats.pose + 0.1 * pose : pose;
       window.demoFit = { n: fitStats.n, rate: fitStats.rate, totalMs: fitStats.total, poseMs: fitStats.pose, info: m.depth, modelAgeMs: m.model_age_ms };
       const d = m.depth || {};
+      if (!d.held) liveFitAt = performance.now();                // a mesh the depth camera has just placed
       status.textContent = "Depth fit active | " + fitStats.rate.toFixed(0) + " fits/s | position and surface: " +
         fitStats.total.toFixed(0) + " ms after the depth frame arrived | pose: " + fitStats.pose.toFixed(0) +
         " ms after the picture was taken (each camera's own delay comes on top)";
@@ -1504,10 +1511,15 @@
      * a hole in the depth, or in front of the background, nothing is drawn.
      */
     let depthClipOn = false;
+    // Not live, not shown. With the depth fit on, the only body worth drawing is one the depth camera has just placed. When
+    // the fit stops (nothing fitted for 0.6 s, or it is only holding its last placement) the server falls back to the model's
+    // own mesh, which is a guess at distance; that is not drawn, and neither is the skeleton built on it.
+    let liveFitAt = 0;
+    function meshLive() { return !(depthFuse && boltCamera) || performance.now() - liveFitAt < 600; }
     const depthClip = {
       uDcOn: { value: 0 }, uDcDepth: { value: null }, uDcSceneInv: { value: new THREE.Matrix4() }, uDcR: { value: new THREE.Matrix3() },
       uDcT: { value: new THREE.Vector3() }, uDcKd: { value: new THREE.Vector4(1, 1, 0, 0) }, uDcSize: { value: new THREE.Vector2(1, 1) },
-      uDcDist: { value: [0, 0, 0, 0, 0, 0, 0, 0] },
+      uDcDist: { value: [0, 0, 0, 0, 0, 0, 0, 0] }, uDcHide: { value: 0 },
     };
     function depthClipMaterial(material) {
       if (!material || material.userData.depthClip || material.isShaderMaterial) return;
@@ -1519,9 +1531,10 @@
         Object.assign(shader.uniforms, depthClip);
         shader.vertexShader = "uniform mat4 uDcSceneInv; varying vec3 vDcCam;\n" + shader.vertexShader.replace("#include <project_vertex>",
           "#include <project_vertex>\n vDcCam = (uDcSceneInv * modelMatrix * vec4(transformed, 1.0)).xyz;");
-        shader.fragmentShader = `uniform float uDcOn; uniform sampler2D uDcDepth; uniform mat3 uDcR; uniform vec3 uDcT; uniform vec4 uDcKd;
+        shader.fragmentShader = `uniform float uDcOn; uniform float uDcHide; uniform sampler2D uDcDepth; uniform mat3 uDcR; uniform vec3 uDcT; uniform vec4 uDcKd;
           uniform vec2 uDcSize; uniform float uDcDist[8]; varying vec3 vDcCam;\n` + shader.fragmentShader.replace("#include <clipping_planes_fragment>",
           `#include <clipping_planes_fragment>
+          if (uDcHide > 0.5) discard;
           if (uDcOn > 0.5) {
             vec3 pc = vec3(vDcCam.x, -vDcCam.y, -vDcCam.z) * 1000.0;                       // colour camera frame, mm
             vec3 pd = transpose(uDcR) * (pc - uDcT);                                        // depth camera frame
@@ -1550,19 +1563,21 @@
     function depthClipTick() {
       const ready = depthClipOn && cloudObject && cloudObject.userData.kd;
       depthClip.uDcOn.value = ready ? 1 : 0;
-      if (!ready || !scene) return;
-      depthClip.uDcDepth.value = cloudObject.userData.depthTex;
-      // room -> the depth camera at the moment of the depth frame on the card (not of the mesh, which is older)
-      if (roomOn && roomPose && !scene.matrixAutoUpdate) roomMatrix(roomIndexAt(cloudMediaTime), depthClip.uDcSceneInv.value).invert();
-      else depthClip.uDcSceneInv.value.copy(scene.matrix).invert();
-      const now = performance.now();
-      if (now - depthClipSwept > 700) {                          // the skeleton's parts come and go: take in new materials
-        depthClipSwept = now;
+      depthClip.uDcHide.value = meshLive() ? 0 : 1;
+      if (!scene) return;
+      const sweepNow = performance.now();
+      if (sweepNow - depthClipSwept > 700 && (ready || depthFuse)) {   // the skeleton's parts come and go: take in new materials
+        depthClipSwept = sweepNow;
         scene.traverse((o) => {
           if (!o.isMesh || o === referenceMesh) return;
           for (const m of Array.isArray(o.material) ? o.material : [o.material]) depthClipMaterial(m);
         });
       }
+      if (!ready) return;
+      depthClip.uDcDepth.value = cloudObject.userData.depthTex;
+      // room -> the depth camera at the moment of the depth frame on the card (not of the mesh, which is older)
+      if (roomOn && roomPose && !scene.matrixAutoUpdate) roomMatrix(roomIndexAt(cloudMediaTime), depthClip.uDcSceneInv.value).invert();
+      else depthClip.uDcSceneInv.value.copy(scene.matrix).invert();
     }
     function setDepthClip(on) {
       const start = on && !depthClipOn && !cloudOn;
@@ -1709,6 +1724,76 @@
       const p = roomPose.pose[i];
       return out.set(p[0], p[1], p[2], p[3], p[4], p[5], p[6], p[7], p[8], p[9], p[10], p[11], 0, 0, 0, 1);
     }
+    /*
+     * Head-up display in the 3-D view: what the tracking is doing right now, and anything that should make the numbers
+     * distrusted (the fit holding its last result, depth or pose running late, a shift outside tolerance). Refreshed five
+     * times a second. H hides it.
+     */
+    let hudEl = null, hudLast = 0, hudHidden = false;
+    window.addEventListener("keydown", (e) => { if (e.key === "h" && !/INPUT|SELECT|TEXTAREA/.test(e.target.tagName)) { hudHidden = !hudHidden; hudLast = 0; } });
+    function hudTick() {
+      const now = performance.now();
+      if (now - hudLast < 200 || !renderer) return;
+      hudLast = now;
+      if (!hudEl) {
+        hudEl = document.createElement("div");
+        hudEl.id = "trackHud";
+        hudEl.style.cssText = "position:absolute;left:10px;bottom:10px;z-index:5;pointer-events:none;font:12px/1.5 ui-monospace,Consolas,monospace;" +
+          "color:#d7e3f4;background:rgba(8,12,20,0.72);border:1px solid rgba(120,150,190,0.35);border-radius:6px;padding:8px 10px;min-width:250px;white-space:pre";
+        const host = renderer.domElement.parentElement;
+        if (getComputedStyle(host).position === "static") host.style.position = "relative";
+        host.appendChild(hudEl);
+      }
+      hudEl.style.display = hudHidden || !running ? "none" : "block";
+      if (hudHidden || !running) return;
+      const esc = (t) => String(t).replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
+      const ok = (t) => '<span style="color:#39d98a">' + esc(t) + "</span>", warn = (t) => '<span style="color:#ffb020">' + esc(t) + "</span>",
+        bad = (t) => '<span style="color:#ff5a5f">' + esc(t) + "</span>", dim = (t) => '<span style="color:#8493a8">' + esc(t) + "</span>";
+      const row = (k, v) => dim(k.padEnd(12)) + v;
+      const L = [], replay = !video.srcObject, room = roomOn && roomPose && replay;
+      if (room) {
+        const i = roomIndexAt(video.currentTime);
+        L.push(row("gantry", ok(roomPose.angle[i].toFixed(1) + " deg") + dim("  (" + (roomPose.angle_from === "linac" ? "linac console" : "from depth") + ")")));
+        L.push(row("frame", "room, origin at cube centre"));
+      } else L.push(row("frame", warn("camera") + dim(replay ? "  (no camera poses for this replay)" : "")));
+      if (replay && video.duration) L.push(row("video", video.currentTime.toFixed(1) + " / " + video.duration.toFixed(1) + " s"));
+      const fit = window.demoFit, fresh = fit && fitStats.last && now - fitStats.last < 1500, d = (fit && fit.info) || {};
+      if (!meshLive()) L.push(row("body", bad("NOT LIVE: hidden") + dim("  (shifts frozen)")));
+      if (!depthFuse) L.push(row("depth fit", dim("off")));
+      else if (!fresh) L.push(row("depth fit", bad("NO FITS")));
+      else if (d.held) L.push(row("depth fit", warn("HOLDING") + dim("  " + (d.reason || "no depth on the body"))));
+      else {
+        L.push(row("depth fit", ok(fit.rate.toFixed(0) + " fits/s")));
+        if (d.median_mm !== undefined && d.median_mm !== null) {
+          const m = d.median_mm, w = Math.round(100 * (d.within_2mm || 0));
+          L.push(row("skin-depth", (m < 2 ? ok : m < 5 ? warn : bad)(m.toFixed(1) + " mm median") + dim("  " + w + "% within 2 mm")));
+        }
+      }
+      if (fresh) {
+        const a = fit.totalMs, q = fit.poseMs;
+        L.push(row("latency", (a < 150 ? ok : a < 400 ? warn : bad)(a.toFixed(0) + " ms depth") + "  " + (q < 500 ? ok : q < 1200 ? warn : bad)(q.toFixed(0) + " ms pose")));
+      }
+      if (room && cloudMediaTime !== null && (cloudOn || depthClipOn)) {
+        let lag = video.currentTime - cloudMediaTime;
+        if (lag < -1) lag += video.duration || 0;                // the video has looped
+        L.push(row("depth lag", (Math.abs(lag) < 0.15 ? ok : Math.abs(lag) < 0.5 ? warn : bad)((lag * 1000).toFixed(0) + " ms behind the video")));
+      }
+      L.push(row("shown", [cloudOn ? "cloud" : null, depthClipOn ? "body only where measured" : "whole body"].filter(Boolean).join(", ")));
+      if (!referenceVertices) L.push(row("reference", dim("none captured")));
+      else {
+        const rows = [...document.querySelectorAll("#trackingReadout > div")];
+        const out = rows.filter((r) => r.classList.contains("outsideTolerance")).length, near = rows.filter((r) => r.classList.contains("nearTolerance")).length;
+        L.push(row("reference", (referenceCapturedAt ? referenceCapturedAt.toLocaleTimeString() : "captured") + dim("  " + (getSelectedRegionNames().join("+") || "full body"))));
+        const txt = document.querySelector("#trackingReadout").innerText.replace(/\s+/g, " ");
+        const g = (k) => { const m = txt.match(new RegExp(k + "\\s*([-+]?[0-9.]+)")); return m ? m[1] : "--"; };
+        L.push(row("shift mm", "LAT " + g("LAT") + "  LNG " + g("LNG") + "  VRT " + g("VRT")));
+        L.push(row("turn deg", "YAW " + g("YAW") + "  PITCH " + g("PITCH") + "  ROLL " + g("ROLL")));
+        L.push(row("tolerance", out ? bad(out + " OUT OF TOLERANCE") : near ? warn(near + " near the limit") : ok("all within")));
+        L.push(row("measured by", warn("body mesh") + dim("  (cm-level; not the depth registration)")));
+      }
+      hudEl.innerHTML = L.join("\n");
+    }
+
     async function roomFrameLoad() {
       if (new URLSearchParams(window.location.search).get("room") === "0") return;
       try {
@@ -1895,6 +1980,7 @@
         anatomyTick();
         roomFrameTick();
         depthClipTick();
+        hudTick();
         controls.update();
         xrayDraw();
         cloudPreRender();
@@ -2202,6 +2288,23 @@
      * it is run with the four arrays it reads swapped for their room versions.
      */
     let roomRef = { key: null }, roomSwapDepth = 0;
+    let roomViewCentre = null;                                   // the pictures' centre, fixed in the room (tracking coordinates, m)
+    function roomImagingView(centreRaw) {
+      if (!roomOn || !roomPose || video.srcObject || !latestPredCamT) return null;
+      const p = roomPose.pose[roomIndexAt(meshMediaTime)], t = latestPredCamT;
+      // camera -> room tracking coordinates (see toRoomTracking): rows of r, and its offset
+      const r = [-p[0], p[1], p[2], -p[8], p[9], p[10], -p[4], p[5], p[6]], o = [-p[3], -p[11], -p[7]];
+      if (!roomViewCentre) {                                     // where the picture's centre is now, kept from here on
+        const x = centreRaw[0] + t[0], y = centreRaw[1] + t[1], z = (centreRaw[2] || 0) + t[2];
+        roomViewCentre = [r[0] * x + r[1] * y + r[2] * z + o[0], r[3] * x + r[4] * y + r[5] * z + o[1], r[6] * x + r[7] * y + r[8] * z + o[2]];
+      }
+      const q = [roomViewCentre[0] - o[0], roomViewCentre[1] - o[1], roomViewCentre[2] - o[2]];
+      return {
+        centre: [r[0] * q[0] + r[3] * q[1] + r[6] * q[2] - t[0], r[1] * q[0] + r[4] * q[1] + r[7] * q[2] - t[1], r[2] * q[0] + r[5] * q[1] + r[8] * q[2] - t[2]],
+        back: [-r[6], -r[7], -r[8]],                             // towards the ceiling, in the camera's frame
+        up: [-r[3], -r[4], -r[5]],                               // towards the head
+      };
+    }
     function roomPoseIndex() {
       return roomIndexAt(meshMediaTime);                         // the mesh being tracked, at the moment it was measured
     }
@@ -2247,7 +2350,7 @@
       }
     }
     function updateMeshRegionColors() { return inRoomFrame(() => updateMeshRegionColorsIn(), null); }
-    function updateLiveMeshAlignmentColor(vertexValues) { return inRoomFrame((v) => updateLiveMeshAlignmentColorIn(v || vertexValues), vertexValues); }
+    function updateLiveMeshAlignmentColor(vertexValues) { if (!meshLive()) return; return inRoomFrame((v) => updateLiveMeshAlignmentColorIn(v || vertexValues), vertexValues); }
 
     function updateMeshRegionColorsIn() {
       if (!anatomicalRegions) {

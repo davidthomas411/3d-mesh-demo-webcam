@@ -18,7 +18,7 @@ import numpy as np
 def main():
     from multiprocessing.connection import Client
     from depth.fit import BodyFit, DepthFrame
-    from depth.tracker import FitState, fit_one
+    from depth.tracker import FitState, fit_one, moved_model
     conn = Client(("127.0.0.1", int(sys.argv[1])), authkey=bytes.fromhex(sys.argv[2]))
     body = rays = cal = model = None
     state, refit_every = FitState(), 45
@@ -43,7 +43,7 @@ def main():
                 try:
                     t0 = time.perf_counter()
                     depth = np.frombuffer(msg[1], np.uint16).reshape(cal["h"], cal["w"])
-                    out = fit_one(state, body, model, DepthFrame(depth, rays, cal["R"], cal["t"], cal["kd"], cal["dist"]), refit_every)
+                    out = fit_one(state, body, moved_model(model, msg[2] if len(msg) > 2 else None), DepthFrame(depth, rays, cal["R"], cal["t"], cal["kd"], cal["dist"]), refit_every)
                     if out is not None:
                         out["info"]["core_ms"] = round((time.perf_counter() - t0) * 1000, 1)    # the fit alone, without the hand-over
                 except Exception as exc:                         # report, do not die: the next frame may be fine

@@ -263,12 +263,13 @@ export class CtVolumeView {
   }
 
   // DRR through the CT voxels, seen like the surface DRR (xray.js): from the front, or turned by orbit { yaw, pitch } (radians).
-  renderDrr(centre = [0, -1.3], viewport = null, orbit = null) {
+  // basis: optional { back, up } in the raw frame, replacing orbit (see xray.js): a viewpoint fixed in the room.
+  renderDrr(centre = [0, -1.3], viewport = null, orbit = null, basis = null) {
     const u = this.uniforms, yaw = orbit ? orbit.yaw : 0, pitch = orbit ? orbit.pitch : 0;
     this._frames();
     const cp = Math.cos(pitch), sp = Math.sin(pitch), THREE = this.THREE;
-    const back = new THREE.Vector3(Math.sin(yaw) * cp, sp, -Math.cos(yaw) * cp);              // from the centre to the viewpoint
-    const right = new THREE.Vector3(0, -1, 0).cross(back).normalize(), up = back.clone().cross(right);
+    const back = basis ? new THREE.Vector3(...basis.back) : new THREE.Vector3(Math.sin(yaw) * cp, sp, -Math.cos(yaw) * cp);   // from the centre to the viewpoint
+    const right = (basis ? new THREE.Vector3(...basis.up) : new THREE.Vector3(0, -1, 0)).cross(back).normalize(), up = back.clone().cross(right);
     u.uRight.value.copy(right); u.uUp.value.copy(up); u.uFwd.value.copy(back).multiplyScalar(-1);
     // the same centre as the surface DRR (xray.js), so that the two coincide from every direction and can be blended
     u.uCentre.value.set(centre[0], centre[1], centre[2] || 0); u.uDepth.value = 0.6;

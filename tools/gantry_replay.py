@@ -61,8 +61,20 @@ def main():
     rays = np.stack([(uu - kd[2]) / kd[0], (vv - kd[3]) / kd[1]], -1).astype(np.float32)
     cal = {"w": w, "h": h, "R": np.eye(3).ravel().tolist(), "t": [0.0, 0.0, 0.0],
            "k": [K[0, 0] / W, K[1, 1] / H, K[0, 2] / W, K[1, 2] / H], "kd": kd, "dist": [0.0] * 8}
+    extra = {}
+    if arg("--geo"):
+        # the (turned) camera's pose in the room for every frame, mm: X_room = M [x_cam, 1]. The server uses it to carry a mesh
+        # made from one picture into the viewpoint of a later depth frame before fitting it (the camera has moved on by then).
+        from gantry_cube import CubeGantry, frame_angles
+        cg0 = CubeGantry(os.path.join(arg("--geo"), "cube_geometry.npz")); ang0, _ = frame_angles(arg("--geo"))
+        T0 = np.diag([-1.0, -1.0, 1.0]) if turn == 180 else np.eye(3)
+        c2r = np.tile(np.eye(4), (len(frames), 1, 1))
+        for n, i in enumerate(frames):
+            Rc, C = cg0.pose(ang0(i))
+            c2r[n, :3, :3] = cg0.room_R @ Rc @ T0; c2r[n, :3, 3] = cg0.room_R @ C
+        extra["cam_to_room"] = c2r
     np.savez_compressed(os.path.join(web, "replay.npz"), depth=D, has_depth=np.ones(len(frames), bool), t=np.arange(len(frames)) / fps,
-                        rays=rays, calibration=np.array(json.dumps(cal)), source_frames=np.array(frames))
+                        rays=rays, calibration=np.array(json.dumps(cal)), source_frames=np.array(frames), **extra)
     if arg("--geo"):
         from gantry_cube import CubeGantry, frame_angles
         cg = CubeGantry(os.path.join(arg("--geo"), "cube_geometry.npz")); ang, src = frame_angles(arg("--geo"))

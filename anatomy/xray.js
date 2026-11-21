@@ -70,10 +70,16 @@ export class XrayView {
   }
   // view: "ap" (from the front) or "lateral" (from the person's left, face to the left of the image). centre: [x, y, z] of the picture centre in the raw MHR frame (metres).
   // orbit: optional { yaw, pitch } in radians, turning the viewpoint about the centre (0, 0 = the "ap" view).
-  render(view = "ap", centre = [0, -1.3, 0], viewport = null, orbit = null) {
+  // basis: optional { back: [x, y, z] from the centre to the viewpoint, up: [x, y, z] }, both in the raw frame. It replaces view
+  // and orbit, and lets the page keep the viewpoint fixed in the room while the camera that made the raw frame moves.
+  render(view = "ap", centre = [0, -1.3, 0], viewport = null, orbit = null, basis = null) {
     const { THREE, renderer, cam } = this, c = centre, d = 0.6;
     cam.up.set(0, -1, 0);                                                    // MHR y points down
-    if (orbit) {
+    if (basis) {
+      cam.up.set(basis.up[0], basis.up[1], basis.up[2]);
+      cam.position.set(c[0] + d * basis.back[0], c[1] + d * basis.back[1], c[2] + d * basis.back[2]);
+      cam.lookAt(c[0], c[1], c[2]); cam.left = -this.half; cam.right = this.half; cam.top = this.half; cam.bottom = -this.half;
+    } else if (orbit) {
       const cp = Math.cos(orbit.pitch), sp = Math.sin(orbit.pitch);
       cam.position.set(c[0] + d * Math.sin(orbit.yaw) * cp, c[1] + d * sp, c[2] - d * Math.cos(orbit.yaw) * cp);
       cam.lookAt(c[0], c[1], c[2]); cam.left = -this.half; cam.right = this.half; cam.top = this.half; cam.bottom = -this.half;

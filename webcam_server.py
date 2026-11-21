@@ -422,7 +422,8 @@ def inference_worker():
                             jp = joints[:nj * 3].reshape(nj, 3).astype(np.float64) * 1000.0 + cam_t_mm
                             jr = joints[nj * 3:].reshape(nj, 3, 3).astype(np.float64)
                         lf.set_model(item_owner, vertices.astype(np.float64) * 1000.0 + cam_t_mm, jp, jr, mesh_id + 1,
-                                     {"cam_t_mm": cam_t_mm, "focal_length": focal_length, "client_timestamp_ms": client_timestamp_ms})
+                                     {"cam_t_mm": cam_t_mm, "focal_length": focal_length, "client_timestamp_ms": client_timestamp_ms,
+                                      "media_time": picture_media.get(str(client_timestamp_ms))})
                         last = lf.result
                         depth_info = {"ok": lf.active(item_owner), "fit": True, "factory_intrinsics": bool(calibration.get("factory")),
                                       "reason": None if lf.active(item_owner) else (cloud_source.error or "no fit yet: is the body in the depth image?")}
@@ -752,6 +753,7 @@ def get_cloud():
 
 
 live_fit = None
+picture_media = {}                                             # capture timestamp of a picture -> its time in the video file, s
 
 
 def get_live_fit():
@@ -999,6 +1001,9 @@ def stream_socket(ws):
             encode_ms = str(metadata.get("encode_ms", 0))
             if metadata.get("media_time") is not None and hasattr(cloud_source, "seek"):
                 cloud_source.seek(metadata["media_time"])        # a video file with a recorded depth stream: keep them in step
+                picture_media[client_timestamp_ms] = float(metadata["media_time"])   # which moment of the video this picture is
+                while len(picture_media) > 200:
+                    picture_media.pop(next(iter(picture_media)))
 
             with state_lock:
                 frame_id += 1

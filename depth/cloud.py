@@ -192,10 +192,23 @@ class RecordedCloud:
         self.t0 = None
         self.map_latest = None
         self.media = None
+        self._lock = threading.Lock()
+        # a camera that moves (on a gantry), with its pose in the room for every frame: see camera_motion
+        self.cam_to_room = z["cam_to_room"][keep] if "cam_to_room" in z.files else None
         self.seq_media = {}                                       # frame number served -> the recording's own time of it, s
 
     def restart(self):
         self.t0 = time.time()
+
+    def camera_motion(self, media_from_s, media_to_s):
+        """4 x 4 (mm) taking a point in the camera's frame at one moment of the recording to the camera's frame at another:
+        something still in the room, seen from where the camera has moved to. None when the recording has no camera poses."""
+        if self.cam_to_room is None:
+            return None
+        n = len(self.cam_to_room)
+        i = int(np.clip(np.searchsorted(self.times, media_from_s + 1e-6, side="right") - 1, 0, n - 1))
+        j = int(np.clip(np.searchsorted(self.times, media_to_s + 1e-6, side="right") - 1, 0, n - 1))
+        return np.eye(4) if i == j else np.linalg.inv(self.cam_to_room[j]) @ self.cam_to_room[i]
 
     def seek(self, media_time_s):
         """The picture source is a video file at this time: serve the depth frame of that moment (and run on from it until
@@ -212,10 +225,10 @@ class RecordedCloud:
             el = el % (self.times[-1] + 0.2)
         i = int(np.clip(np.searchsorted(self.times, el, side="right") - 1, 0, len(self.frames) - 1))
         seq = int((time.time() - self.t0) * self.fps) + 1
-        self.seq_media[seq] = float(self.times[i])               # so that whoever shows this frame knows which moment it is
-        if len(self.seq_media) > 400:
-            for k in sorted(self.seq_media)[:200]:
-                del self.seq_media[k]
+        with self._lock:                                         # several threads ask: the fit loop and the page's requests
+            self.seq_media[seq] = float(self.times[i])           # so that whoever shows this frame knows which moment it is
+            while len(self.seq_media) > 400:
+                self.seq_media.pop(next(iter(self.seq_media)))
         return (seq, self.frames[i].tobytes(), self.t0 + (seq - 1) / self.fps)   # when this frame became the newest
 
     @property

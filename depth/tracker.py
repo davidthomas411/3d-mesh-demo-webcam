@@ -42,6 +42,16 @@ class FitState:
 FIT_POSE = os.environ.get("FIT_POSE", "rigid")
 
 
+def moved_model(model, motion):
+    """The model's mesh carried by a 4 x 4 rigid motion (mm): the same body seen from where the camera has moved to."""
+    if motion is None:
+        return model
+    Rm, tm = motion[:3, :3], motion[:3, 3]
+    return dict(model, verts=model["verts"] @ Rm.T + tm, cam_t_mm=Rm @ model["cam_t_mm"] + tm,
+                jpos=None if model.get("jpos") is None else model["jpos"] @ Rm.T + tm,
+                jrot=None if model.get("jrot") is None else Rm @ model["jrot"])
+
+
 def fit_one(state, body, model, frame, refit_every=10 ** 9, hold_frames=45):
     """Fit model["verts"] to one depth frame, tracking from `state`. -> result dict (no timing, no ids) or None."""
     if model["owner"] != state.owner or state.n >= refit_every:
@@ -179,7 +189,16 @@ class LiveFit:
                     continue
                 with self.lock:
                     model = self.model
-                if model is None or time.time() - model["t"] > self.max_model_age_s:
+                # A camera that moves with known poses (a recorded gantry sweep): the mesh was made from a picture taken
+                # earlier, from where the camera then was. It is carried into the viewpoint of this depth frame first, so
+                # that the fit sees a body that has not moved rather than one swung round by the camera's own motion. With
+                # that, an older mesh is as good as a new one, so it may be older.
+                motion = None
+                if model is not None and hasattr(self.cloud, "camera_motion"):
+                    m_from, m_to = model["extra"].get("media_time"), getattr(self.cloud, "seq_media", {}).get(item[0])
+                    if m_from is not None and m_to is not None:
+                        motion = self.cloud.camera_motion(m_from, m_to)
+                if model is None or time.time() - model["t"] > (4.0 if motion is not None else self.max_model_age_s):
                     state = FitState(); sent_mesh = None
                     if self.conn is not None:
                         self.conn.send(("reset",))
@@ -196,7 +215,7 @@ class LiveFit:
                         if key != sent_mesh:
                             self.conn.send(("model", {k: model[k] for k in ("owner", "mesh_id", "verts", "jpos", "jrot", "cam_t_mm")}))
                             sent_mesh = key
-                        self.conn.send(("depth", item[1]))
+                        self.conn.send(("depth", item[1], motion))     # the mesh stays there; only the camera's motion goes with each frame
                         out = self.conn.recv() if self.conn.poll(2.0) else None
                     except Exception as exc:                     # the process died: carry on in this one
                         print(f"FIT_PROCESS lost ({type(exc).__name__}: {exc}); fitting in the server process", flush=True)
@@ -205,7 +224,7 @@ class LiveFit:
                 else:
                     depth = np.frombuffer(item[1], np.uint16).reshape(cal["h"], cal["w"])
                     frame = DepthFrame(depth, self.cloud.rays, cal["R"], cal["t"], cal["kd"], cal["dist"])
-                    out = fit_one(state, self.fit, model, frame, self.refit_every)
+                    out = fit_one(state, self.fit, moved_model(model, motion), frame, self.refit_every)
                 if out is None:
                     with self.cond:
                         self.result = None

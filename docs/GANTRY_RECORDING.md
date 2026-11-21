@@ -278,6 +278,25 @@ the recording every depth frame it serves belongs to, and the page says where it
 without both the point cloud turned with the gantry whenever the page fell behind. A yellow pyramid marks where the
 camera is now and which way it looks, and a faint line its path round the patient over the whole recording.
 
+**The depth fit on a moving camera.** Run with a picture and a depth frame of the same instant, the fit succeeds at every
+gantry angle (skin a median 0.5 mm from the depth). Live it kept dropping out: the mesh comes from a picture taken a
+quarter of a second or more before the depth frame it is fitted to, and the camera has turned several degrees by then.
+The server now carries each mesh into the depth frame's viewpoint with the known camera motion before fitting
+(`RecordedCloud.camera_motion`, `tracker.moved_model`). Through the whole loop it then holds about 30 fits a second with
+the skin 0.6-0.8 mm from the depth (2 mm at moments).
+
+**Not live, not shown.** With the depth fit on, the body and skeleton are drawn only while the depth camera is placing
+them: if nothing has been fitted for 0.6 s, or the fit is only holding its last placement, they are hidden and the shift
+bars freeze, instead of falling back to the model's own mesh (a guess at distance).
+
+**DRR in the room.** The DRR's viewpoint and centre are fixed in the room for a replay (from above the couch, head up), so
+a still patient gives a still radiograph while the gantry turns and the green reference shows the patient's own movement.
+The CT slice stays with the body while a reference is held (a camera-fixed plane would turn with the gantry).
+
+**Head-up display** (bottom left of the 3-D view, H hides it): gantry angle and its source, frame, fit rate, skin-to-depth
+distance, latencies, how far the depth is behind the video, what is drawn, the reference and its shifts, and flags in
+red: no fits, holding, not live, out of tolerance. It also says the shifts come from the body mesh.
+
 **Only where there is data.** The model always returns a whole body, also the legs the camera never saw. "Body and
 skeleton only where the depth camera has data" (3-D view settings; on by default for a replay, available live too) keeps
 a fragment of the mesh or skeleton only if the depth camera measured a surface along its line of sight that the fragment
@@ -288,10 +307,9 @@ depth frame. The reference ghost is left whole.
 in room coordinates: live mesh and reference are each taken to the room with the camera pose of their own moment, LAT is
 across the couch, LNG along it, VRT up-down, and the reference ghost stays where it was captured while the gantry moves
 on. The position is the centre of the selected region's vertices as placed by the depth fit, not the model's own distance
-estimate (which made the bars swing by 400 mm). Through the full sweep, thorax selected, the bars read 10-50 mm and up
-to 7 degrees on a person lying still: that is the body mesh's accuracy by viewing angle (see "Judged in the room"), not
-the depth registration's 1 mm, which is not wired into the bars yet. The green and magenta reference overlays in the DRR
-and CT panels are still in the camera's frame.
+estimate (which made the bars swing by 400 mm). Through the sweep, on a person lying still, the bars read mostly 2-30 mm
+(40 mm at worst) and under 1 degree once the depth fit holds: that is the body mesh placed by the depth, not the depth
+registration's 1 mm, which is not wired into the bars yet.
 
 ### The tracking analysis as a player
 
