@@ -191,15 +191,23 @@ class RecordedCloud:
         self.error, self.fps, self.loop = None, fps, loop
         self.t0 = None
         self.map_latest = None
+        self.media = None
 
     def restart(self):
         self.t0 = time.time()
+
+    def seek(self, media_time_s):
+        """The picture source is a video file at this time: serve the depth frame of that moment (and run on from it until
+        the next picture says otherwise), so that depth and picture cannot drift apart."""
+        self.media = (float(media_time_s), time.time())
 
     def get(self):
         if self.t0 is None:
             self.t0 = time.time()
         el = time.time() - self.t0
-        if self.loop:
+        if self.media is not None:
+            el = self.media[0] + min(0.5, time.time() - self.media[1])
+        elif self.loop:
             el = el % (self.times[-1] + 0.2)
         i = int(np.clip(np.searchsorted(self.times, el, side="right") - 1, 0, len(self.frames) - 1))
         seq = int((time.time() - self.t0) * self.fps) + 1

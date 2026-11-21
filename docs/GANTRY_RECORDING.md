@@ -249,7 +249,25 @@ the chest's 95% is 3.4 mm instead of 2.4; `--angles planes`.)
   accurate it is. Against the fused reference the same test is off by 2.6 mm for the head and 0.4 mm for the chest:
   a head-sized region slides on a 4 mm fused surface. Regions need to be large and the fused surface finer.
 
-### In the web app
+### In the live page: mesh, point cloud, skeleton, CT (`tools/gantry_replay.py`)
+
+The live page runs on the recording as if it were the camera. `gantry_replay.py` writes the colour frames as a video
+(turned head-up) and the depth of the same frames as the server's recorded-depth format; `run_gantry_replay.cmd` starts
+the server on them (port 8096); then
+
+    http://127.0.0.1:8096/?bolt=1&video=/gantry-data/replay.mp4
+
+starts by itself: the pose model on every picture, the mesh fitted to the depth, the point cloud (tick "Depth point
+cloud" in the 3-D view's settings), the skeleton, the DRR and the CT, all as live. The recording's depth is already
+aligned to the colour picture, so the replay's "depth camera" is the colour camera. The page sends the video's time with
+every picture and the server serves the depth frame of that moment, so the two stay in step (`RecordedCloud.seek`).
+
+On this recording the depth fit reports the skin a median 0.7 mm from the depth, 87% within 2 mm, at about 30 fits a
+second. Two things to know: the 3-D view's default camera is set for a person 1.5-2 m away, so the body sits off-centre
+until the view is turned or zoomed; and the page's views are in the CAMERA's frame, which rides on the gantry, so the
+whole scene appears to turn. Showing it in the room frame (the cube calibration) is not done.
+
+### The tracking analysis as a player
 
 `http://127.0.0.1:8097/gantry` plays an exported recording: the colour picture (head up) with the tracked regions tinted,
 slices across head and chest with the frame's depth over the reference surface, the six shifts of each region for the
@@ -274,6 +292,7 @@ the timing the console's repaint rate hides).
     python tools/gantry_recording.py FOLDER pose OUT_DIR --frames 4410:5560:36      (needs the demo server running)
     python tools/gantry_pose.py FOLDER OUT_DIR --frames 4410:5560:36 --rot 270        (after cube and fuse person_iso; needs the demo server)
     python tools/gantry_track.py FOLDER OUT_DIR --ref 4500:5004:3 --live 5010:5508:12  (reference pass, live pass; --angles planes|linac)
+    python tools/gantry_replay.py FOLDER ../recordings/gantry/web --frames 4380:5580:2 ; run_gantry_replay.cmd   (the live page on the recording)
     python tools/gantry_export.py FOLDER OUT_DIR ../recordings/gantry/web --frames 4380:5580:3   (then open /gantry in the web app)
     python tools/gantry_console.py read VIDEO CONSOLE_DIR ; ... digits CONSOLE_DIR ; ... angle CONSOLE_DIR
     python tools/gantry_console.py sync CONSOLE_DIR FOLDER OUT_DIR                     (linac angle per frame of the recording)

@@ -3691,7 +3691,8 @@
 
         streamSocket.send(JSON.stringify({
           capture_timestamp_ms: captureTimestampMs,
-          encode_ms: encodeMs
+          encode_ms: encodeMs,
+          media_time: video.srcObject ? null : video.currentTime      // a video file: lets a recorded depth stream follow it
         }));
 
         streamSocket.send(blob);
@@ -4085,12 +4086,30 @@
       videoFileInput.click();
     };
 
+    // ?video=URL plays a video the server holds (a recorded gantry sweep: tools/gantry_replay.py); with ?bolt=1 the server's
+    // recorded depth stream is used with it, exactly as the Femto Bolt's would be.
+    const replayVideo = new URLSearchParams(window.location.search).get("video");
+    if (replayVideo && replayVideo.startsWith("/")) {
+      window.addEventListener("load", () => startSession("Video", "url:" + replayVideo, async () => {
+        boltCamera = new URLSearchParams(window.location.search).get("bolt") === "1";
+        video.srcObject = null;
+        video.loop = true;
+        video.muted = true;
+        video.src = replayVideo;
+        await new Promise((resolve, reject) => {
+          video.onloadeddata = () => resolve();
+          video.onerror = () => reject(new Error("This browser cannot play that video"));
+        });
+      }));
+    }
+
     videoFileInput.onchange = () => {
       const file = videoFileInput.files && videoFileInput.files[0];
       if (!file) return;
       if (running) stopButton.onclick();
 
       startSession("Video", "file:" + file.name + ":" + file.size, async () => {
+        boltCamera = new URLSearchParams(window.location.search).get("bolt") === "1";
         videoObjectUrl = URL.createObjectURL(file);
         video.srcObject = null;
         video.loop = true;

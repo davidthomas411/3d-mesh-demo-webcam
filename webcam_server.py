@@ -511,7 +511,7 @@ def gantry_page():
 
 @app.get("/gantry-data/<path:name>")
 def gantry_data(name):
-    if not (name == "index.json" or (name.startswith("f/") and name.endswith(".jpg"))):
+    if not (name in ("index.json", "replay.mp4", "replay.webm") or (name.startswith("f/") and name.endswith(".jpg"))):
         return Response("Not found", status=404)
     return send_from_directory(GANTRY_WEB, name)
 
@@ -990,6 +990,8 @@ def stream_socket(ws):
                 metadata.get("capture_timestamp_ms", "")
             )
             encode_ms = str(metadata.get("encode_ms", 0))
+            if metadata.get("media_time") is not None and hasattr(cloud_source, "seek"):
+                cloud_source.seek(metadata["media_time"])        # a video file with a recorded depth stream: keep them in step
 
             with state_lock:
                 frame_id += 1
