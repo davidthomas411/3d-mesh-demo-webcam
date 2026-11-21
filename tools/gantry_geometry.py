@@ -179,7 +179,10 @@ def fuse(rec, out_dir, name, frames, box, step=2, cube=False):
     if cube:
         from gantry_cube import CubeGantry
         cg = CubeGantry(os.path.join(out_dir, "cube_geometry.npz"))
-        to_room = lambda P, i: cg.to_room(P, cg.angle_from_planes(geo.angle(i)))
+        from gantry_cube import frame_angles
+        ang, src = frame_angles(out_dir)
+        print("gantry angle from:", src)
+        to_room = lambda P, i: cg.to_room(P, ang(i))
     pts, cols, ths = [], [], []
     for i in frames:
         z, im = rec.depth(i), rec.color(i)

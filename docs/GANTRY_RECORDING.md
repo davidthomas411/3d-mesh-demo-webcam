@@ -120,6 +120,38 @@ not sub-millimetre.
 Room frame from here on (`fuse ... --cube`): origin at the **cube's centre**, Y along the gantry axis, Z up. In the
 depth-only frame the cube's centre is at (8, 271, 1) mm.
 
+## The linac's own gantry angle (`tools/gantry_console.py`)
+
+A GoPro filmed the linac's console through the session (`GX010105.MP4`, 3840 x 2160, 302 s, upside down). The page shows
+"Gantry Angle ... Actual" to a tenth of a degree. The number is read in every frame: the field is cropped, its characters
+separated, and each matched against ten digit shapes clustered from the video itself (labelled once, by eye).
+
+| | |
+|---|---|
+| frames read | 8992 of 9044 (the rest are caught mid-repaint) |
+| linac angle over the session | 359.7 to 170.5 degrees, i.e. -0.3 to 170.5 |
+| console repaints while moving | about 4 a second, so the reading is a staircase; values are taken at the moment they appear and joined by straight lines |
+| time offset, console video minus recording | 9.3 s, found from the two angle traces |
+| **linac angle at the recording's frame 0** | **359.9 (-0.1): "angle 0" above is gantry 0** |
+
+Against the linac:
+
+| Angle from | scale | zero | rms, gantry still | rms, moving | worst |
+|---|---|---|---|---|---|
+| the cube's markers (cube session) | 0.9996 | -0.07 deg | 0.12 deg | 0.40 | 1.0 |
+| depth only, cube session | 1.004 | -0.56 | | 0.64 overall | |
+| depth only, person session | | | | 2.8 overall | 12.6 |
+
+- The cube calibration's angle is the linac's to about a tenth of a degree at rest. While moving, the 0.4 degrees is mostly
+  the console's four repaints a second (the gantry turns 2 degrees between repaints), not the cube.
+- The depth-only angle is about a degree out through the person's sweep and jumps by up to 12.6 degrees when the person
+  moves in front of the room's planes (around frame 5680, gantry still). It was only ever checked on the cube session.
+  **Where a console video exists the tools now use the linac angle** (`gantry_cube.frame_angles`); the depth-only angle
+  remains the fallback.
+- The console also shows the couch position, which changed between the cube and the person (one readout 65.3 to 74.9 cm,
+  another -9.6 to -12.6 cm). The room frame is fixed to the room, not the couch, so this does not move the calibration,
+  but it is the record of where the couch was and could be read the same way.
+
 ## The person, extracted and rebuilt
 
 With the camera's pose known, "the person" is simply what lies in a box above the couch top in the room frame, after the
@@ -191,35 +223,36 @@ from the whole reference sweep).
 **Test.** The person's outward pass (frames 4500-5004) is the reference; 42 frames of the return pass are "live", each
 measured alone. Nobody measured what the person really did, so this is an upper bound on the method's error.
 
-| Region, reference | apparent shift, median | 95% | first 5 s after the turn-round |
+| Region, reference | apparent shift, median | 95% | first 3 s after the turn-round |
 |---|---|---|---|
-| chest, matched | 1.6 mm | 3.4 | 0.9 - 3.6 |
-| chest, fused | 1.2 | 2.1 | 0.6 - 1.2 |
-| head, matched | 4.4 | 7.1 | 0.2 - 1.6 |
-| head, fused | 3.0 | 4.7 | 0.7 - 1.4 |
+| chest, matched | 1.5 mm | 2.4 | 0.8 - 1.4 (one frame 3.2) |
+| chest, fused | 1.4 | 2.2 | 0.9 - 1.9 |
+| head, matched | 4.4 | 7.1 | 0.1 - 1.9 |
+| head, fused | 3.3 | 4.9 | 0.8 - 1.5 |
+
+(gantry angle from the linac; `track_linac.json`. With the depth-only angle the medians are the same within 0.2 mm and
+the chest's 95% is 3.4 mm instead of 2.4; `--angles planes`.)
 
 - **The head figure is mostly a real movement, found by the tracking.** Just after the turn-round, where reference and
-  live are a second or two apart, the head reads 0.2-0.8 mm. From frame 5154 it steps to 2 mm and then drifts steadily
-  to 5 mm sideways (room X) over the next 12 s, the same in both references, while the chest stays at 1-1.5 mm. A
-  gantry-angle error would move the chest too. So the person's head rolled about 5 mm between the passes; it cannot be
-  proved without an independent measurement.
-- **The floor is about 0.5-1.5 mm**, read from the frames nearest the turn-round and from the chest. It is not
-  sub-millimetre yet. The chest includes breathing.
-- **The gantry angle is what limits it.** Here the angle comes from the depth of the room (0.6 degrees rms), and the
-  largest errors sit where the live and reference angles differ most (frame 5058: 0.9 degrees apart, chest 3.6 mm). A
-  tenth of a degree is a quarter of a millimetre at 150 mm from the axis, so the angle has to come from the machine, or
-  from registering the static room, not from three planes.
-- Fused looked slightly better than matched in this test, the opposite of what view-dependent depth errors predict.
-  The likely reason is the same angle noise: a matched reference is one noisy frame at one noisy angle, the fused one
-  averages 168. With a good angle the comparison should be run again.
+  live are a second or two apart, the head reads 0.1-0.8 mm. From about frame 5120 it drifts steadily to 5-7 mm sideways
+  (room X) over the next 12 s, the same in both references and with either source of gantry angle, while the chest
+  stays at 1-1.5 mm. An angle or timing error would move the chest too. So the person's head rolled about 5 mm between
+  the passes; it cannot be proved without an independent measurement.
+- **The floor is about 1 mm** (0.5-1.5), read from the frames nearest the turn-round and from the chest. It is not
+  sub-millimetre. The chest includes breathing.
+- **The gantry angle was not the limit after all.** Replacing the depth-only angle (about 1 degree out in this sweep)
+  with the linac's removed the worst frames and left the medians where they were. What is left is the depth camera on
+  one frame (1.8 mm rms on a flat cube face), breathing, and the console's coarse timing while moving.
+- Matched and fused references perform alike here.
 - A known motion applied to the live points (2, -3, 1.5 mm and about 1 degree) is recovered to 0.1 mm against the
   matched reference, but that test re-uses the frame's own points, so it shows the registration converges, not how
-  accurate it is. Against the fused reference the same test is off by 2.9 mm for the head and 0.8 mm for the chest:
+  accurate it is. Against the fused reference the same test is off by 2.6 mm for the head and 0.4 mm for the chest:
   a head-sized region slides on a 4 mm fused surface. Regions need to be large and the fused surface finer.
 
 What this means for the tool: the pose model names the regions and follows gross motion (its orientation holds to
 2.4-10 degrees through the sweep); the numbers come from registering each frame's depth in the room frame; the reference
-is one still sweep; the gantry angle comes from the machine.
+is one still sweep; the gantry angle comes from the machine (here, read off its console; a direct feed would also give
+the timing the console's repaint rate hides).
 
 ## Commands
 
@@ -230,7 +263,9 @@ is one still sweep; the gantry angle comes from the machine.
     python tools/gantry_recording.py FOLDER fuse OUT_DIR person --frames 4440:5530:12 --box -420,420,-500,1100,-70,380
     python tools/gantry_recording.py FOLDER pose OUT_DIR --frames 4410:5560:36      (needs the demo server running)
     python tools/gantry_pose.py FOLDER OUT_DIR --frames 4410:5560:36 --rot 270        (after cube and fuse person_iso; needs the demo server)
-    python tools/gantry_track.py FOLDER OUT_DIR --ref 4500:5004:3 --live 5010:5508:12  (reference pass, live pass)
+    python tools/gantry_track.py FOLDER OUT_DIR --ref 4500:5004:3 --live 5010:5508:12  (reference pass, live pass; --angles planes|linac)
+    python tools/gantry_console.py read VIDEO CONSOLE_DIR ; ... digits CONSOLE_DIR ; ... angle CONSOLE_DIR
+    python tools/gantry_console.py sync CONSOLE_DIR FOLDER OUT_DIR                     (linac angle per frame of the recording)
     python tools/gantry_recording.py FOLDER cube OUT_DIR --frames 0:2500:5          (after calibrate; --config for an aprilcube config.json)
     python tools/gantry_recording.py FOLDER fuse OUT_DIR person_iso --frames 4440:5530:12 --box -430,410,-770,830,-70,380 --cube
 
@@ -238,16 +273,17 @@ Boxes are x0,x1,y0,y1,z0,z1 in the room frame, millimetres: origin on the axis, 
 
 ## Not done yet
 
-- **Absolute gantry 0.** Angle 0 is "where the gantry stood at frame 0". The treatment head is fixed in the camera's view,
-  so the beam direction can be measured from its face and compared with the floor. The origin is now the cube's centre,
-  4 mm from the axis; whether the cube was set to the lasers is not recorded.
+- **The isocentre along the axis.** Gantry 0 is now known from the console. The origin is the cube's centre, 4 mm from the
+  axis; whether the cube was set to the lasers is not recorded.
 - **The cube's true size**, and with it whether the depth reads 1% long. Callipers on the cube, or its `config.json`.
 - **A depth error map.** The cube shows face-dependent depth errors of up to 3 mm. A larger flat target seen at several
   distances and angles would map them (docs/DEPTH_STUDY.md, experiment 3).
 - **The table of departures is tested on the sweep it was fitted on.** A second cube sweep would test it properly, and
   would say how repeatable the gantry is.
 - **Upload in the page** (depth, infrared, colour files instead of a live camera).
-- **A gantry angle better than 0.6 degrees** (from the machine, or by registering the static room and couch), then the
-  tracking test again. A recording with a known motion (a phantom moved by a measured amount) to give a true error.
+- **A recording with a known motion** (a phantom moved by a measured amount) to give the tracking a true error, and a
+  gantry angle with proper timing (a direct feed, or the console filmed with a shared clock).
+- **Averaging over a few frames and a projective registration**, the two things docs/DEPTH_STUDY.md says take a single
+  frame's 1 mm towards a few tenths.
 - **Regions from the pose model** instead of fixed boxes in the room.
 - The infrared stream is unused.

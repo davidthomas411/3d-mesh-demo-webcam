@@ -67,14 +67,16 @@ def shift_of(R, t, c):
     return R @ c + t - c, float(np.degrees(np.linalg.norm(Rot.from_matrix(R).as_rotvec())))
 
 
-def run(rec, out_dir, ref_frames, live_frames, step=2, n_live=4000):
-    from gantry_cube import CubeGantry
+def run(rec, out_dir, ref_frames, live_frames, step=2, n_live=4000, angles="best"):
+    from gantry_cube import CubeGantry, frame_angles
     from gantry_geometry import GantryGeometry
     geo = GantryGeometry(os.path.join(out_dir, "geometry.npz")); cg = CubeGantry(os.path.join(out_dir, "cube_geometry.npz"))
     rng = np.random.default_rng(0)
+    ang, src = frame_angles(out_dir, angles)
+    print("gantry angle from:", src)
 
     def cloud(i):
-        th = cg.angle_from_planes(geo.angle(i))
+        th = ang(i)
         P, _ = rec.points(rec.depth(i), mask=~geo.fixed, step=step)
         return cg.to_room(P, th), th
 
@@ -140,8 +142,9 @@ def run(rec, out_dir, ref_frames, live_frames, step=2, n_live=4000):
                 "max": round(float(v.max()), 2), "per_axis_rms_mm_xyz": np.round(np.sqrt((S ** 2).mean(0)), 2).tolist(),
                 "apparent_turn_deg_median": round(float(np.median(a)), 2),
                 "known_motion_error_mm_median": round(float(np.nanmedian(e)), 2), "known_motion_error_mm_p95": round(float(np.nanpercentile(e, 95)), 2)}
+    summary["gantry_angle_from"] = src
     json.dump({"regions_room_mm": REGIONS, "known_motion": {"shift_mm": test[1].tolist(), "turn_deg": [0.0, 1.0, 0.5]}, "summary": summary, "frames": rows},
-              open(os.path.join(out_dir, "track.json"), "w"), indent=1)
+              open(os.path.join(out_dir, "track_%s.json" % src), "w"), indent=1)
     print(json.dumps(summary, indent=1))
     return summary
 
@@ -149,4 +152,4 @@ def run(rec, out_dir, ref_frames, live_frames, step=2, n_live=4000):
 if __name__ == "__main__":
     arg = lambda k, d=None: sys.argv[sys.argv.index(k) + 1] if k in sys.argv else d
     rec = GantryRecording(sys.argv[1])
-    run(rec, sys.argv[2], parse_frames(arg("--ref", "4500:5004:3"), rec.n), parse_frames(arg("--live", "5010:5508:12"), rec.n))
+    run(rec, sys.argv[2], parse_frames(arg("--ref", "4500:5004:3"), rec.n), parse_frames(arg("--live", "5010:5508:12"), rec.n), angles=arg("--angles", "best"))

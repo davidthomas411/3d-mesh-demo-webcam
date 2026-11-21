@@ -120,6 +120,22 @@ class CubeGantry:
         return self.plane_gain * plane_angle + self.plane_off
 
 
+def frame_angles(out_dir, source="best"):
+    """frame -> gantry angle in the cube calibration's scale. The linac's own angle if a console video was matched to the
+    recording (gantry_console.py sync), else the depth-only angle mapped onto the cube's. source: best | linac | planes."""
+    from gantry_geometry import GantryGeometry
+    lp = os.path.join(out_dir, "linac_angle.npz")
+    if source != "planes" and os.path.exists(lp):
+        L = np.load(lp)
+        if "cube_theta" in L:
+            th = L["cube_theta"]
+            return (lambda i: float(th[int(i)])), "linac"
+    if source == "linac":
+        raise FileNotFoundError("no linac angle: run gantry_console.py sync")
+    geo = GantryGeometry(os.path.join(out_dir, "geometry.npz")); cg = CubeGantry(os.path.join(out_dir, "cube_geometry.npz"))
+    return (lambda i: cg.angle_from_planes(geo.angle(i))), "planes"
+
+
 def fit_rotation(Rc, C, iters=8):
     """Poses (Rc_i, C_i) that should be one pose turned about a fixed axis: axis a, point c, reference pose, angles."""
     ref = len(Rc) // 2
@@ -276,6 +292,9 @@ def check(rec, out_dir, frames, cube=None, step=2):
     box = cube.dims.max() / 2 + 30
     acc = {"markers in the frame": [], "fitted rotation, cube angle": [], "fitted rotation, cube angle, no table": [],
            "fitted rotation, depth-only angle": []}
+    lin = None
+    if os.path.exists(os.path.join(out_dir, "linac_angle.npz")):
+        lin = frame_angles(out_dir, "linac")[0]; acc["fitted rotation, linac angle"] = []
     ang = []
     for i in frames:
         if int(i) not in have:
@@ -287,6 +306,8 @@ def check(rec, out_dir, frames, cube=None, step=2):
                 "fitted rotation, cube angle": cg.to_cube(P, th),
                 "fitted rotation, cube angle, no table": cg.to_cube(P, th, table=False),
                 "fitted rotation, depth-only angle": cg.to_cube(P, cg.angle_from_planes(geo.angle(i)))}
+        if lin is not None:
+            ways["fitted rotation, linac angle"] = cg.to_cube(P, lin(i))
         m = np.all(np.abs(ways["fitted rotation, cube angle"]) < box, 1)
         for name, X in ways.items():
             acc[name].append(X[m].astype(np.float32))
