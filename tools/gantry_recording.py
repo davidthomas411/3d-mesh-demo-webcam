@@ -13,6 +13,8 @@ Because the depth is aligned to the colour picture, a depth pixel (u, v) with va
 
     python tools/gantry_recording.py FOLDER info
     python tools/gantry_recording.py FOLDER sheet OUT.jpg [--n 24]
+    python tools/gantry_recording.py FOLDER calibrate OUT_DIR [--floor K]     gantry angle and axis per frame, from the depth
+    python tools/gantry_recording.py FOLDER fuse OUT_DIR NAME --frames a:b:step --box x0,x1,y0,y1,z0,z1 [--flat-above Z]
     python tools/gantry_recording.py FOLDER pose OUT_DIR [--frames a:b:step] [--url ws://127.0.0.1:8098/stream]
 """
 import json
@@ -21,6 +23,8 @@ import sys
 import time
 
 import numpy as np
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 
 class GantryRecording:
@@ -176,8 +180,11 @@ def cmd_pose(rec, out_dir, frames, url, rotations=(0, 90, 180, 270)):
             else:
                 sc, (u, v, inside) = score_pose(meta, verts, zz)
                 row[str(r)] = dict(sc, person=True, kp=np.round(np.asarray(meta["pred_keypoints_2d"])[:, :2], 1).tolist())
-                for uu, vv in zip(u[inside][::9] // 4, v[inside][::9] // 4):
-                    cv2.circle(small, (int(uu), int(vv)), 0, (0, 255, 0), -1)
+                layer = small.copy()
+                layer[np.clip(v[inside] // 4, 0, small.shape[0] - 1), np.clip(u[inside] // 4, 0, small.shape[1] - 1)] = (0, 255, 0)
+                small = cv2.addWeighted(small, 0.55, layer, 0.45, 0)
+                for kx, ky in np.asarray(meta["pred_keypoints_2d"])[:, :2]:
+                    cv2.circle(small, (int(kx) // 4, int(ky) // 4), 1, (0, 0, 255), -1)
                 cv2.putText(small, "%s %s" % (sc["on_body"], sc["median_mm"]), (4, small.shape[0] - 6), 0, 0.45, (0, 255, 255), 1)
             cv2.putText(small, str(i), (4, 16), 0, 0.5, (0, 255, 255), 1)
             canvas = np.zeros((320, 320, 3), np.uint8); canvas[:small.shape[0], :small.shape[1]] = small
@@ -204,6 +211,15 @@ def main():
         cmd_sheet(rec, sys.argv[3], int(arg("--n", 24)))
     elif cmd == "pose":
         cmd_pose(rec, sys.argv[3], parse_frames(arg("--frames", "0::60"), rec.n), arg("--url", "ws://127.0.0.1:8098/stream"))
+    elif cmd == "calibrate":
+        import gantry_geometry as gg
+        gg.calibrate(rec, sys.argv[3], floor=arg("--floor"))
+    elif cmd == "fuse":
+        import gantry_geometry as gg
+        X, C, T = gg.fuse(rec, sys.argv[3], sys.argv[4], parse_frames(arg("--frames", "0::30"), rec.n), [float(x) for x in arg("--box").split(",")], int(arg("--step", 2)))
+        if "--flat-above" in sys.argv:                            # a cube: how flat are its faces once fused?
+            m = X[:, 2] > float(arg("--flat-above"))
+            print(json.dumps(gg.flatness(X[m].astype(np.float64), T[m]), indent=1))
     elif cmd == "probe":
         mc = ModelClient(arg("--url", "ws://127.0.0.1:8098/stream"))
         meta, verts = mc.infer(rec.color(int(sys.argv[3])))
