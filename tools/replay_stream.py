@@ -38,7 +38,7 @@ def main():
         if isinstance(msg, (bytes, bytearray)):
             if state["pending_fit"] is not None:
                 m = state["pending_fit"]; state["pending_fit"] = None
-                n_expected = 18439 * 12 + int(m.get("joints", 0)) * 48
+                n_expected = 18439 * 12 + int(m.get("joints", 0)) * 48 + int(m.get("surface", 0)) * 4
                 fitted.append({"t": time.time(), "age": m["depth_age_ms"] + (time.time() * 1000 - m["sent_ms"]), "fit_ms": m["depth"].get("fit_ms"),
                                "median": m["depth"].get("median_mm"), "within2": m["depth"].get("within_2mm"), "model_age": m["model_age_ms"],
                                "bytes_ok": len(msg) == n_expected, "scale": m["depth"].get("scale"), "tracked": m["depth"].get("tracked"),

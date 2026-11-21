@@ -861,8 +861,12 @@ def stream_socket(ws):
                 P, Rj = r["joints"]
                 nj = len(P)
                 payload += (P / 1000.0).astype("<f4").tobytes() + (Rj if Rj is not None else np.tile(np.eye(3), (nj, 1, 1))).astype("<f4").tobytes()
+            nu = 0
+            if r.get("surface_u") is not None:
+                nu = len(r["surface_u"]); payload += r["surface_u"].tobytes()
             now = time.time()
-            meta = {"fitted": True, "mesh_id": r["mesh_id"], "fit_id": r["id"], "pred_cam_t": [float(x) for x in r["cam_t_m"]],
+            meta = {"surface": nu, "capture_timestamp_ms": r["extra"].get("client_timestamp_ms"),
+                    "fitted": True, "mesh_id": r["mesh_id"], "fit_id": r["id"], "pred_cam_t": [float(x) for x in r["cam_t_m"]],
                     "joints": nj, "depth": r["info"], "focal_length": r["extra"].get("focal_length"),
                     "depth_age_ms": (now - r["t_depth"]) * 1000.0, "model_age_ms": (now - r["model_t"]) * 1000.0,
                     "sent_ms": now * 1000.0}

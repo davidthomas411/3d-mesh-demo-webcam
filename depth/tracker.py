@@ -10,7 +10,9 @@ viewer sees is therefore as old as the depth frame plus one fit, and it sits on 
 new mesh, the next fit simply starts from it with the previous part transforms: the mesh carries what the picture knows (pose,
 limbs the depth camera cannot see), the transforms carry where the body is now.
 
-A fit that fails (nobody in the depth image) starts again from scratch on the next frame, and so does every `refit_every`-th.
+The body is placed AS ONE (one scale, one small rotation, one translation: depth/fit.py); its pose stays the model's. A fit
+that fails (the body left the depth image) starts again from scratch on the next frame; meanwhile the last placement that
+fitted stands in, so the mesh does not jump back to the model's own, wrong, distance.
 
 The fit runs in a PROCESS OF ITS OWN (depth/fitproc.py) when it can be started: in this process it shares the Python
 interpreter with the model loop and a 25 ms fit takes 43 ms. The two talk over a local connection; a depth frame and a mesh
@@ -31,9 +33,10 @@ class FitState:
     """What carries over from one frame's fit to the next."""
     def __init__(self):
         self.M, self.owner, self.n, self.track = None, None, 0, {}
+        self.M_good, self.held = None, 0      # the last transforms that fitted, and for how many frames they have stood in
 
 
-def fit_one(state, body, model, frame, refit_every=45):
+def fit_one(state, body, model, frame, refit_every=10 ** 9, hold_frames=45):
     """Fit model["verts"] to one depth frame, tracking from `state`. -> result dict (no timing, no ids) or None."""
     if model["owner"] != state.owner or state.n >= refit_every:
         state.M, state.owner, state.n, state.track = None, model["owner"], 0, {}
@@ -50,19 +53,35 @@ def fit_one(state, body, model, frame, refit_every=45):
     state.M = Mn
     state.n += 1
     if Mn is None:
-        return None
-    # the body origin the page places the mesh at: where the pelvis part carries the model's own origin
+        # No fit on this frame (the body left the depth image, came too near, was covered). The mesh does not fall back to
+        # the model's own placement, 10-20% farther away: the last placement that fitted stands in for a while, on the
+        # model's newest pose, without the skin layer.
+        if state.M_good is None or state.held >= hold_frames:
+            state.M_good = None
+            return None
+        state.held += 1
+        Mn, held = state.M_good, True
+        X_pose, u = V @ Mn[0, :3, :3].T + Mn[0, :3, 3], None
+        info = {"ok": True, "held": True, "reason": info.get("reason")}
+    else:
+        state.M_good, state.held, held = Mn, 0, False
+        X_pose, u = state.track.get("X_pose", X), state.track.get("u")
+    # the body origin the page places the mesh at: where the transform carries the model's own origin
     t_new = Mn[0, :3, :3] @ model["cam_t_mm"] + Mn[0, :3, 3]
     joints = None
     if model.get("jpos") is not None:
         P, Rj = body.move_joints(model["jpos"], model.get("jrot"), Mn)
         joints = ((P - t_new).astype(np.float32), None if Rj is None else Rj.astype(np.float32))
-    info.update(fit=True, samples=info.get("surface_vertices", 0), scale=info.get("part_scale", [1.0])[0], tracked=state.n > 1)
-    return {"verts_m": ((X - t_new) / 1000.0).astype("<f4"), "cam_t_m": (t_new / 1000.0).astype(np.float32), "joints": joints, "info": info}
+    info.update(fit=True, samples=info.get("surface_vertices", 0), scale=round(float(np.cbrt(np.linalg.det(Mn[0, :3, :3]))), 4),
+                tracked=state.n > 1, held=held)
+    # verts_m: the PLACED mesh (the model's pose, moved as one): what the skeleton is built on. surface_u: per vertex, how
+    # much farther along its ray the measured skin is (a fraction of its distance); the page draws the skin with it.
+    return {"verts_m": ((X_pose - t_new) / 1000.0).astype("<f4"), "cam_t_m": (t_new / 1000.0).astype(np.float32), "joints": joints,
+            "surface_u": None if u is None else u.astype("<f4"), "info": info}
 
 
 class LiveFit:
-    def __init__(self, cloud, body_fit, max_model_age_s=1.5, refit_every=45, process=None, body_args=None):
+    def __init__(self, cloud, body_fit, max_model_age_s=1.5, refit_every=10 ** 9, process=None, body_args=None):
         self.cloud, self.fit = cloud, body_fit
         self.max_model_age_s, self.refit_every = max_model_age_s, refit_every
         self.lock = threading.Lock()

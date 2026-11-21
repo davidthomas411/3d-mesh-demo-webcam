@@ -15,8 +15,9 @@ in three stages, each explaining what the previous one could not:
                 spread over the mesh by a few rounds of smoothing (the measurement pulls where there is one, neighbours carry
                 it into what the camera cannot see, fading with distance) and applied.
 
-Stages 1 and 2 move the skeleton as well (the similarity each part underwent is returned), so bones follow; stage 3 moves
-the skin only.
+By default stages 1 and 2 are done for the body AS ONE (BodyFit.fit, articulated=False): one scale, one small rotation, one
+translation. The pose stays the RGB model's. Per-part fitting, as described above, is available (articulated=True) but is not
+robust and is not what the page uses; see BodyFit.fit. The skeleton goes through stages 1 and 2; stage 3 moves the skin only.
 
 The depth is used as the camera delivers it. A vertex is carried into the depth camera's frame, projected through the depth
 lens model to the pixel it falls on, and compared with the 3-D point that pixel measures (its ray times its depth, brought
@@ -273,6 +274,44 @@ class BodyFit:
                 D[g] = D[self.parent[g]]                         # no evidence: move with the parent
         return D, int(len(idx))
 
+    def global_step(self, X, frame, use=None, w_acc=None, max_mm=60.0, damp=0.3, rot_prior=10.0, keep=None):
+        """One Gauss-Newton step of rigid point-to-plane ICP for the WHOLE body: one rotation and one translation.
+        w_acc: the rotation already applied (rotation vector); the step is pulled back towards no rotation at all.
+        -> (the increment as a 4 x 4 matrix, number of vertices used) or (None, n)."""
+        o = self.observe(X, frame, normals=True)
+        if keep is not None:
+            keep["o"] = o
+        ok = o["ok"] & (np.linalg.norm(o["q"] - X, axis=1) < max_mm)
+        if use is not None:
+            ok &= use
+        idx = np.where(ok)[0]
+        if len(idx) < 300:
+            return None, int(len(idx))
+        if len(idx) > self.pose_points:
+            idx = idx[np.linspace(0, len(idx) - 1, self.pose_points).astype(np.int64)]
+        Xo, no = X[idx], o["n"][idx]
+        r = np.einsum("ij,ij->i", no, Xo - o["q"][idx])
+        wr = 1.0 / np.maximum(1.0, np.abs(r) / 10.0)             # Huber weights, 10 mm
+        c = Xo.mean(0)
+        a = Xo - c
+        J = np.column_stack([a[:, 1] * no[:, 2] - a[:, 2] * no[:, 1], a[:, 2] * no[:, 0] - a[:, 0] * no[:, 2],
+                             a[:, 0] * no[:, 1] - a[:, 1] * no[:, 0], no])
+        H = (J * wr[:, None]).T @ J
+        b = -J.T @ (wr * r)
+        scale = len(idx) / 1000.0
+        H[np.diag_indices(6)] += damp * scale * np.array([2.5e5] * 3 + [1.0] * 3)
+        if w_acc is not None:
+            # The body's orientation is the picture's to say: a depth image holds a turn poorly (a head is nearly a ball,
+            # a trunk nearly a cylinder). The total rotation is therefore pulled towards none, and the depth turns the
+            # body only as far as it insists.
+            lam = rot_prior * scale * 2.5e5
+            H[:3, :3] += lam * np.eye(3)
+            b[:3] -= lam * np.asarray(w_acc)
+        delta = np.linalg.solve(H, b)
+        R = _rodrigues(delta[:3])
+        D = np.eye(4); D[:3, :3] = R; D[:3, 3] = c - R @ c + delta[3:]
+        return D, int(len(idx))
+
     def blend(self, V, M):
         """Vertices carried by their parts' transforms M (G, 4, 4), blended by the skinning weights."""
         X = np.zeros_like(V)
@@ -305,11 +344,19 @@ class BodyFit:
         return X * (1.0 + u)[:, None], int(ok.sum()), (e[ok] - u[ok]) * X[ok, 2]      # what is left at the measured vertices, mm
 
     # ---- all three
-    def fit(self, V, frame, use=None, init=None, pose_iters=2, surface=True, dead_mm=0.8, track=None):
+    def fit(self, V, frame, use=None, init=None, pose_iters=2, surface=True, dead_mm=0.8, track=None, articulated=False):
         """V: (nv, 3) mesh in the colour camera's frame, mm. use: optional mask of the vertices allowed to see the depth (for
-        testing). init: the part transforms of a previous fit of (nearly) this mesh, to start from. track: a dict kept by the
-        caller from frame to frame (the surface offsets are averaged over time through it); start a new one with init=None.
-        -> (fitted vertices, part transforms M (G, 4, 4): the similarity of each part, or None, info)."""
+        testing). init: the transforms of a previous fit of (nearly) this mesh, to start from. track: a dict kept by the
+        caller from frame to frame (surface offsets averaged over time; it also receives "X_pose", the mesh before stage 3).
+
+        articulated=False (the default): the body is placed AS ONE. Its pose is the RGB model's, untouched; the depth
+        gives one scale about the camera, one small rotation and one translation for all of it, and then the surface
+        stage. Every part has the same transform, so nothing can come apart or turn on its own.
+        articulated=True: each body part gets its own distance and its own rigid motion (stages 1 and 2 as described at
+        the top). It fits a little closer and is NOT robust: a part the depth holds poorly (a head, against turning) is
+        rotated by noise, and a correction worked out for one pose is wrong for the next. Kept for experiments.
+
+        -> (fitted vertices, transforms M (G, 4, 4): the similarity of each part, or None, info)."""
         info = {"ok": False}
         if init is None:
             s, a = self.part_scales(V, frame, use)
@@ -318,30 +365,37 @@ class BodyFit:
                 return V, None, info
             info["global_scale"] = round(a["global_scale"], 4)
             M = np.tile(np.eye(4), (self.G, 1, 1))
-            M[:, :3, :3] *= s[:, None, None]
+            M[:, :3, :3] *= (s if articulated else np.full(self.G, a["global_scale"]))[:, None, None]
         else:
             M = np.array(init, np.float64)
-        X = self.blend(V, M)
-        n_pose, seen = 0, {}
+        X = self.blend(V, M) if articulated else V @ M[0, :3, :3].T + M[0, :3, 3]
+        n_pose, seen, moved = 0, {}, 0.0
         for _ in range(pose_iters):
-            D, n = self.pose_step(X, frame, use, keep=seen)
+            if articulated:
+                D, n = self.pose_step(X, frame, use, keep=seen)
+            else:
+                from scipy.spatial.transform import Rotation
+                Rm = M[0, :3, :3] / np.cbrt(np.linalg.det(M[0, :3, :3]))
+                D, n = self.global_step(X, frame, use, w_acc=Rotation.from_matrix(Rm).as_rotvec(), keep=seen)
             if D is None:
                 if init is not None and n_pose == 0:
                     info["reason"] = "the body is not in the depth image"
                     return V, None, info
                 break
             Mn = D @ M
-            Xn = self.blend(V, Mn)
+            Xn = self.blend(V, Mn) if articulated else V @ Mn[0, :3, :3].T + Mn[0, :3, 3]
             ov = seen["o"]["ok"]                                  # how far this step would carry what the camera sees, mm
             moved = float(np.percentile(np.abs(Xn[ov] - X[ov]).max(1), 95)) if ov.any() else 0.0
             n_pose += 1
             if init is not None and moved < dead_mm:
-                # Dead band. Point-to-plane ICP never quite stops: along a surface the data does not hold a part, and it
+                # Dead band. Point-to-plane ICP never quite stops: along a surface the data does not hold the body, and it
                 # creeps by a fraction of a millimetre a frame, which shows as shimmer and as skin sliding over the
                 # anatomy. A step this small is not taken; what it would have corrected along the ray, stage 3 corrects.
                 moved = 0.0
                 break
             M, X = Mn, Xn
+        if track is not None:
+            track["X_pose"] = X                                   # the placed mesh, before the skin is drawn onto the surface
         if surface:
             # When tracking at the camera's rate one pose step moves the mesh by less than a depth pixel (about 1 mm at half
             # a metre), so the measurements it was made from serve the surface stage too and the depth image is read once.

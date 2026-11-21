@@ -1157,12 +1157,25 @@
      * A mesh from the low-latency path (server: depth/tracker.py): the newest model mesh fitted to one depth frame. It
      * replaces the mesh on screen, with its joints for the skeleton. Its age is the depth frame's age, not the picture's.
      */
-    const fitStats = { last: 0, rate: 0, total: 0, n: 0 };
+    const fitStats = { last: 0, rate: 0, total: 0, n: 0, pose: 0 };
     function applyFittedMesh(m, data) {
-      const received = new Float32Array(data);
-      if (received.length < 18439 * 3) return;
-      const vertices = received.subarray(0, 18439 * 3);
-      latestRigInput = received;
+      const received = new Float32Array(data), nV = 18439 * 3, nJ = (m.joints || 0) * 12, nU = m.surface || 0;
+      if (received.length < nV + nJ + nU) return;
+      // The placed mesh and its joints are what the skeleton is built on: the model's pose, moved as one body.
+      latestRigInput = received.subarray(0, nV + nJ);
+      const placed = received.subarray(0, nV);
+      // The skin that is drawn is the placed mesh with each vertex slid along its camera ray onto the measured surface.
+      let vertices = placed;
+      if (nU === 18439) {
+        const u = received.subarray(nV + nJ, nV + nJ + nU), t = m.pred_cam_t;
+        vertices = new Float32Array(nV);
+        for (let i = 0, k = 0; i < 18439; i++, k += 3) {
+          const f = 1 + u[i];
+          vertices[k] = (placed[k] + t[0]) * f - t[0];
+          vertices[k + 1] = (placed[k + 1] + t[1]) * f - t[1];
+          vertices[k + 2] = (placed[k + 2] + t[2]) * f - t[2];
+        }
+      }
       if (bodyMesh) bodyMesh.visible = true;
       latestVertices = new Float32Array(vertices);
       latestPredCamT = new Float32Array(m.pred_cam_t);
@@ -1173,21 +1186,27 @@
       const t0 = performance.now();
       updateMesh(vertices, m.pred_cam_t, depthArrivedMs);
       const total = Date.now() - depthArrivedMs + (performance.now() - t0);
+      // Two ages, because two cameras feed what is on screen. Where the body IS comes from the depth frame. HOW IT IS POSED
+      // (a turn of the head, an arm) comes from the picture the model last worked on, which is much older.
+      const pose = m.capture_timestamp_ms ? Date.now() - Number(m.capture_timestamp_ms) : 0;
       const tNow = performance.now();
-      if (fitStats.last) {
-        const r = 1000 / Math.max(1, tNow - fitStats.last);
-        fitStats.rate = fitStats.rate ? 0.9 * fitStats.rate + 0.1 * r : r;
-      }
+      // fits a second, counted over the last second (messages can arrive in bursts, so the gap between two says little)
+      fitStats.times = (fitStats.times || []).filter((x) => tNow - x < 1000);
+      fitStats.times.push(tNow);
+      fitStats.rate = fitStats.times.length;
       fitStats.last = tNow; fitStats.n++;
       fitStats.total = fitStats.total ? 0.9 * fitStats.total + 0.1 * total : total;
-      window.demoFit = { n: fitStats.n, rate: fitStats.rate, totalMs: fitStats.total, info: m.depth, modelAgeMs: m.model_age_ms };
+      fitStats.pose = fitStats.pose ? 0.9 * fitStats.pose + 0.1 * pose : pose;
+      window.demoFit = { n: fitStats.n, rate: fitStats.rate, totalMs: fitStats.total, poseMs: fitStats.pose, info: m.depth, modelAgeMs: m.model_age_ms };
       const d = m.depth || {};
-      status.textContent = "Depth fit active | " + fitStats.rate.toFixed(0) + " fits/s | depth frame to screen: " +
-        fitStats.total.toFixed(0) + " ms (fit " + (d.fit_ms || 0).toFixed(0) + " ms) | model: " + lastModelInferenceMs.toFixed(0) + " ms";
+      status.textContent = "Depth fit active | " + fitStats.rate.toFixed(0) + " fits/s | position and surface: " +
+        fitStats.total.toFixed(0) + " ms after the depth frame arrived | pose: " + fitStats.pose.toFixed(0) +
+        " ms after the picture was taken (each camera's own delay comes on top)";
       const el = document.querySelector("#anaFuseStatus");
-      if (el) el.textContent = d.median_mm !== undefined && d.median_mm !== null
-        ? "median " + d.median_mm.toFixed(1) + " mm from the depth, " + Math.round(100 * (d.within_2mm || 0)) + "% within 2 mm"
-        : "on";
+      if (el) el.textContent = d.held ? "holding the last fit: " + (d.reason || "no depth on the body")
+        : d.median_mm !== undefined && d.median_mm !== null
+          ? "skin a median " + d.median_mm.toFixed(1) + " mm from the depth, " + Math.round(100 * (d.within_2mm || 0)) + "% within 2 mm"
+          : "on";
     }
 
     /*
@@ -1236,7 +1255,7 @@
       renderer.render(mask.scene, mask.cam);
       renderer.setRenderTarget(prev); renderer.setClearColor(pc, pa);
       u.uBody.value = mask.target.texture;
-      u.uPersonTol.value = depthFuse && fitStats.n ? 0.05 : 0.30;      // metres, or a fraction of the distance when loose
+      u.uPersonTol.value = depthFuse && fitStats.n ? 0.15 : 0.35;      // metres, or a fraction of the distance when loose
       u.uPersonLoose.value = depthFuse && fitStats.n ? 0 : 1;
     }
 
@@ -1296,8 +1315,11 @@
             if (uPersonOnly > 0.5 && vOk > 0.5) {
               // the body mesh's depth where this point falls in the picture, and a few pixels around (the outline, hair, cloth)
               float keep = 0.0;
-              for (int i = 0; i < 5; i++) {
-                vec2 o = i == 0 ? vec2(0.0) : (i == 1 ? vec2(0.012, 0.0) : (i == 2 ? vec2(-0.012, 0.0) : (i == 3 ? vec2(0.0, 0.02) : vec2(0.0, -0.02))));
+              for (int i = 0; i < 13; i++) {
+                // the point's own pixel, then two rings round it (about 2.5% and 5% of the picture's width)
+                float ang = 0.7853982 * float(i);
+                float rad = i == 0 ? 0.0 : (i < 9 ? 0.05 : 0.025);
+                vec2 o = rad * vec2(cos(ang), sin(ang) * 1.7778);
                 float mz = texture2D(uBody, vec2(vUv.x + o.x, 1.0 - vUv.y + o.y)).r;
                 float tol = uPersonLoose > 0.5 ? uPersonTol * mz : uPersonTol;
                 if (mz > 0.0 && abs(vZ - mz) < tol) keep = 1.0;

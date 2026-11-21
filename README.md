@@ -353,38 +353,47 @@ Why: the model's mesh has the right outline in the picture but a guessed distanc
 behind the measured surface), and it reaches the screen 150-350 ms after the picture was taken, five to seven times a second,
 while the depth arrives thirty times a second. Shown together, the mesh trails the point cloud and floats behind it.
 
-The fit, per depth frame, in three stages, each explaining what the previous one cannot:
+The fit, per depth frame:
 
-1. **Distance.** Every body part gets a scale about the camera (a point slides along its ray, the outline does not move): the
-   weighted mean of measured depth over mesh depth at the part's visible vertices. A part with no evidence takes its parent's.
-2. **Pose.** Articulated point-to-plane ICP over 19 body parts. Each part gets a small rigid motion; a vertex moves with the
-   blend of its parts' motions (the body model's own skinning weights). One Gauss-Newton solve for all parts, with a term
-   that keeps a part attached to its parent and damping that is strong only where the camera sees little of a part.
-3. **Surface.** What is left is shape (clothing, build, breathing). Each visible vertex's remaining error along its ray is
-   spread over the mesh by a few rounds of smoothing and applied; it fades into what the camera cannot see.
+1. **Placement, of the body as one.** One scale about the camera (a point slides along its ray, the outline does not move),
+   then rigid point-to-plane ICP for the whole body: one rotation and one translation. The rotation is pulled towards none,
+   so the depth turns the body only as far as it insists. The pose itself (how the head is turned, where the arms are) is
+   the RGB model's and is not touched.
+2. **Surface, the skin only.** What is left is shape (clothing, build, breathing). Each visible vertex's remaining error
+   along its ray is spread over the mesh by a few rounds of smoothing; it fades into what the camera cannot see. The page
+   draws the skin with these offsets and builds the skeleton on the placed mesh without them.
 
-Stages 1 and 2 are similarity transforms per part, so the joints go through them too and the skeleton follows; stage 3 moves
-the skin only. The depth is read as the camera delivers it: a vertex is taken into the depth camera's frame and through its
-lens model to a pixel, and compared with the 3-D point that pixel measures. Pixels on a depth edge are not used.
+An earlier version fitted the 19 body parts separately (their own distances and rigid motions, joined at seams). It fitted a
+little closer on recordings and was not robust live: a depth image does not hold a head against turning (it is nearly a
+ball), so the head was rotated by noise, and a correction worked out for one pose was applied to the next. The skull turned
+non-anatomically when the neck twisted. It is still in `BodyFit.fit(articulated=True)` for experiments; the page does not use
+it. The depth is read as the camera delivers it: a vertex is taken into the depth camera's frame and through its lens model to
+a pixel, and compared with the 3-D point that pixel measures. Pixels on a depth edge are not used.
 
-Over time (`LiveFit`): each frame's fit starts from the previous frame's part transforms and takes one pose step. A step that
+Over time (`LiveFit`): each frame's fit starts from the previous frame's placement and takes one step. A step that
 would move what the camera sees by less than 0.8 mm is not taken (point-to-plane ICP otherwise creeps along surfaces for
 ever, which shows as shimmer and as skin sliding over the anatomy). The surface offsets are averaged with the previous
 frame's, and start afresh when the model delivers a new mesh. The model's own mesh is not sent while fitted meshes flow.
+When a frame cannot be fitted (the body left the depth image, or came nearer than the depth mode's half metre), the last
+placement that fitted stands in for up to 45 frames, so the mesh does not jump back to the model's own, wrong, distance.
+
+Two delays are on screen, and the status line shows both: WHERE the body is and its surface come from the depth frame
+(tens of milliseconds); HOW IT IS POSED comes from the picture the model last worked on (about 300 ms). A head turn
+therefore still reaches the skeleton late, while a move of the whole body does not.
 
 **Measured** (`tools/evaluate_fit.py`, `tools/replay_stream.py`, `tests/test_fit.py`), on three recordings of one person
 seated 55 cm from the camera (360 frames; head, shoulders, upper arms in view) and on a synthetic body with known truth:
 
-| Held-out vertices, error along the ray (mm) | rms | median | 90th pct |
-|---|---|---|---|
-| mesh from the picture alone | 138-155 | 125-144 | 174-185 |
-| one scale about the camera | 17-19 | 7.4-8.4 | 25-28 |
-| 1 distance per part | 15-16 | 8.2-8.8 | 23-26 |
-| 2 + articulated pose | 14 | 6.4-6.8 | 21-24 |
-| 3 + surface | 4.4-5.2 | **0.9** | 4.5-5.3 |
+| Held-out vertices, error along the ray (mm) | median | 90th pct |
+|---|---|---|
+| mesh from the picture alone | 125-144 | 174-185 |
+| one scale about the camera | 7.4-8.4 | 25-28 |
+| placed as one body (scale, rotation, translation) | 7.1-7.4 | 26-32 |
+| + surface | **0.9** | 5.6-7.1 |
+| (per part, not used: + surface) | 0.9 | 4.5-5.3 |
 
-- Held-out: the fit sees a random 70% of the vertices and the error is measured on the other 30%. After stage 3, 74-75% of
-  them are within 2 mm of the measured surface and 89-91% within 5 mm. The tail is the upper arms and the lower edge of the
+- Held-out: the fit sees a random 70% of the vertices and the error is measured on the other 30%. After the surface stage 72-73% of
+  them are within 2 mm of the measured surface and 86-89% within 5 mm. The tail is the upper arms and the lower edge of the
   picture, where the measured surface is the shirt, in front of the body.
 - Synthetic truth (a body 12% nearer than the model thought, leaning 6 degrees): along the ray the fit ends under 1 mm; in 3-D
   the visible vertices are a median 3.6 mm from the true ones (90% within 10.7 mm) and the hidden ones 10.6 mm. So the
@@ -395,9 +404,10 @@ seated 55 cm from the camera (360 frames; head, shoulders, upper arms in view) a
 - Speed: 18 ms a fit on a still body and 24 ms on a moving one when tracking (56 ms from scratch), measured alone. Beside
   the model loop, which competes for the processor, 33 ms. The fit runs in a process of its own (`depth/fitproc.py`); the
   model loop got faster for it (92 ms inference, 114-117 ms when the fit shared its process).
-- Latency, replaying a recording through the server (the depth frames served as if live, thirty a second): 26 fitted meshes
-  a second; the depth frame is a median 54 ms old (95th percentile 77 ms) when its fitted mesh reaches the client. In a
-  headless browser on the same computer the page reported 82 ms from depth frame to screen. Not included, because it
+- Latency, replaying a recording through the server (the depth frames served as if live, thirty a second): 30 fitted meshes
+  a second, 27 ms a fit; the depth frame is a median 30 ms old (95th percentile 57 ms) when its fitted mesh reaches the
+  client. In a headless browser on the same computer the page reported 72-80 ms from depth frame to screen, and the pose
+  288-344 ms after its picture. Not included, because it
   cannot be measured from here: the time from the scene to the depth frame arriving at the computer (exposure, read-out,
   USB; about one frame, 33 ms, is typical for such cameras). **Not yet run against the live camera**: it was unplugged
   before this path was written.
@@ -419,8 +429,9 @@ To reproduce: record with the page streaming (`GET /record?frames=150&name=NAME`
 with `http://127.0.0.1:8098/?bolt=1`.
 
 **Point cloud: only the person.** A point is kept if it lies on the body mesh as the colour camera sees it: the mesh's depth
-is drawn from that camera into a small target and the cloud's shader looks each point up there (5 cm tolerance with the depth
-fit on; 30% of the distance without it, since the mesh's distance is then only an estimate).
+is drawn from that camera into a small target and the cloud's shader looks each point up there, with a margin of 5% of the
+picture's width round the outline (hair, loose clothing, hands) and a band of 15 cm in depth with the fit on (35% of the
+distance without it, since the mesh's distance is then only an estimate).
 
 ## Femto Bolt depth fusion with ICP (experimental, older, not used by the page)
 

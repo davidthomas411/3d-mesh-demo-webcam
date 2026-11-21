@@ -50,26 +50,51 @@ def test_joints_are_assigned_to_parts_by_their_longest_prefix():
     assert [names[g] for g in jp] == ["hand_l", "lowarm_l", "lowarm_l", "chest", "hand_r", "head", "pelvis"]
 
 
-def test_a_mesh_at_the_wrong_distance_and_lean_is_brought_onto_the_surface(body):
-    """The truth is 12% nearer than the model thought and leans 6 degrees; the head is turned a little more."""
-    fit, V = body
+def _leaning_truth(fit, V, lean_deg=6.0, head_deg=5.0, scale=0.88):
+    """The true body: nearer than the model thought, leaning, and with the head turned a little more than the model's."""
     from scipy.spatial.transform import Rotation as Rot
     c = V[fit.W[:, 2] > 0.5].mean(0)                             # about the chest
-    truth = (V - c) @ Rot.from_euler("x", 6, degrees=True).as_matrix().T + c
+    truth = (V - c) @ Rot.from_euler("x", lean_deg, degrees=True).as_matrix().T + c
     head = fit.W[:, 4:5]
     ch = V[fit.W[:, 4] > 0.5].mean(0)
-    truth = (1 - head) * truth + head * ((truth - ch) @ Rot.from_euler("y", 5, degrees=True).as_matrix().T + ch)
-    truth = truth * 0.88
+    truth = (1 - head) * truth + head * ((truth - ch) @ Rot.from_euler("y", head_deg, degrees=True).as_matrix().T + ch)
+    return truth * scale
+
+
+def test_the_body_is_placed_as_one_and_its_skin_drawn_onto_the_surface(body):
+    """The default fit: one transform for the whole body. The model's pose is kept (a head the truth has turned further is
+    NOT turned by the depth), and the skin still ends on the measured surface."""
+    fit, V = body
+    truth = _leaning_truth(fit, V)
     frame = depth_of(fit, truth)
     before = fit.residual(V, frame, max_mm=400.0)
-    X, M, info = fit.fit(V, frame, pose_iters=4)
+    track = {}
+    X, M, info = fit.fit(V, frame, pose_iters=4, track=track)
     after = fit.residual(X, frame)
     assert info["ok"] and M.shape == (fit.G, 4, 4)
-    assert np.median(np.abs(before)) > 80 and np.median(np.abs(after)) < 1.0 and np.percentile(np.abs(after), 90) < 4.0
-    # not only along the rays: the fitted vertices are near the true ones in space (where the camera could see them)
+    assert np.abs(M - M[0]).max() < 1e-12                        # every part has the same transform: nothing turns on its own
+    assert abs(info["part_scale"][1] - 0.88) < 0.03
+    assert np.median(np.abs(before)) > 80 and np.median(np.abs(after)) < 1.0 and np.percentile(np.abs(after), 90) < 5.0
+    # the placed mesh (what the skeleton is built on) is the model's mesh moved rigidly and scaled: its shape is untouched
+    P = track["X_pose"]
+    d0 = np.linalg.norm(V[::97, None] - V[None, ::97], axis=-1); d1 = np.linalg.norm(P[::97, None] - P[None, ::97], axis=-1)
+    k = np.cbrt(np.linalg.det(M[0, :3, :3]))
+    assert np.abs(d1 - k * d0).max() < 1e-6
+    # and the whole-body lean is followed in part only: the depth turns the body no further than it insists
+    from scipy.spatial.transform import Rotation as Rot
+    turned = np.degrees(Rot.from_matrix(M[0, :3, :3] / k).magnitude())
+    assert 1.0 < turned < 6.5
+
+
+def test_per_part_fitting_is_still_available_and_fits_closer(body):
+    fit, V = body
+    truth = _leaning_truth(fit, V)
+    frame = depth_of(fit, truth)
+    X, M, info = fit.fit(V, frame, pose_iters=4, articulated=True)
     seen = fit.observe(X, frame)["ok"]
-    assert np.median(np.linalg.norm(X - truth, axis=1)[seen]) < 6.0
-    assert abs(info["part_scale"][1] - 0.88) < 0.02              # the chest's scale
+    assert np.median(np.abs(fit.residual(X, frame))) < 1.0
+    assert np.median(np.linalg.norm(X - truth, axis=1)[seen]) < 6.0      # near the true vertices in space, not only along the rays
+    assert np.abs(M - M[0]).max() > 1e-3                         # the parts did move separately
 
 
 def test_tracking_follows_a_small_motion_in_one_step_and_then_stands_still(body):
