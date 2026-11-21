@@ -15,9 +15,10 @@ in three stages, each explaining what the previous one could not:
                 spread over the mesh by a few rounds of smoothing (the measurement pulls where there is one, neighbours carry
                 it into what the camera cannot see, fading with distance) and applied.
 
-By default stages 1 and 2 are done for the body AS ONE (BodyFit.fit, articulated=False): one scale, one small rotation, one
-translation. The pose stays the RGB model's. Per-part fitting, as described above, is available (articulated=True) but is not
-robust and is not what the page uses; see BodyFit.fit. The skeleton goes through stages 1 and 2; stage 3 moves the skin only.
+What the page uses is not the per-part pose stage described above but a KINEMATIC one (BodyFit.kinematic_step, pose="kinematic"):
+one scale for the body, then the whole skeleton fitted at once in joint angles, each pulled towards the RGB model's pose.
+Parts cannot detach, slide or change size. The per-part version (pose="parts") turned heads on noise. The skeleton goes
+through the placement and the pose; the surface stage moves the skin only.
 
 The depth is used as the camera delivers it. A vertex is carried into the depth camera's frame, projected through the depth
 lens model to the pixel it falls on, and compared with the 3-D point that pixel measures (its ray times its depth, brought
@@ -140,6 +141,19 @@ class BodyFit:
         self.parent = np.array([-1 if p[1] is None else names.index(p[1]) for p in PARTS])
         self.n0, self.max_step, self.pose_points = n0, max_step, pose_points
         self.part_verts = [(np.where(self.W[:, g] > 0)[0], self.W[self.W[:, g] > 0, g][:, None]) for g in range(G)]
+        # Kinematic chain: a rotation at part a's joint moves a and everything below it. Wc[:, a] is how much of a vertex
+        # hangs below that joint (its skinning weight summed over a and a's descendants).
+        self.Wc = np.zeros_like(self.W)
+        for g in range(G):
+            a = g
+            while a >= 0:
+                self.Wc[:, a] += self.W[:, g]
+                a = self.parent[a]
+        # How firmly each joint holds the RGB model's pose against the depth (see kinematic_step). Stiff where a depth image
+        # says little (a head against turning, a collar bone, a hand) or where a wrong turn is most visible.
+        stiff = {"spine": 8.0, "chest": 8.0, "neck": 12.0, "head": 12.0, "clavicle": 30.0, "uparm": 3.0, "lowarm": 3.0, "hand": 12.0,
+                 "upleg": 6.0, "lowleg": 6.0, "foot": 12.0}
+        self.stiff = np.array([next((v for k, v in stiff.items() if nm.startswith(k)), 6.0) for nm in names])
         # where a part meets its parent: the vertices both of them carry
         self.seam = [np.where((self.W[:, g] > 0.15) & (self.W[:, self.parent[g]] > 0.15))[0] if self.parent[g] >= 0 else np.array([], np.int64)
                      for g in range(G)]
@@ -312,6 +326,91 @@ class BodyFit:
         D = np.eye(4); D[:3, :3] = R; D[:3, 3] = c - R @ c + delta[3:]
         return D, int(len(idx))
 
+    def kinematic_step(self, X, M, frame, use=None, max_mm=60.0, damp=0.3, rot_prior=10.0, keep=None):
+        """One Gauss-Newton step for the WHOLE SKELETON at once, in joint angles.
+
+        Unknowns: one rigid motion of the body (rotation and translation, at the pelvis) and one small rotation at each joint
+        the camera has evidence for. A joint's rotation turns its part and everything below it about the joint; nothing is
+        translated or scaled at a joint, so parts cannot come apart, slide or change length, and the skull stays on the neck.
+        All of it is solved in one system against the depth (point-to-plane), so the trunk's lean, the neck and the head are
+        explained together rather than each on its own.
+
+        Every rotation is pulled back towards the RGB model's pose: the total correction a joint already carries (read off
+        M) is penalised with that joint's stiffness. The depth turns a joint only as far as it insists; where it says
+        little (a head, against turning about the neck) the model's pose stands.
+
+        -> (increment of each part as (G, 4, 4), number of vertices used) or (None, n)."""
+        G = self.G
+        o = self.observe(X, frame, normals=True)
+        if keep is not None:
+            keep["o"] = o
+        ok = o["ok"] & (np.linalg.norm(o["q"] - X, axis=1) < max_mm)
+        if use is not None:
+            ok &= use
+        idx = np.where(ok)[0]
+        if len(idx) < 300:
+            return None, int(len(idx))
+        if len(idx) > self.pose_points:
+            idx = idx[np.linspace(0, len(idx) - 1, self.pose_points).astype(np.int64)]
+        Xo, no = X[idx], o["n"][idx]
+        r = np.einsum("ij,ij->i", no, Xo - o["q"][idx])
+        wr = 1.0 / np.maximum(1.0, np.abs(r) / 10.0)             # Huber weights, 10 mm
+        scale = len(idx) / 1000.0
+        # joints with evidence below them, and where they are: the middle of the vertices a part shares with its parent
+        Wi = self.Wc[idx]
+        own = self.W[idx].sum(0)
+        active = np.zeros(G, bool)
+        for g in range(1, G):
+            active[g] = own[g] > 15.0 and len(self.seam[g]) > 0
+        for g in range(G - 1, 0, -1):                            # a joint between an active one and the root turns too
+            if active[g] and self.parent[g] > 0 and len(self.seam[self.parent[g]]) > 0:
+                active[self.parent[g]] = True
+        act = np.where(active)[0]
+        col = -np.ones(G, np.int64); col[act] = 6 + 3 * np.arange(len(act))
+        piv = np.zeros((G, 3))
+        for g in act:
+            piv[g] = X[self.seam[g]].mean(0)
+        c0 = Xo.mean(0)
+        n_unk = 6 + 3 * len(act)
+        J = np.zeros((len(idx), n_unk))
+        a0 = Xo - c0
+        J[:, 0] = a0[:, 1] * no[:, 2] - a0[:, 2] * no[:, 1]
+        J[:, 1] = a0[:, 2] * no[:, 0] - a0[:, 0] * no[:, 2]
+        J[:, 2] = a0[:, 0] * no[:, 1] - a0[:, 1] * no[:, 0]
+        J[:, 3:6] = no
+        for g in act:
+            k, w = col[g], Wi[:, g]
+            a = Xo - piv[g]
+            J[:, k] = w * (a[:, 1] * no[:, 2] - a[:, 2] * no[:, 1])
+            J[:, k + 1] = w * (a[:, 2] * no[:, 0] - a[:, 0] * no[:, 2])
+            J[:, k + 2] = w * (a[:, 0] * no[:, 1] - a[:, 1] * no[:, 0])
+        H = (J * wr[:, None]).T @ J
+        b = -J.T @ (wr * r)
+        unit = scale * 2.5e5                                     # what one radian weighs against a millimetre
+        H[np.diag_indices(n_unk)] += damp * np.concatenate([[unit] * 3, [scale] * 3, np.full(3 * len(act), unit)])
+        # priors: the corrections already made, pulled towards none
+        from scipy.spatial.transform import Rotation
+        sc = np.cbrt(np.linalg.det(M[0, :3, :3]))
+        Rm = M[:, :3, :3] / sc
+        lam0 = rot_prior * unit
+        H[:3, :3] += lam0 * np.eye(3); b[:3] -= lam0 * Rotation.from_matrix(Rm[0]).as_rotvec()
+        for g in act:
+            k, lam = col[g], self.stiff[g] * unit
+            rel = Rotation.from_matrix(Rm[g] @ Rm[self.parent[g]].T).as_rotvec()     # this joint's correction so far
+            H[k:k + 3, k:k + 3] += lam * np.eye(3); b[k:k + 3] -= lam * rel
+        delta = np.linalg.solve(H, b)
+        # forward kinematics of the increments: a part moves with its parent, then turns about its own joint
+        D = np.tile(np.eye(4), (G, 1, 1))
+        R0 = _rodrigues(delta[:3])
+        D[0, :3, :3] = R0; D[0, :3, 3] = c0 - R0 @ c0 + delta[3:6]
+        for g in range(1, G):
+            D[g] = D[self.parent[g]]
+            if active[g]:
+                Rg = _rodrigues(delta[col[g]:col[g] + 3])
+                L = np.eye(4); L[:3, :3] = Rg; L[:3, 3] = piv[g] - Rg @ piv[g]
+                D[g] = D[self.parent[g]] @ L
+        return D, int(len(idx))
+
     def blend(self, V, M):
         """Vertices carried by their parts' transforms M (G, 4, 4), blended by the skinning weights."""
         X = np.zeros_like(V)
@@ -344,17 +443,18 @@ class BodyFit:
         return X * (1.0 + u)[:, None], int(ok.sum()), (e[ok] - u[ok]) * X[ok, 2]      # what is left at the measured vertices, mm
 
     # ---- all three
-    def fit(self, V, frame, use=None, init=None, pose_iters=2, surface=True, dead_mm=0.8, track=None, articulated=False):
+    def fit(self, V, frame, use=None, init=None, pose_iters=2, surface=True, dead_mm=0.8, track=None, pose="kinematic"):
         """V: (nv, 3) mesh in the colour camera's frame, mm. use: optional mask of the vertices allowed to see the depth (for
         testing). init: the transforms of a previous fit of (nearly) this mesh, to start from. track: a dict kept by the
         caller from frame to frame (surface offsets averaged over time; it also receives "X_pose", the mesh before stage 3).
 
-        articulated=False (the default): the body is placed AS ONE. Its pose is the RGB model's, untouched; the depth
-        gives one scale about the camera, one small rotation and one translation for all of it, and then the surface
-        stage. Every part has the same transform, so nothing can come apart or turn on its own.
-        articulated=True: each body part gets its own distance and its own rigid motion (stages 1 and 2 as described at
-        the top). It fits a little closer and is NOT robust: a part the depth holds poorly (a head, against turning) is
-        rotated by noise, and a correction worked out for one pose is wrong for the next. Kept for experiments.
+        pose="kinematic" (the default): one scale about the camera for the whole body, then the whole skeleton is fitted at
+        once in joint angles, each pulled towards the RGB model's pose (kinematic_step). Parts stay attached and keep their
+        size; a part that is nearer than the model thought is reached by turning the joints above it.
+        pose="rigid": the body is moved as one, its pose untouched. Robust and blind to any error in the model's pose.
+        pose="parts": each part gets its own distance and its own rigid motion, joined softly at seams. It fits closest and is
+        NOT robust: a part the depth holds poorly (a head, against turning) is turned by noise, and nothing keeps it
+        anatomical. Kept for experiments.
 
         -> (fitted vertices, transforms M (G, 4, 4): the similarity of each part, or None, info)."""
         info = {"ok": False}
@@ -365,14 +465,17 @@ class BodyFit:
                 return V, None, info
             info["global_scale"] = round(a["global_scale"], 4)
             M = np.tile(np.eye(4), (self.G, 1, 1))
-            M[:, :3, :3] *= (s if articulated else np.full(self.G, a["global_scale"]))[:, None, None]
+            M[:, :3, :3] *= (s if pose == "parts" else np.full(self.G, a["global_scale"]))[:, None, None]
         else:
             M = np.array(init, np.float64)
-        X = self.blend(V, M) if articulated else V @ M[0, :3, :3].T + M[0, :3, 3]
+        place = (lambda T: V @ T[0, :3, :3].T + T[0, :3, 3]) if pose == "rigid" else (lambda T: self.blend(V, T))
+        X = place(M)
         n_pose, seen, moved = 0, {}, 0.0
         for _ in range(pose_iters):
-            if articulated:
+            if pose == "parts":
                 D, n = self.pose_step(X, frame, use, keep=seen)
+            elif pose == "kinematic":
+                D, n = self.kinematic_step(X, M, frame, use, keep=seen)
             else:
                 from scipy.spatial.transform import Rotation
                 Rm = M[0, :3, :3] / np.cbrt(np.linalg.det(M[0, :3, :3]))
@@ -383,7 +486,7 @@ class BodyFit:
                     return V, None, info
                 break
             Mn = D @ M
-            Xn = self.blend(V, Mn) if articulated else V @ Mn[0, :3, :3].T + Mn[0, :3, 3]
+            Xn = place(Mn)
             ov = seen["o"]["ok"]                                  # how far this step would carry what the camera sees, mm
             moved = float(np.percentile(np.abs(Xn[ov] - X[ov]).max(1), 95)) if ov.any() else 0.0
             n_pose += 1

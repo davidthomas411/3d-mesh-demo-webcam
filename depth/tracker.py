@@ -36,6 +36,12 @@ class FitState:
         self.M_good, self.held = None, 0      # the last transforms that fitted, and for how many frames they have stood in
 
 
+# How much the depth may change the model's POSE. "rigid": not at all; the body is placed as one (the default: the RGB
+# model's pose is what works, its distance is what is wrong). "kinematic": joint angles, pulled towards the model's pose.
+# "parts": each part on its own (not robust). Set FIT_POSE to try another.
+FIT_POSE = os.environ.get("FIT_POSE", "rigid")
+
+
 def fit_one(state, body, model, frame, refit_every=10 ** 9, hold_frames=45):
     """Fit model["verts"] to one depth frame, tracking from `state`. -> result dict (no timing, no ids) or None."""
     if model["owner"] != state.owner or state.n >= refit_every:
@@ -46,10 +52,10 @@ def fit_one(state, body, model, frame, refit_every=10 ** 9, hold_frames=45):
         # surface offsets worked out for the last one do not belong to it. They start afresh on this frame and are averaged
         # over the frames that use this mesh.
         state.track["u"] = None; state.track["mesh_id"] = model["mesh_id"]
-    X, Mn, info = body.fit(V, frame, init=state.M, pose_iters=1 if state.M is not None else 2, track=state.track)
+    X, Mn, info = body.fit(V, frame, init=state.M, pose_iters=1 if state.M is not None else 2, track=state.track, pose=FIT_POSE)
     if Mn is None and state.M is not None:                       # tracking lost: once more from scratch on this frame
         state.track = {"mesh_id": model["mesh_id"]}
-        X, Mn, info = body.fit(V, frame, init=None, pose_iters=2, track=state.track)
+        X, Mn, info = body.fit(V, frame, init=None, pose_iters=2, track=state.track, pose=FIT_POSE)
     state.M = Mn
     state.n += 1
     if Mn is None:
@@ -61,7 +67,7 @@ def fit_one(state, body, model, frame, refit_every=10 ** 9, hold_frames=45):
             return None
         state.held += 1
         Mn, held = state.M_good, True
-        X_pose, u = V @ Mn[0, :3, :3].T + Mn[0, :3, 3], None
+        X_pose, u = body.blend(V, Mn), None
         info = {"ok": True, "held": True, "reason": info.get("reason")}
     else:
         state.M_good, state.held, held = Mn, 0, False

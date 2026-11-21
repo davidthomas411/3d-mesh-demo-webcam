@@ -62,14 +62,14 @@ def _leaning_truth(fit, V, lean_deg=6.0, head_deg=5.0, scale=0.88):
 
 
 def test_the_body_is_placed_as_one_and_its_skin_drawn_onto_the_surface(body):
-    """The default fit: one transform for the whole body. The model's pose is kept (a head the truth has turned further is
+    """pose="rigid": one transform for the whole body. The model's pose is kept (a head the truth has turned further is
     NOT turned by the depth), and the skin still ends on the measured surface."""
     fit, V = body
     truth = _leaning_truth(fit, V)
     frame = depth_of(fit, truth)
     before = fit.residual(V, frame, max_mm=400.0)
     track = {}
-    X, M, info = fit.fit(V, frame, pose_iters=4, track=track)
+    X, M, info = fit.fit(V, frame, pose_iters=4, track=track, pose="rigid")
     after = fit.residual(X, frame)
     assert info["ok"] and M.shape == (fit.G, 4, 4)
     assert np.abs(M - M[0]).max() < 1e-12                        # every part has the same transform: nothing turns on its own
@@ -90,7 +90,7 @@ def test_per_part_fitting_is_still_available_and_fits_closer(body):
     fit, V = body
     truth = _leaning_truth(fit, V)
     frame = depth_of(fit, truth)
-    X, M, info = fit.fit(V, frame, pose_iters=4, articulated=True)
+    X, M, info = fit.fit(V, frame, pose_iters=4, pose="parts")
     seen = fit.observe(X, frame)["ok"]
     assert np.median(np.abs(fit.residual(X, frame))) < 1.0
     assert np.median(np.linalg.norm(X - truth, axis=1)[seen]) < 6.0      # near the true vertices in space, not only along the rays
