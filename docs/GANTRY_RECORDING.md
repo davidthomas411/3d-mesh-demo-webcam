@@ -146,8 +146,35 @@ on an upright seated one, and which way up the picture is given matters by a fac
 and 170 degrees), where only the head and one shoulder are in the picture, are the worst. Whether a dedicated head detector
 for extreme roll (DMHead was suggested) helps has not been tried; nothing has been downloaded.
 
-The cheap thing to try first follows from the calibration: the gantry angle is known, so each picture can be turned to the
-orientation the model likes best before it is given to it, and the fused cloud says where the body really is.
+### Judged in the room, with the calibrated camera (`tools/gantry_pose.py`)
+
+The person lies still, so every frame's mesh, taken to the room frame with that frame's camera pose, should be the same
+mesh in the same place. Thirty-two frames through the sweep (picture turned 270, one scale from the depth each), compared
+with their own consensus over the 13,800 vertices the camera ever saw, and with the fused cloud:
+
+| Gantry angle | orientation off | position off | left after a rigid fit | fused cloud to the mesh |
+|---|---|---|---|---|
+| 0 (from the side) | 6-8 deg | 82-112 mm | 15-22 mm | 42-61 mm |
+| 20-35 | 4-6 | 32-57 | 14-22 | 16-25 |
+| 45-115 (from above) | 2.4-5 | 13-30 | 14-19 | 14-22 |
+| 125-150 | 4-8 | 38-70 | 13-19 | 18-24 |
+| 165 (from the other side) | 10 | 91-98 | 24-25 | 36-39 |
+
+(medians per frame; `pose_room_rot270.json`, picture `pose_room_rot270.jpg` with each frame's mesh coloured by angle.)
+
+- **The pose does turn with the camera.** The body's orientation in the room stays within 2.4 to 10 degrees over a
+  171-degree sweep, and the way out and the way back agree, so what is left is a function of the view, not noise.
+- **Position is the large error, and it is along the line of sight.** The meshes fan out towards wherever the camera was:
+  about 15 mm seen from above, about 100 mm seen from the side. One scale about the camera cannot fix this in a view where
+  only the head and one shoulder show (docs/DEPTH_STUDY.md, experiment 1, on a real person).
+- **Shape and articulation**: 13-25 mm is left after position and orientation are taken out, at every angle.
+- **Knowing the gantry angle does not help the picture's orientation.** The camera turns about the body's long axis, so
+  the body lies the same way up in the picture at every angle; only which side is seen changes. The four rotations above
+  are the whole of that freedom. A head detector for extreme roll addresses a problem this geometry does not have. What the
+  model struggles with here is a close (0.77 m), truncated, lateral view.
+
+What the calibration does buy: the body's placement no longer has to come from each frame. One mesh fitted to the fused
+cloud in the room, or the frames' meshes combined there, serves every angle, and its projection into any frame is known.
 
 ## Commands
 
@@ -157,6 +184,7 @@ orientation the model likes best before it is given to it, and the fused cloud s
     python tools/gantry_recording.py FOLDER fuse OUT_DIR cube   --frames 300:1800:15  --box -200,200,60,460,-180,220 --flat-above -39
     python tools/gantry_recording.py FOLDER fuse OUT_DIR person --frames 4440:5530:12 --box -420,420,-500,1100,-70,380
     python tools/gantry_recording.py FOLDER pose OUT_DIR --frames 4410:5560:36      (needs the demo server running)
+    python tools/gantry_pose.py FOLDER OUT_DIR --frames 4410:5560:36 --rot 270        (after cube and fuse person_iso; needs the demo server)
     python tools/gantry_recording.py FOLDER cube OUT_DIR --frames 0:2500:5          (after calibrate; --config for an aprilcube config.json)
     python tools/gantry_recording.py FOLDER fuse OUT_DIR person_iso --frames 4440:5530:12 --box -430,410,-770,830,-70,380 --cube
 
@@ -173,5 +201,6 @@ Boxes are x0,x1,y0,y1,z0,z1 in the room frame, millimetres: origin on the axis, 
 - **The table of departures is tested on the sweep it was fitted on.** A second cube sweep would test it properly, and
   would say how repeatable the gantry is.
 - **Upload in the page** (depth, infrared, colour files instead of a live camera).
-- **Pose given the angle**, and a head detector for extreme roll if that is not enough.
+- **One body model for the whole sweep**: fit the mesh to the fused cloud in the room frame (the page's depth fit, with
+  the cloud instead of one depth picture) and project it into each frame, instead of trusting each frame's placement.
 - The infrared stream is unused.
