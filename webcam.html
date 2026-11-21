@@ -1308,6 +1308,7 @@
       const nowMs = Date.now();
       const depthArrivedMs = nowMs - (m.depth_age_ms + Math.max(0, nowMs - m.sent_ms));   // when the depth frame reached the computer
       const t0 = performance.now();
+      pendingMeshMedia = Number.isFinite(m.depth_media) ? m.depth_media : null;
       updateMesh(vertices, m.pred_cam_t, depthArrivedMs);
       const total = Date.now() - depthArrivedMs + (performance.now() - t0);
       // Two ages, because two cameras feed what is on screen. Where the body IS comes from the depth frame. HOW IT IS POSED
@@ -1578,11 +1579,14 @@
             if (!(await buildCloudObject(statusEl))) { await wait(1000); continue; }
             cloudObject.visible = cloudOn;
           }
-          const r = await fetch("/cloud?after=" + cloudSeq, { cache: "no-store" });
+          // with a video file as the picture, say where the video is: a replayed depth stream then serves that very moment
+          const r = await fetch("/cloud?after=" + cloudSeq + (video.srcObject ? "" : "&media=" + video.currentTime.toFixed(3)), { cache: "no-store" });
           if (r.status === 200) {
             const bytes = new Uint8Array(await r.arrayBuffer()), tex = cloudObject.userData.depthTex;
             cloudSeq = Number(r.headers.get("X-Cloud-Seq")) || cloudSeq;
-            if (bytes.length === tex.image.data.length) { tex.image.data.set(bytes); tex.needsUpdate = true; cloudMediaTime = video.currentTime; }
+            if (bytes.length === tex.image.data.length) { tex.image.data.set(bytes); tex.needsUpdate = true;
+              const media = r.headers.get("X-Cloud-Media");         // a replay: the recording's own time of this depth frame
+              cloudMediaTime = media ? Number(media) : video.currentTime; }
             cloudObject.material.uniforms.uUseVideo.value = boltCamera && video.videoWidth ? 1 : 0;
             const fps = r.headers.get("X-Cloud-Fps"), link = r.headers.get("X-Cloud-Link") || "";
             if (statusEl) statusEl.textContent = (fps ? fps + " fps" : "on") + (boltCamera ? "" : ", coloured by distance (webcam is not the Bolt)")
@@ -1691,7 +1695,7 @@
     // each is placed with the camera pose of ITS OWN moment. The scene as a whole follows the mesh (and the skeleton built on
     // it); the point cloud is corrected to its own time within the scene.
     const mediaLog = [];                                         // [wall clock ms, video time s], one a frame
-    let meshMediaTime = null, cloudMediaTime = null;
+    let meshMediaTime = null, cloudMediaTime = null, pendingMeshMedia = null, roomCamera = null;
     function mediaAt(ms) {
       for (let i = mediaLog.length - 1; i >= 0; i--) if (mediaLog[i][0] <= ms) return mediaLog[i][1];
       return mediaLog.length ? mediaLog[0][1] : null;
@@ -1716,6 +1720,7 @@
       if (!scene) return;
       if (!roomOn || !roomPose || video.srcObject || !video.duration) {
         if (!scene.matrixAutoUpdate) { scene.matrixAutoUpdate = true; scene.matrix.identity(); }
+        if (roomCamera) roomCamera.frustum.visible = roomCamera.path.visible = false;
         return;
       }
       mediaLog.push([Date.now(), video.currentTime]);
@@ -1727,6 +1732,23 @@
         cloudObject.matrixAutoUpdate = false;
         cloudObject.matrix.copy(scene.matrix).invert().multiply(roomMatrix(roomIndexAt(cloudMediaTime), roomTmp));
       }
+      // Where the camera is: its field of view as a small yellow pyramid at its position now, and the path it takes round the
+      // patient over the whole recording as a line. Both are fixed in the room, so they are undone from the scene's motion.
+      if (!roomCamera) {
+        const k = roomPose.k || [0.588, 1.045], d = 0.16, x = d * 0.5 / k[0], y = d * 0.5 / k[1];
+        const c = [[-x, -y, -d], [x, -y, -d], [x, y, -d], [-x, y, -d]], seg = [];
+        for (let i = 0; i < 4; i++) { seg.push(0, 0, 0, ...c[i], ...c[i], ...c[(i + 1) % 4]); }
+        seg.push(-x * 0.3, y, -d, 0, y * 1.5, -d, 0, y * 1.5, -d, x * 0.3, y, -d);                 // a tick on the picture's top edge
+        const fg = new THREE.BufferGeometry(); fg.setAttribute("position", new THREE.Float32BufferAttribute(seg, 3));
+        const frustum = new THREE.LineSegments(fg, new THREE.LineBasicMaterial({ color: 0xffd23f }));
+        const pts = []; for (const p of roomPose.pose) pts.push(p[3], p[7], p[11]);
+        const pg = new THREE.BufferGeometry(); pg.setAttribute("position", new THREE.Float32BufferAttribute(pts, 3));
+        const path = new THREE.Line(pg, new THREE.LineBasicMaterial({ color: 0xffd23f, transparent: true, opacity: 0.35 }));
+        for (const o of [frustum, path]) { o.matrixAutoUpdate = false; o.frustumCulled = false; scene.add(o); }
+        roomCamera = { frustum, path };
+      }
+      roomCamera.path.matrix.copy(scene.matrix).invert();
+      roomCamera.frustum.matrix.copy(roomCamera.path.matrix).multiply(roomMatrix(roomIndexAt(video.currentTime), roomTmp));
       if (referenceMesh) {                                       // the reference was captured from another gantry angle
         const u = referenceMesh.userData;
         if (!u.roomScene) { referenceMesh.updateMatrix(); u.roomScene = scene.matrix.clone(); u.roomLocal = referenceMesh.matrix.clone(); }
@@ -3360,7 +3382,10 @@
     }
 
     function updateMesh(vertexValues, predCamT, captureTimestampMs) {
-      if (Number.isFinite(captureTimestampMs)) meshMediaTime = mediaAt(captureTimestampMs);   // the video time this mesh belongs to
+      // the video time this mesh belongs to: said by the server for a mesh fitted to a replayed depth frame, else looked up
+      if (pendingMeshMedia !== null) meshMediaTime = pendingMeshMedia;
+      else if (Number.isFinite(captureTimestampMs)) meshMediaTime = mediaAt(captureTimestampMs);
+      pendingMeshMedia = null;
       const geometry = bodyMesh.geometry;
       const positions = geometry.attributes.position.array;
 

@@ -272,6 +272,12 @@ and the picture's viewpoint go round. Mesh, skeleton and point cloud are all sti
 scene as a whole is moved, frame by frame. `&room=0` in the address shows the camera's frame again. The picture panel,
 the DRR and the CT are views from the camera or of the body itself and are unchanged.
 
+What is on screen is not all from one moment (the mesh comes from an older picture than the point cloud), and at
+8 degrees a second that shows, so each is placed with the camera pose of its own moment. The server says which moment of
+the recording every depth frame it serves belongs to, and the page says where its video is each time it asks for one;
+without both the point cloud turned with the gantry whenever the page fell behind. A yellow pyramid marks where the
+camera is now and which way it looks, and a faint line its path round the patient over the whole recording.
+
 **Only where there is data.** The model always returns a whole body, also the legs the camera never saw. "Body and
 skeleton only where the depth camera has data" (3-D view settings; on by default for a replay, available live too) keeps
 a fragment of the mesh or skeleton only if the depth camera measured a surface along its line of sight that the fragment

@@ -192,6 +192,7 @@ class RecordedCloud:
         self.t0 = None
         self.map_latest = None
         self.media = None
+        self.seq_media = {}                                       # frame number served -> the recording's own time of it, s
 
     def restart(self):
         self.t0 = time.time()
@@ -211,6 +212,10 @@ class RecordedCloud:
             el = el % (self.times[-1] + 0.2)
         i = int(np.clip(np.searchsorted(self.times, el, side="right") - 1, 0, len(self.frames) - 1))
         seq = int((time.time() - self.t0) * self.fps) + 1
+        self.seq_media[seq] = float(self.times[i])               # so that whoever shows this frame knows which moment it is
+        if len(self.seq_media) > 400:
+            for k in sorted(self.seq_media)[:200]:
+                del self.seq_media[k]
         return (seq, self.frames[i].tobytes(), self.t0 + (seq - 1) / self.fps)   # when this frame became the newest
 
     @property

@@ -774,7 +774,13 @@ def cloud():
     """Latest Femto Bolt depth image: uint16 millimetres, little-endian, row by row (depth/cloud.py). 204 while there is nothing
     newer than ?after=SEQ, 503 with the reason when the camera or its SDK is not available. Capture runs only while this is
     polled. The page turns it into points with /cloud/calibration and /cloud/rays."""
-    item = get_cloud().get()
+    src = get_cloud()
+    if request.args.get("media") and hasattr(src, "seek"):     # a replay: the page says where its video is, every time it asks
+        try:
+            src.seek(float(request.args["media"]))
+        except ValueError:
+            pass
+    item = src.get()
     if cloud_source.error:
         return jsonify({"error": cloud_source.error}), 503
     try:
@@ -785,7 +791,7 @@ def cloud():
         return Response(status=204)
     info = cloud_source.status()
     return Response(item[1], mimetype="application/octet-stream", headers={
-        "X-Cloud-Seq": str(item[0]), "X-Cloud-Fps": str(info.get("fps", "")), "X-Cloud-Link": str(info.get("connection", "")),
+        "X-Cloud-Seq": str(item[0]), "X-Cloud-Media": str(getattr(cloud_source, "seq_media", {}).get(item[0], "")), "X-Cloud-Fps": str(info.get("fps", "")), "X-Cloud-Link": str(info.get("connection", "")),
         "Cache-Control": "no-store"})
 
 
@@ -886,7 +892,8 @@ def stream_socket(ws):
                     "fitted": True, "mesh_id": r["mesh_id"], "fit_id": r["id"], "pred_cam_t": [float(x) for x in r["cam_t_m"]],
                     "joints": nj, "depth": r["info"], "focal_length": r["extra"].get("focal_length"),
                     "depth_age_ms": (now - r["t_depth"]) * 1000.0, "model_age_ms": (now - r["model_t"]) * 1000.0,
-                    "sent_ms": now * 1000.0}
+                    "sent_ms": now * 1000.0,
+                    "depth_media": getattr(cloud_source, "seq_media", {}).get(r.get("depth_seq"))}   # a replay: the depth frame's own time
             try:
                 with ws_lock:
                     ws.send(json.dumps(meta))
