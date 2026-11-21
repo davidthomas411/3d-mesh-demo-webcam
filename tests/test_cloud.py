@@ -33,3 +33,35 @@ def test_a_missing_camera_is_reported_not_raised(monkeypatch):
         if c.error: break
         time.sleep(0.05)
     assert c.error and "ImportError" in c.error and c.get() is None
+
+
+def test_live_anchor_recovers_the_scale_of_a_body_from_a_depth_map_made_of_points():
+    """The mesh is 8% too small and too near; the depth camera sees the true body as a point cloud."""
+    import os, time
+    import pytest
+    from depth.live import LiveAnchor, depth_map_from_points, fast_visible
+    rest = os.path.join(os.path.dirname(__file__), "..", "..", "Fast-SAM-3D-Body", "mhr_rest.npz")
+    if not os.path.exists(rest):
+        pytest.skip("no neutral body mesh on this machine")
+    d = np.load(rest); V, F = d["verts"].astype(np.float64), d["faces"]
+    P = (V + np.array([0.05, 0.9, 2.4])) * 1000.0               # camera frame, mm: y down, the body 2.4 m away
+    hw, f = (180, 320), 753.14 * 320 / 1280
+    K = np.array([[f, 0, 160.0], [0, f, 97.0], [0, 0, 1.0]])
+    vis = fast_visible(P, F, K, hw)
+    assert 0.25 < vis.mean() < 0.6 and (P[vis][:, 2] < np.median(P[:, 2]) + 80).mean() > 0.8     # the front of the body
+    true = P * 1.08
+    rng = np.random.default_rng(0)
+    front = true[fast_visible(true, F, K, hw)]
+    cloud = np.repeat(front, 6, 0) + rng.normal(0, 2.0, (len(front) * 6, 3))                     # what the depth camera measures
+    depth = depth_map_from_points(cloud, K, hw)
+    a = LiveAnchor(F)
+    t = time.perf_counter(); info = a.update(P, depth, K); ms = (time.perf_counter() - t) * 1000
+    assert info["ok"] and abs(info["raw"] - 1.08) < 0.01 and info["rms_mm"] < 25, info
+    assert ms < 150, ms                                         # it runs inside the inference loop
+    for _ in range(20):
+        info = a.update(P, depth, K)
+    assert abs(info["scale"] - 1.08) < 0.01
+    wall = a.update(P, np.full(hw, 3100.0) + rng.normal(0, 150, hw), K)      # a depth image that is not this body: refused
+    assert not wall["ok"] and "does not match" in wall["reason"] and wall["scale"] == info["scale"]
+    empty = a.update(P, np.zeros(hw), K)                        # nobody in the depth image: keep the last scale, say why
+    assert not empty["ok"] and empty["scale"] == info["scale"] and empty["reason"]

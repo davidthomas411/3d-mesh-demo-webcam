@@ -37,8 +37,12 @@ def pack(points_mm):
 
 
 class FemtoCloud:
-    def __init__(self, width=640, height=576, fps=30, max_points=30000, idle_stop_s=5.0):
+    # 320 x 288 is the Bolt's binned narrow mode: 92,000 points a frame (30,000 are shown), less noise than the unbinned mode
+    # and a quarter of the work. Clouds are made at most `rate` times a second: this thread shares the interpreter with the
+    # inference loop, and converting every frame at 640 x 576 slowed inference from about 120 to 210 ms.
+    def __init__(self, width=320, height=288, fps=30, max_points=30000, idle_stop_s=5.0, rate=15.0):
         self.size, self.fps, self.max_points, self.idle_stop_s = (width, height), fps, max_points, idle_stop_s
+        self.min_interval = 1.0 / rate
         self.lock = threading.Lock()
         self.thread = None
         self.latest = None            # (seq, bytes, n_points)
@@ -47,6 +51,8 @@ class FemtoCloud:
         self.error = None
         self.error_time = 0.0
         self.info = {}
+        self.map_until = 0.0          # a depth image aligned to the colour camera is made while somebody asks for it
+        self.map_latest = None        # (depth_mm HxW, K)
 
     # ---- called from request threads
     def get(self):
@@ -60,6 +66,14 @@ class FemtoCloud:
                 self.thread = threading.Thread(target=self._run, name="femto-cloud", daemon=True)
                 self.thread.start()
             return self.latest
+
+    MAP_HW = (180, 320)
+
+    def depth_map(self):
+        """Latest depth image as the COLOUR camera would see it, (depth_mm, K), or None. For depth/live.py."""
+        self.map_until = time.time() + 2.0
+        self.get()
+        return self.map_latest
 
     def status(self):
         running = self.thread is not None and self.thread.is_alive()
@@ -81,13 +95,28 @@ class FemtoCloud:
             pipe.start(cfg)
             pc = ob.PointCloudFilter(); pc.set_create_point_format(ob.OBFormat.POINT)
             dev = pipe.get_device().get_device_info()
-            self.info = {"device": dev.get_name(), "connection": dev.get_connection_type(), "depth": list(self.size)}
+            ci = cprof.get_intrinsic()
+            k = [ci.fx / cprof.get_width(), ci.fy / cprof.get_height(), ci.cx / cprof.get_width(), ci.cy / cprof.get_height()]
+            # colour intrinsics as fractions of the picture size (the Bolt's 16:9 modes are the same view at different sizes)
+            self.info = {"device": dev.get_name(), "connection": dev.get_connection_type(), "depth": list(self.size), "colour_k": k}
+            h, w = self.MAP_HW
+            K_map = np.array([[k[0] * w, 0, k[2] * w], [0, k[1] * h, k[3] * h], [0, 0, 1.0]])
             t_fps, n_fps = time.time(), 0
+            t_frame = time.time()
             while time.time() - self.last_request < self.idle_stop_s:
                 frames = pipe.wait_for_frames(200)
                 if frames is None or frames.get_depth_frame() is None:
+                    if time.time() - t_frame > 3.0:           # unplugged, or taken by another program: stop, so a retry reopens it
+                        raise TimeoutError("no depth frames from the camera for 3 s")
                     continue
-                pts = np.asarray(pc.calculate(pc.process(frames)), np.float64).reshape(-1, 3)
+                if time.time() - t_frame < self.min_interval:
+                    continue                                  # newer than needed: leave the processor to the model
+                t_frame = time.time()
+                pts = np.asarray(pc.calculate(pc.process(frames)), np.float32).reshape(-1, 3)
+                if time.time() < self.map_until:
+                    from .live import depth_map_from_points
+                    full = pts[pts[:, 2] > 0]
+                    self.map_latest = (depth_map_from_points(to_colour_frame(full, R, t), K_map, self.MAP_HW), K_map)
                 pts = to_colour_frame(subsample(pts, self.max_points), R, t)
                 self.seq += 1
                 self.latest = (self.seq, pack(pts), len(pts))
@@ -97,7 +126,7 @@ class FemtoCloud:
         except Exception as exc:                              # no SDK, no device, device busy: report it, never raise
             self.error = f"{type(exc).__name__}: {exc}"; self.error_time = time.time()
         finally:
-            self.latest = None
+            self.latest = None; self.map_latest = None
             try:
                 if pipe is not None:
                     pipe.stop()

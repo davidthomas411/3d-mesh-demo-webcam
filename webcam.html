@@ -911,6 +911,8 @@
         '<span>Predict between updates (low latency)</span></label>' +
         '<label class="anaRow"><input id="anaCloud" type="checkbox">' +
         '<span>Depth point cloud (Femto Bolt) <output id="anaCloudStatus"></output></span></label>' +
+        '<label class="anaRow"><input id="anaFuse" type="checkbox">' +
+        '<span>Mesh distance and size from depth <output id="anaFuseStatus"></output></span></label>' +
         '<label class="anaRow"><input id="anaXray" type="checkbox" checked>' +
         '<span>Live DRR X-ray</span></label>' +
         '<label class="anaRow"><input id="anaCt" type="checkbox" checked>' +
@@ -1108,6 +1110,11 @@
         startJawTracking(jawStatus);
       }
       document.querySelector("#anaCloud").addEventListener("change", (e) => setCloud(e.target.checked));
+      document.querySelector("#anaFuse").addEventListener("change", (e) => {
+        depthFuse = e.target.checked;
+        if (!depthFuse) { depthScale = 1; document.querySelector("#anaFuseStatus").textContent = ""; }
+        sendDepthConfig();
+      });
       placeControls(panel);
     }
 
@@ -1119,6 +1126,27 @@
      */
     const CLOUD_MAX = 30000;
     let cloudOn = false, cloudObject = null, cloudSeq = 0;
+    // Depth fusion (server: depth/live.py). The server measures ONE number, how much bigger and farther the body really is than
+    // the picture alone suggested; the mesh is scaled about the camera by it. Only meaningful when the webcam is the Bolt.
+    let boltCamera = false, depthFuse = false, depthScale = 1;
+    const cloudSample = document.createElement("canvas");
+    cloudSample.width = 320; cloudSample.height = 180;
+
+    function sendDepthConfig() {
+      if (streamSocket && streamSocket.readyState === WebSocket.OPEN) {
+        streamSocket.send(JSON.stringify({ type: "config", action: "set_depth", fusion: depthFuse, bolt: boltCamera }));
+      }
+    }
+
+    function handleDepthInfo(info) {
+      if (!depthFuse) { depthScale = 1; return; }
+      const el = document.querySelector("#anaFuseStatus");
+      if (info && info.scale) depthScale = info.scale;
+      if (!el) return;
+      if (!info) el.textContent = "";
+      else if (info.ok) el.textContent = "x" + info.scale.toFixed(3) + ", fit " + info.rms_mm.toFixed(0) + " mm rms";
+      else el.textContent = (info.scale ? "holding x" + info.scale.toFixed(3) + ": " : "") + (info.reason || "no depth");
+    }
 
     function setCloud(on) {
       const statusEl = document.querySelector("#anaCloudStatus");
@@ -1149,11 +1177,32 @@
             cloudSeq = Number(r.headers.get("X-Cloud-Seq")) || cloudSeq;
             const n = Math.min(Math.floor(mm.length / 3), CLOUD_MAX), g = cloudObject.geometry;
             const P = g.attributes.position.array, C = g.attributes.color.array;
+            // Colour: the Bolt's own picture. Each point is projected into the colour camera with the factory intrinsics and
+            // takes the pixel it lands on. Only when the page's webcam IS that camera; otherwise (and outside the picture)
+            // points are coloured by distance, near warm and far cool.
+            const k = (r.headers.get("X-Cloud-K") || "").split(",").map(Number);
+            let rgb = null;
+            const W = cloudSample.width, H = cloudSample.height;
+            if (boltCamera && k.length === 4 && video.videoWidth) {
+              const c2 = cloudSample.getContext("2d", { willReadFrequently: true });
+              c2.drawImage(video, 0, 0, W, H);
+              rgb = c2.getImageData(0, 0, W, H).data;
+            }
             for (let i = 0; i < n; i++) {
-              const z = mm[i * 3 + 2] / 1000;
-              P[i * 3] = mm[i * 3] / 1000; P[i * 3 + 1] = -mm[i * 3 + 1] / 1000; P[i * 3 + 2] = -z;
-              const t = Math.min(1, Math.max(0, (z - 0.5) / 3.0));          // near: warm, far: cool
-              C[i * 3] = 1.0 - 0.8 * t; C[i * 3 + 1] = 0.85 - 0.35 * Math.abs(t - 0.4); C[i * 3 + 2] = 0.35 + 0.65 * t;
+              const x = mm[i * 3], y = mm[i * 3 + 1], zm = mm[i * 3 + 2], z = zm / 1000;
+              P[i * 3] = x / 1000; P[i * 3 + 1] = -y / 1000; P[i * 3 + 2] = -z;
+              let done = false;
+              if (rgb) {
+                const u = Math.round((k[0] * x / zm + k[2]) * W), v = Math.round((k[1] * y / zm + k[3]) * H);
+                if (u >= 0 && u < W && v >= 0 && v < H) {
+                  const o = (v * W + u) * 4;
+                  C[i * 3] = rgb[o] / 255; C[i * 3 + 1] = rgb[o + 1] / 255; C[i * 3 + 2] = rgb[o + 2] / 255; done = true;
+                }
+              }
+              if (!done) {
+                const t = Math.min(1, Math.max(0, (z - 0.5) / 3.0)), dim = rgb ? 0.35 : 1;
+                C[i * 3] = dim * (1.0 - 0.8 * t); C[i * 3 + 1] = dim * (0.85 - 0.35 * Math.abs(t - 0.4)); C[i * 3 + 2] = dim * (0.35 + 0.65 * t);
+              }
             }
             g.setDrawRange(0, n); g.attributes.position.needsUpdate = true; g.attributes.color.needsUpdate = true;
             const fps = r.headers.get("X-Cloud-Fps"), link = r.headers.get("X-Cloud-Link") || "";
@@ -1220,7 +1269,7 @@
         window.location.search = q.toString();
       });
       addMenu(document.getElementById("mesh"), "3-D view and anatomy", [
-        row("anaEnable"), row("anaSkeleton"), row("anaSkin"), row("anaOpacity"), row("anaCloud"), row("anaXray"), row("anaCt"),
+        row("anaEnable"), row("anaSkeleton"), row("anaSkin"), row("anaOpacity"), row("anaCloud"), row("anaFuse"), row("anaXray"), row("anaCt"),
         row("anaJaw"), row("anaJoints"), row("anaScale"), row("anaPredict"), notes[0], groups, notes[1],
       ], "left");
       panel.style.display = "none";
@@ -1857,6 +1906,7 @@
       referenceMesh = new THREE.Mesh(geometry, material);
 
       referenceMesh.rotation.copy(bodyMesh.rotation);
+      referenceMesh.scale.copy(bodyMesh.scale);
       referenceMesh.position.copy(bodyMesh.position);
       referenceMesh.renderOrder = 2;
 
@@ -2592,14 +2642,15 @@
       const timestampSeconds =
         performance.now() / 1000;
 
+      // with depth fusion the body's true distance is depthScale times the estimate, and so are its shifts
       const rawLatMm =
-        (latestPredCamT[0] - referencePredCamT[0]) * 1000;
+        (latestPredCamT[0] - referencePredCamT[0]) * 1000 * depthScale;
 
       const rawLngMm =
-        (latestPredCamT[1] - referencePredCamT[1]) * 1000;
+        (latestPredCamT[1] - referencePredCamT[1]) * 1000 * depthScale;
 
       const rawVrtMm =
-        (latestPredCamT[2] - referencePredCamT[2]) * 1000;
+        (latestPredCamT[2] - referencePredCamT[2]) * 1000 * depthScale;
 
       const latMm =
         trackingFilters.lat.filter(
@@ -2820,10 +2871,12 @@
         Number.isFinite(predCamT[1]) &&
         Number.isFinite(predCamT[2])
       ) {
+        // depthScale: 1, or the measured scale about the camera when depth fusion is on (bigger and farther together)
+        bodyMesh.scale.setScalar(depthScale);
         bodyMesh.position.set(
-          predCamT[0],
-          -predCamT[1],
-          -predCamT[2]
+          depthScale * predCamT[0],
+          -depthScale * predCamT[1],
+          -depthScale * predCamT[2]
         );
       }
 
@@ -3108,6 +3161,7 @@
             "set_intrinsics_mode",
             intrinsicsModeSelect.value
           );
+          sendDepthConfig();
 
           resolve();
         };
@@ -3170,6 +3224,7 @@
             }
 
             updateCalibrationStatus(metadata);
+            handleDepthInfo(metadata.depth);
             pendingMeshMetadata = metadata;
             return;
           }
@@ -3687,6 +3742,7 @@
         if (bolt) wanted.deviceId = { exact: bolt.deviceId };
       } catch (error) { /* default camera */ }
       mediaStream = await navigator.mediaDevices.getUserMedia({ video: wanted, audio: false });
+      boltCamera = /femto|orbbec/i.test((mediaStream.getVideoTracks()[0] || {}).label || "");
 
       video.loop = false;
       video.srcObject = mediaStream;

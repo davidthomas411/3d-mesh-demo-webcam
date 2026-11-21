@@ -184,9 +184,9 @@ Quickest is again to copy the built files from a PC that has them (about 140 MB 
 To build them from the scans instead, see "Real CT, deformed live" in `README.md`. The PET-CT subject (ENHANCE.PET 0279) is
 CC BY-NC 4.0.
 
-## 8. Optional: Femto Bolt point cloud
+## 8. Optional: Femto Bolt (point cloud, depth fusion)
 
-For the "Depth point cloud (Femto Bolt)" option in the 3-D view's gear menu, install Orbbec's SDK wrapper into the same
+For the "Depth point cloud (Femto Bolt)" and "Mesh distance and size from depth" options in the 3-D view's gear menu, install Orbbec's SDK wrapper into the same
 environment and plug the camera into a USB 3 port (a USB 2 link works but gives about 7 frames a second instead of 30):
 
 ```bash

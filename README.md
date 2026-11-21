@@ -328,20 +328,36 @@ These values are deployment observations, not guaranteed benchmarks.
 - Body-only mode avoids the two additional hand crops used by full mode.
 - The independent mesh can use a fixed center without temporal smoothing.
 
-## Femto Bolt point cloud in the page
+## Femto Bolt in the page: point cloud and depth fusion
 
-With an Orbbec Femto Bolt attached, the 3-D view's gear menu has "Depth point cloud (Femto Bolt)". The server opens the Bolt's
-depth stream only (640 x 576, 30 fps on USB 3; about 7 fps on a USB 2 link), turns each frame into points with the SDK's own
-filter (factory calibration, lens distortion included), moves them into the colour camera's frame with the factory extrinsics,
-thins them to 30,000 and serves the latest at `GET /cloud` (`depth/cloud.py`). Capture runs only while the option is on.
+With an Orbbec Femto Bolt attached, the 3-D view's gear menu has two options. Both need `pip install pyorbbecsdk2` (tested:
+wrapper 2.1.3, Bolt firmware 1.1.3, Windows) and the camera on a USB 3 port; without the SDK or the camera each option says why
+it is unavailable. The page asks for the Bolt's colour camera as its webcam when one is present.
 
-- Needs `pip install pyorbbecsdk2` (tested: wrapper 2.1.3, Bolt firmware 1.1.3, Windows). Without it, or without a camera, the
-  option says why it is unavailable.
-- The page asks for the Bolt's colour camera as its webcam when one is present, because the cloud is in that camera's frame.
-- The cloud is metric. The mesh's distance from the camera is the RGB model's estimate, so the two share a space but need not
-  coincide; correcting the mesh with the depth is what the fusion below does, and that is not wired to this option.
+**Depth point cloud.** The server opens the Bolt's depth stream only (the browser keeps the colour camera), turns frames into
+points with the SDK's own filter (factory calibration, lens distortion included), moves them into the colour camera's frame
+with the factory extrinsics, thins them to 30,000 and serves the latest at `GET /cloud` (`depth/cloud.py`). Each point is
+coloured from the Bolt's own picture: it is projected into the colour camera with the factory intrinsics and takes the pixel it
+lands on (points outside the picture, or any point when the webcam is another camera, are coloured by distance). The depth mode
+is the binned 320 x 288 one and clouds are made at most 15 times a second: converting every 640 x 576 frame slowed inference
+from about 120 to 210 ms, because the capture thread shares the interpreter with the model loop. Capture runs only while an
+option is on.
 
-## Femto Bolt depth fusion (experimental)
+**Mesh distance and size from depth** (`depth/live.py`). A body mesh estimated from one picture has an unknown overall scale:
+making it s times bigger and s times farther from the camera leaves its outline where it was. The server measures that one
+number against the depth (robust median of measured depth over mesh depth, over the vertices the camera can see), filters it,
+and the page scales the mesh about the camera by it; the shift readouts are scaled with it. Pose and outline are untouched.
+While this is on and the webcam is the Bolt, the model is also given the Bolt's factory intrinsics instead of a focal length
+estimated from the picture. A fit worse than 60 mm rms is refused ("depth does not match the mesh") and the last good scale is
+kept. It adds no measurable latency (129 ms round trip with it on or off).
+
+- Checked: the scale is recovered to 1% on a synthetic body (`tests/test_cloud.py`), and the server path runs against the real
+  camera's depth. **Not yet checked on a live person**: the fit quality and the scale value on a real body, and whether the
+  cloud's colours line up with the picture.
+- Depth frame and picture are not time-matched: the newest depth is used. The scale changes slowly and is filtered, so this
+  matters little for it; it would matter for a per-frame pose refinement, which is not done here.
+
+## Femto Bolt depth fusion with ICP (experimental, older, not used by the page)
 
 The RGB-only mesh has an ambiguous overall scale/depth (`pred_cam_t`). An Orbbec Femto Bolt
 supplies metric depth, so the server can fix that ambiguity and refine the pose of the mesh.

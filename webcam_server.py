@@ -242,6 +242,15 @@ def inference_worker():
                 inference_mode = runtime_config["inference_mode"]
                 calibration = calibration_for(item_owner)
                 last_calibration_owner = item_owner
+                if calibration.get("bolt") and not calibration.get("factory"):
+                    # the webcam is the Femto Bolt's colour camera: its factory intrinsics, not an estimate from the picture
+                    k = cloud_source.info.get("colour_k") if cloud_source is not None else None
+                    if k:
+                        height, width = image_rgb.shape[:2]
+                        calibration["cam"] = torch.tensor([[[k[0] * width, 0.0, k[2] * width], [0.0, k[1] * height, k[3] * height],
+                                                           [0.0, 0.0, 1.0]]], dtype=torch.float32)
+                        calibration["mode"] = "fixed"; calibration["factory"] = True
+                        print(f"FACTORY_INTRINSICS focal={k[0] * width:.1f} size={width}x{height}", flush=True)
                 intrinsics_mode = calibration["mode"]
                 active_cam_intrinsics = (
                     calibration["cam"]
@@ -397,6 +406,25 @@ def inference_worker():
                             depth_info["cam_t_shift_m"] = (shift * np.array([1.0, -1.0, -1.0])).tolist()
                 except Exception as exc:  # depth must never take the RGB pipeline down
                     depth_info = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+
+            if depth_info is None and calibration.get("depth_fusion"):
+                # Femto Bolt: one filtered scale about the camera puts the mesh at its measured distance and size (depth/live.py)
+                try:
+                    if not calibration.get("bolt"):
+                        depth_info = {"ok": False, "reason": "the webcam is not the Femto Bolt's colour camera"}
+                    else:
+                        dm = get_cloud().depth_map()
+                        if dm is None:
+                            depth_info = {"ok": False, "reason": cloud_source.error or "waiting for the depth camera"}
+                        else:
+                            if calibration.get("anchor") is None:
+                                from depth.live import LiveAnchor
+                                calibration["anchor"] = LiveAnchor(faces)
+                            cam_t_np = to_numpy(outputs[0]["pred_cam_t"]).reshape(-1)
+                            depth_info = calibration["anchor"].update((vertices + cam_t_np) * 1000.0, dm[0], dm[1])
+                            depth_info["factory_intrinsics"] = bool(calibration.get("factory"))
+                except Exception as exc:  # depth must never take the RGB pipeline down
+                    depth_info = {"ok": False, "reason": f"{type(exc).__name__}: {exc}"}
 
             with state_lock:
                 mesh_id += 1
@@ -657,14 +685,28 @@ def status():
 cloud_source = None
 
 
-@app.get("/cloud")
-def cloud():
-    """Latest Femto Bolt point cloud: int16 mm triples in the colour camera's frame (depth/cloud.py). 204 while there is nothing
-    newer than ?after=SEQ, 503 with the reason when the camera or its SDK is not available. Capture runs only while this is polled."""
+class _QuietCloudLog(__import__("logging").Filter):
+    """The page polls /cloud many times a second: keep those lines out of the server's log."""
+    def filter(self, record):
+        return "GET /cloud" not in record.getMessage()
+
+
+__import__("logging").getLogger("werkzeug").addFilter(_QuietCloudLog())
+
+
+def get_cloud():
     global cloud_source
     if cloud_source is None:
         from depth.cloud import FemtoCloud
         cloud_source = FemtoCloud()
+    return cloud_source
+
+
+@app.get("/cloud")
+def cloud():
+    """Latest Femto Bolt point cloud: int16 mm triples in the colour camera's frame (depth/cloud.py). 204 while there is nothing
+    newer than ?after=SEQ, 503 with the reason when the camera or its SDK is not available. Capture runs only while this is polled."""
+    get_cloud()
     item = cloud_source.get()
     if cloud_source.error:
         return jsonify({"error": cloud_source.error}), 503
@@ -677,7 +719,8 @@ def cloud():
     info = cloud_source.status()
     return Response(item[1], mimetype="application/octet-stream", headers={
         "X-Cloud-Seq": str(item[0]), "X-Cloud-Points": str(item[2]), "X-Cloud-Fps": str(info.get("fps", "")),
-        "X-Cloud-Link": str(info.get("connection", "")), "Cache-Control": "no-store"})
+        "X-Cloud-Link": str(info.get("connection", "")), "X-Cloud-K": ",".join(f"{v:.6f}" for v in info.get("colour_k", [])),
+        "Cache-Control": "no-store"})
 
 
 @sock.route("/stream")
@@ -724,6 +767,17 @@ def stream_socket(ws):
                             )
                         calibration["mode"] = value
                         calibration["fixed_when_ready"] = False
+
+                    elif action == "set_depth":
+                        calibration["depth_fusion"] = bool(metadata.get("fusion"))
+                        bolt = bool(metadata.get("bolt"))
+                        if not bolt and calibration.get("factory"):
+                            calibration["cam"] = None; calibration["history"].clear(); calibration["factory"] = False
+                        calibration["bolt"] = bolt
+                        if not calibration["depth_fusion"]:
+                            calibration.pop("anchor", None)
+                        if bolt:
+                            get_cloud().get()                    # start the camera, so that its intrinsics are known
 
                     elif action == "recalibrate":
                         calibration["history"].clear()
