@@ -173,8 +173,53 @@ with their own consensus over the 13,800 vertices the camera ever saw, and with 
   are the whole of that freedom. A head detector for extreme roll addresses a problem this geometry does not have. What the
   model struggles with here is a close (0.77 m), truncated, lateral view.
 
-What the calibration does buy: the body's placement no longer has to come from each frame. One mesh fitted to the fused
-cloud in the room, or the frames' meshes combined there, serves every angle, and its projection into any frame is known.
+## Tracking motion while the gantry turns (`tools/gantry_track.py`)
+
+The practical use is to follow a patient who may move while the gantry rotates, so nothing may be fused over time during
+tracking: every depth frame has to give a measurement on its own. The method is the one docs/DEPTH_STUDY.md recommends,
+moved into the room frame:
+
+1. A frame's depth is taken to the room frame with the camera pose for its gantry angle (the cube calibration).
+2. A region is a box in the room frame (head: 220 x 245 mm; chest: 460 x 360 mm).
+3. The region's live points are registered rigidly, point-to-plane, onto a reference surface. The result is the region's
+   six shifts for that frame.
+
+The reference needs the patient still once, for one sweep, as any surface-guidance reference capture does. Two kinds were
+compared: **matched** (the region as seen from the same gantry angle in the reference sweep) and **fused** (one surface
+from the whole reference sweep).
+
+**Test.** The person's outward pass (frames 4500-5004) is the reference; 42 frames of the return pass are "live", each
+measured alone. Nobody measured what the person really did, so this is an upper bound on the method's error.
+
+| Region, reference | apparent shift, median | 95% | first 5 s after the turn-round |
+|---|---|---|---|
+| chest, matched | 1.6 mm | 3.4 | 0.9 - 3.6 |
+| chest, fused | 1.2 | 2.1 | 0.6 - 1.2 |
+| head, matched | 4.4 | 7.1 | 0.2 - 1.6 |
+| head, fused | 3.0 | 4.7 | 0.7 - 1.4 |
+
+- **The head figure is mostly a real movement, found by the tracking.** Just after the turn-round, where reference and
+  live are a second or two apart, the head reads 0.2-0.8 mm. From frame 5154 it steps to 2 mm and then drifts steadily
+  to 5 mm sideways (room X) over the next 12 s, the same in both references, while the chest stays at 1-1.5 mm. A
+  gantry-angle error would move the chest too. So the person's head rolled about 5 mm between the passes; it cannot be
+  proved without an independent measurement.
+- **The floor is about 0.5-1.5 mm**, read from the frames nearest the turn-round and from the chest. It is not
+  sub-millimetre yet. The chest includes breathing.
+- **The gantry angle is what limits it.** Here the angle comes from the depth of the room (0.6 degrees rms), and the
+  largest errors sit where the live and reference angles differ most (frame 5058: 0.9 degrees apart, chest 3.6 mm). A
+  tenth of a degree is a quarter of a millimetre at 150 mm from the axis, so the angle has to come from the machine, or
+  from registering the static room, not from three planes.
+- Fused looked slightly better than matched in this test, the opposite of what view-dependent depth errors predict.
+  The likely reason is the same angle noise: a matched reference is one noisy frame at one noisy angle, the fused one
+  averages 168. With a good angle the comparison should be run again.
+- A known motion applied to the live points (2, -3, 1.5 mm and about 1 degree) is recovered to 0.1 mm against the
+  matched reference, but that test re-uses the frame's own points, so it shows the registration converges, not how
+  accurate it is. Against the fused reference the same test is off by 2.9 mm for the head and 0.8 mm for the chest:
+  a head-sized region slides on a 4 mm fused surface. Regions need to be large and the fused surface finer.
+
+What this means for the tool: the pose model names the regions and follows gross motion (its orientation holds to
+2.4-10 degrees through the sweep); the numbers come from registering each frame's depth in the room frame; the reference
+is one still sweep; the gantry angle comes from the machine.
 
 ## Commands
 
@@ -185,6 +230,7 @@ cloud in the room, or the frames' meshes combined there, serves every angle, and
     python tools/gantry_recording.py FOLDER fuse OUT_DIR person --frames 4440:5530:12 --box -420,420,-500,1100,-70,380
     python tools/gantry_recording.py FOLDER pose OUT_DIR --frames 4410:5560:36      (needs the demo server running)
     python tools/gantry_pose.py FOLDER OUT_DIR --frames 4410:5560:36 --rot 270        (after cube and fuse person_iso; needs the demo server)
+    python tools/gantry_track.py FOLDER OUT_DIR --ref 4500:5004:3 --live 5010:5508:12  (reference pass, live pass)
     python tools/gantry_recording.py FOLDER cube OUT_DIR --frames 0:2500:5          (after calibrate; --config for an aprilcube config.json)
     python tools/gantry_recording.py FOLDER fuse OUT_DIR person_iso --frames 4440:5530:12 --box -430,410,-770,830,-70,380 --cube
 
@@ -201,6 +247,7 @@ Boxes are x0,x1,y0,y1,z0,z1 in the room frame, millimetres: origin on the axis, 
 - **The table of departures is tested on the sweep it was fitted on.** A second cube sweep would test it properly, and
   would say how repeatable the gantry is.
 - **Upload in the page** (depth, infrared, colour files instead of a live camera).
-- **One body model for the whole sweep**: fit the mesh to the fused cloud in the room frame (the page's depth fit, with
-  the cloud instead of one depth picture) and project it into each frame, instead of trusting each frame's placement.
+- **A gantry angle better than 0.6 degrees** (from the machine, or by registering the static room and couch), then the
+  tracking test again. A recording with a known motion (a phantom moved by a measured amount) to give a true error.
+- **Regions from the pose model** instead of fixed boxes in the room.
 - The infrared stream is unused.
