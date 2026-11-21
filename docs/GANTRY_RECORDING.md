@@ -272,6 +272,21 @@ and the picture's viewpoint go round. Mesh, skeleton and point cloud are all sti
 scene as a whole is moved, frame by frame. `&room=0` in the address shows the camera's frame again. The picture panel,
 the DRR and the CT are views from the camera or of the body itself and are unchanged.
 
+**Only where there is data.** The model always returns a whole body, also the legs the camera never saw. "Body and
+skeleton only where the depth camera has data" (3-D view settings; on by default for a replay, available live too) keeps
+a fragment of the mesh or skeleton only if the depth camera measured a surface along its line of sight that the fragment
+lies on or up to 45 cm behind. It is done in the shaders with the depth camera's own lens model, so it follows every
+depth frame. The reference ghost is left whole.
+
+**Reference tracking in the room frame.** With a replay that has camera poses, "Capture reference" and the six bars work
+in room coordinates: live mesh and reference are each taken to the room with the camera pose of their own moment, LAT is
+across the couch, LNG along it, VRT up-down, and the reference ghost stays where it was captured while the gantry moves
+on. The position is the centre of the selected region's vertices as placed by the depth fit, not the model's own distance
+estimate (which made the bars swing by 400 mm). Through the full sweep, thorax selected, the bars read 10-50 mm and up
+to 7 degrees on a person lying still: that is the body mesh's accuracy by viewing angle (see "Judged in the room"), not
+the depth registration's 1 mm, which is not wired into the bars yet. The green and magenta reference overlays in the DRR
+and CT panels are still in the camera's frame.
+
 ### The tracking analysis as a player
 
 `http://127.0.0.1:8097/gantry` plays an exported recording: the colour picture (head up) with the tracked regions tinted,

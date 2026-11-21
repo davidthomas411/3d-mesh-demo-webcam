@@ -1030,6 +1030,8 @@
         '<span>Depth point cloud (Femto Bolt) <output id="anaCloudStatus"></output></span></label>' +
         '<label class="anaRow"><input id="anaCloudPerson" type="checkbox">' +
         '<span>Point cloud: only the person</span></label>' +
+        '<label class="anaRow"><input id="anaDepthClip" type="checkbox">' +
+        '<span>Body and skeleton only where the depth camera has data <output id="anaDepthClipStatus"></output></span></label>' +
         '<label class="anaRow"><input id="anaFuse" type="checkbox">' +
         '<span>Fit the mesh to the depth (low latency) <output id="anaFuseStatus"></output></span></label>' +
         '<label class="anaRow"><input id="anaZoomTrack" type="checkbox"><span>Zoom to region</span></label>' +
@@ -1231,6 +1233,10 @@
       }
       document.querySelector("#anaCloud").addEventListener("change", (e) => setCloud(e.target.checked));
       document.querySelector("#anaCloudPerson").addEventListener("change", (e) => { cloudPersonOnly = e.target.checked; });
+      document.querySelector("#anaDepthClip").addEventListener("change", (e) => setDepthClip(e.target.checked));
+      if (new URLSearchParams(window.location.search).get("video")) {      // a recorded sweep sees only part of the body: on from the start
+        document.querySelector("#anaDepthClip").checked = true; setTimeout(() => setDepthClip(true), 0);
+      }
       if (boltCamera) {
         // The webcam is the Femto Bolt: the depth fit is what this set-up is for, so it starts switched on. If the depth
         // camera cannot be opened the server says why and the model's own mesh is shown, as without it.
@@ -1467,7 +1473,15 @@
       });
       cloudObject = new THREE.Points(geometry, material);
       cloudObject.frustumCulled = false;
-      cloudObject.userData = { depthTex, pixels: n, k: calib.k };
+      cloudObject.userData = { depthTex, pixels: n, k: calib.k, kd: calib.kd || null };
+      const clipStatus = document.querySelector("#anaDepthClipStatus");
+      if (calib.kd && calib.dist) {
+        depthClip.uDcR.value.set(R[0], R[1], R[2], R[3], R[4], R[5], R[6], R[7], R[8]);
+        depthClip.uDcT.value.set(calib.t[0], calib.t[1], calib.t[2]);
+        depthClip.uDcKd.value.set(calib.kd[0], calib.kd[1], calib.kd[2], calib.kd[3]);
+        depthClip.uDcSize.value.set(w, h);
+        depthClip.uDcDist.value = calib.dist.slice(0, 8);
+      } else if (clipStatus) clipStatus.textContent = "(this depth camera's lens model is not known)";
       scene.add(cloudObject);
       return true;
     }
@@ -1475,15 +1489,87 @@
     function setCloud(on) {
       const statusEl = document.querySelector("#anaCloudStatus");
       if (cloudObject) cloudObject.visible = on;
-      const start = on && !cloudOn;
+      const start = on && !cloudOn && !depthClipOn;
       cloudOn = on;
       if (start) cloudLoop(statusEl);
       if (!on && statusEl) statusEl.textContent = "";
     }
 
+    /*
+     * Body and skeleton only where the depth camera has data. The model always returns a whole body, also for the parts the
+     * camera never saw (legs outside the picture, an arm behind the trunk). With this on, every fragment of the body mesh and
+     * of the skeleton is taken to the depth camera's picture (its own lens model) and kept only if a depth pixel there, or a
+     * few pixels round it, measured a surface that the fragment lies on or up to 45 cm behind. Outside the depth picture, over
+     * a hole in the depth, or in front of the background, nothing is drawn.
+     */
+    let depthClipOn = false;
+    const depthClip = {
+      uDcOn: { value: 0 }, uDcDepth: { value: null }, uDcSceneInv: { value: new THREE.Matrix4() }, uDcR: { value: new THREE.Matrix3() },
+      uDcT: { value: new THREE.Vector3() }, uDcKd: { value: new THREE.Vector4(1, 1, 0, 0) }, uDcSize: { value: new THREE.Vector2(1, 1) },
+      uDcDist: { value: [0, 0, 0, 0, 0, 0, 0, 0] },
+    };
+    function depthClipMaterial(material) {
+      if (!material || material.userData.depthClip || material.isShaderMaterial) return;
+      material.userData.depthClip = true;
+      const before = material.onBeforeCompile;
+      material.onBeforeCompile = (shader, r) => {
+        if (before) before(shader, r);
+        if (!shader.vertexShader.includes("#include <project_vertex>") || !shader.fragmentShader.includes("#include <clipping_planes_fragment>")) return;
+        Object.assign(shader.uniforms, depthClip);
+        shader.vertexShader = "uniform mat4 uDcSceneInv; varying vec3 vDcCam;\n" + shader.vertexShader.replace("#include <project_vertex>",
+          "#include <project_vertex>\n vDcCam = (uDcSceneInv * modelMatrix * vec4(transformed, 1.0)).xyz;");
+        shader.fragmentShader = `uniform float uDcOn; uniform sampler2D uDcDepth; uniform mat3 uDcR; uniform vec3 uDcT; uniform vec4 uDcKd;
+          uniform vec2 uDcSize; uniform float uDcDist[8]; varying vec3 vDcCam;\n` + shader.fragmentShader.replace("#include <clipping_planes_fragment>",
+          `#include <clipping_planes_fragment>
+          if (uDcOn > 0.5) {
+            vec3 pc = vec3(vDcCam.x, -vDcCam.y, -vDcCam.z) * 1000.0;                       // colour camera frame, mm
+            vec3 pd = transpose(uDcR) * (pc - uDcT);                                        // depth camera frame
+            if (pd.z < 100.0) discard;
+            vec2 a = pd.xy / pd.z; float r2 = dot(a, a);
+            float rad = (1.0 + r2 * (uDcDist[0] + r2 * (uDcDist[1] + r2 * uDcDist[4]))) / (1.0 + r2 * (uDcDist[5] + r2 * (uDcDist[6] + r2 * uDcDist[7])));
+            vec2 dd = a * rad + vec2(2.0 * uDcDist[2] * a.x * a.y + uDcDist[3] * (r2 + 2.0 * a.x * a.x),
+                                     uDcDist[2] * (r2 + 2.0 * a.y * a.y) + 2.0 * uDcDist[3] * a.x * a.y);
+            vec2 uv = (uDcKd.xy * dd + uDcKd.zw + 0.5) / uDcSize;
+            if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) discard;
+            float keep = 0.0;
+            for (int i = 0; i < 9; i++) {                                                   // the pixel and a ring 4 pixels out
+              vec2 o = i == 0 ? vec2(0.0) : 4.0 * vec2(cos(0.7853982 * float(i)), sin(0.7853982 * float(i))) / uDcSize;
+              vec2 b = texture2D(uDcDepth, uv + o).rg;
+              float z = floor(b.r * 255.0 + 0.5) + 256.0 * floor(b.g * 255.0 + 0.5);
+              if (z > 250.0 && pd.z - z > -80.0 && pd.z - z < 450.0) keep = 1.0;
+            }
+            if (keep < 0.5) discard;
+          }`);
+      };
+      const key = material.customProgramCacheKey ? material.customProgramCacheKey.bind(material) : () => "";
+      material.customProgramCacheKey = () => key() + "|depthclip";
+      material.needsUpdate = true;
+    }
+    let depthClipSwept = 0;
+    function depthClipTick() {
+      const ready = depthClipOn && cloudObject && cloudObject.userData.kd;
+      depthClip.uDcOn.value = ready ? 1 : 0;
+      if (!ready || !scene) return;
+      depthClip.uDcDepth.value = cloudObject.userData.depthTex;
+      depthClip.uDcSceneInv.value.copy(scene.matrix).invert();
+      const now = performance.now();
+      if (now - depthClipSwept > 700) {                          // the skeleton's parts come and go: take in new materials
+        depthClipSwept = now;
+        scene.traverse((o) => {
+          if (!o.isMesh || o === referenceMesh) return;
+          for (const m of Array.isArray(o.material) ? o.material : [o.material]) depthClipMaterial(m);
+        });
+      }
+    }
+    function setDepthClip(on) {
+      const start = on && !depthClipOn && !cloudOn;
+      depthClipOn = on;
+      if (start) cloudLoop(document.querySelector("#anaCloudStatus"));
+    }
+
     async function cloudLoop(statusEl) {
       const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-      while (cloudOn) {
+      while (cloudOn || depthClipOn) {
         let pause = 15;
         try {
           if (!cloudObject) {
@@ -1572,7 +1658,7 @@
         window.location.search = q.toString();
       });
       addMenu(document.getElementById("mesh"), "3-D view and anatomy", [
-        row("anaEnable"), row("anaSkeleton"), row("anaSkin"), row("anaOpacity"), row("anaCloud"), row("anaCloudPerson"), row("anaFuse"), row("anaXray"), row("anaCt"),
+        row("anaEnable"), row("anaSkeleton"), row("anaSkin"), row("anaOpacity"), row("anaCloud"), row("anaCloudPerson"), row("anaDepthClip"), row("anaFuse"), row("anaXray"), row("anaCt"),
         row("anaJaw"), row("anaJoints"), row("anaScale"), row("anaPredict"), notes[0], groups, notes[1],
       ], "left");
       panel.style.display = "none";
@@ -1617,6 +1703,12 @@
       scene.matrixAutoUpdate = false;
       scene.matrix.set(p[0], p[1], p[2], p[3], p[4], p[5], p[6], p[7], p[8], p[9], p[10], p[11], 0, 0, 0, 1);
       scene.matrixWorldNeedsUpdate = true;
+      if (referenceMesh) {                                       // the reference was captured from another gantry angle
+        const u = referenceMesh.userData;
+        if (!u.roomScene) { referenceMesh.updateMatrix(); u.roomScene = scene.matrix.clone(); u.roomLocal = referenceMesh.matrix.clone(); }
+        referenceMesh.matrixAutoUpdate = false;
+        referenceMesh.matrix.copy(scene.matrix).invert().multiply(u.roomScene).multiply(u.roomLocal);
+      }
       if (!roomFramed && meshFramed) {                           // look at the isocentre from the foot of the couch, a little above
         camera.position.set(0.9, 0.9, 1.5);
         controls.target.set(0, 0.05, -0.1);
@@ -1756,6 +1848,7 @@
         requestAnimationFrame(animate);
         anatomyTick();
         roomFrameTick();
+        depthClipTick();
         controls.update();
         xrayDraw();
         cloudPreRender();
@@ -2055,7 +2148,62 @@
       );
     }
 
-    function updateMeshRegionColors() {
+    /*
+     * Reference tracking in the ROOM frame (a recorded gantry sweep with its camera poses). The camera turns with the gantry,
+     * so shifts measured in its frame would show the camera's motion. Live mesh and reference are therefore taken to room
+     * coordinates first, each with the camera pose of its own moment, written the way the tracking code expects a camera
+     * frame: X across the couch (LAT), Y along it towards the feet (LNG), Z down (VRT). The tracking code itself is unchanged:
+     * it is run with the four arrays it reads swapped for their room versions.
+     */
+    let roomRef = { key: null }, roomSwapDepth = 0;
+    function roomPoseIndex() {
+      return Math.max(0, Math.min(roomPose.pose.length - 1, Math.round((video.currentTime - ROOM_DELAY_S) * roomPose.fps)));
+    }
+    function toRoomTracking(vertices, camT, p) {
+      // p: the view's camera frame -> the view's room frame (y up). Camera coordinates have y and z flipped against the view's.
+      const r = [-p[0], p[1], p[2], -p[8], p[9], p[10], -p[4], p[5], p[6]], t = [-p[3], -p[11], -p[7]];
+      const out = new Float32Array(vertices.length);            // where each vertex is in the room, metres
+      for (let k = 0; k < vertices.length; k += 3) {
+        const x = vertices[k] + camT[0], y = vertices[k + 1] + camT[1], z = vertices[k + 2] + camT[2];
+        out[k] = r[0] * x + r[1] * y + r[2] * z + t[0]; out[k + 1] = r[3] * x + r[4] * y + r[5] * z + t[1]; out[k + 2] = r[6] * x + r[7] * y + r[8] * z + t[2];
+      }
+      return out;
+    }
+    function aboutRegion(P, indices) {
+      // The tracking code takes the body's position from a "camera translation" and its turn from the vertices. The model's own
+      // translation is a guess at distance that the depth fit corrects in the vertices, so here the position is what was
+      // measured: the centre of the selected region's vertices. The vertices are then given about that centre.
+      let cx = 0, cy = 0, cz = 0, n = 0;
+      if (indices && indices.length) { for (const i of indices) { cx += P[3 * i]; cy += P[3 * i + 1]; cz += P[3 * i + 2]; } n = indices.length; }
+      else { for (let k = 0; k < P.length; k += 3) { cx += P[k]; cy += P[k + 1]; cz += P[k + 2]; } n = P.length / 3; }
+      cx /= n; cy /= n; cz /= n;
+      const v = new Float32Array(P.length);
+      for (let k = 0; k < P.length; k += 3) { v[k] = P[k] - cx; v[k + 1] = P[k + 1] - cy; v[k + 2] = P[k + 2] - cz; }
+      return { v, t: new Float32Array([cx, cy, cz]) };
+    }
+    function inRoomFrame(fn, usesLive) {
+      if (!roomOn || !roomPose || video.srcObject || roomSwapDepth) return fn(usesLive);
+      const saved = [latestVertices, latestPredCamT, referenceVertices, referencePredCamT];
+      const p = roomPose.pose[roomPoseIndex()];
+      roomSwapDepth++;
+      try {
+        const region = getSelectedRegionIndices();
+        if (saved[0] && saved[1]) { const live = aboutRegion(toRoomTracking(saved[0], saved[1], p), region); latestVertices = live.v; latestPredCamT = live.t; }
+        if (saved[2] && saved[3]) {
+          if (roomRef.key !== saved[2]) roomRef = { key: saved[2], P: toRoomTracking(saved[2], saved[3], p) };   // with the pose at capture
+          const ref = aboutRegion(roomRef.P, region);
+          referenceVertices = ref.v; referencePredCamT = ref.t;
+        }
+        return fn(usesLive ? latestVertices : undefined);
+      } finally {
+        [latestVertices, latestPredCamT, referenceVertices, referencePredCamT] = saved;
+        roomSwapDepth--;
+      }
+    }
+    function updateMeshRegionColors() { return inRoomFrame(() => updateMeshRegionColorsIn(), null); }
+    function updateLiveMeshAlignmentColor(vertexValues) { return inRoomFrame((v) => updateLiveMeshAlignmentColorIn(v || vertexValues), vertexValues); }
+
+    function updateMeshRegionColorsIn() {
       if (!anatomicalRegions) {
         return;
       }
@@ -2949,7 +3097,7 @@
       }
     }
 
-    function updateLiveMeshAlignmentColor(vertexValues) {
+    function updateLiveMeshAlignmentColorIn(vertexValues) {
       if (!bodyMesh || !bodyMesh.material) return;
 
       if (
