@@ -1551,7 +1551,9 @@
       depthClip.uDcOn.value = ready ? 1 : 0;
       if (!ready || !scene) return;
       depthClip.uDcDepth.value = cloudObject.userData.depthTex;
-      depthClip.uDcSceneInv.value.copy(scene.matrix).invert();
+      // room -> the depth camera at the moment of the depth frame on the card (not of the mesh, which is older)
+      if (roomOn && roomPose && !scene.matrixAutoUpdate) roomMatrix(roomIndexAt(cloudMediaTime), depthClip.uDcSceneInv.value).invert();
+      else depthClip.uDcSceneInv.value.copy(scene.matrix).invert();
       const now = performance.now();
       if (now - depthClipSwept > 700) {                          // the skeleton's parts come and go: take in new materials
         depthClipSwept = now;
@@ -1580,7 +1582,7 @@
           if (r.status === 200) {
             const bytes = new Uint8Array(await r.arrayBuffer()), tex = cloudObject.userData.depthTex;
             cloudSeq = Number(r.headers.get("X-Cloud-Seq")) || cloudSeq;
-            if (bytes.length === tex.image.data.length) { tex.image.data.set(bytes); tex.needsUpdate = true; }
+            if (bytes.length === tex.image.data.length) { tex.image.data.set(bytes); tex.needsUpdate = true; cloudMediaTime = video.currentTime; }
             cloudObject.material.uniforms.uUseVideo.value = boltCamera && video.videoWidth ? 1 : 0;
             const fps = r.headers.get("X-Cloud-Fps"), link = r.headers.get("X-Cloud-Link") || "";
             if (statusEl) statusEl.textContent = (fps ? fps + " fps" : "on") + (boltCamera ? "" : ", coloured by distance (webcam is not the Bolt)")
@@ -1684,6 +1686,25 @@
     // camera's frame, so the scene as a whole is moved; the viewer's own camera is not part of it. ?room=0 turns it off.
     let roomPose = null, roomOn = false, roomFramed = false;
     const ROOM_DELAY_S = 0.06;                                   // what is drawn is about this much older than the video
+    // What is on screen is not all from the same moment: the mesh comes from a picture taken a quarter of a second ago (two
+    // seconds, on a busy machine), the point cloud from the depth frame just fetched. At 8 degrees a second that matters, so
+    // each is placed with the camera pose of ITS OWN moment. The scene as a whole follows the mesh (and the skeleton built on
+    // it); the point cloud is corrected to its own time within the scene.
+    const mediaLog = [];                                         // [wall clock ms, video time s], one a frame
+    let meshMediaTime = null, cloudMediaTime = null;
+    function mediaAt(ms) {
+      for (let i = mediaLog.length - 1; i >= 0; i--) if (mediaLog[i][0] <= ms) return mediaLog[i][1];
+      return mediaLog.length ? mediaLog[0][1] : null;
+    }
+    function roomIndexAt(t) {
+      const n = roomPose.pose.length;
+      return Math.max(0, Math.min(n - 1, Math.round((t === null || t === undefined ? video.currentTime - ROOM_DELAY_S : t) * roomPose.fps)));
+    }
+    const roomTmp = new THREE.Matrix4();
+    function roomMatrix(i, out) {
+      const p = roomPose.pose[i];
+      return out.set(p[0], p[1], p[2], p[3], p[4], p[5], p[6], p[7], p[8], p[9], p[10], p[11], 0, 0, 0, 1);
+    }
     async function roomFrameLoad() {
       if (new URLSearchParams(window.location.search).get("room") === "0") return;
       try {
@@ -1697,12 +1718,15 @@
         if (!scene.matrixAutoUpdate) { scene.matrixAutoUpdate = true; scene.matrix.identity(); }
         return;
       }
-      const n = roomPose.pose.length;
-      const i = Math.max(0, Math.min(n - 1, Math.round((video.currentTime - ROOM_DELAY_S) * roomPose.fps)));
-      const p = roomPose.pose[i];
+      mediaLog.push([Date.now(), video.currentTime]);
+      if (mediaLog.length > 900) mediaLog.splice(0, 300);
       scene.matrixAutoUpdate = false;
-      scene.matrix.set(p[0], p[1], p[2], p[3], p[4], p[5], p[6], p[7], p[8], p[9], p[10], p[11], 0, 0, 0, 1);
+      roomMatrix(roomIndexAt(meshMediaTime), scene.matrix);
       scene.matrixWorldNeedsUpdate = true;
+      if (cloudObject) {                                         // the cloud is newer than the mesh: its own pose, within the scene
+        cloudObject.matrixAutoUpdate = false;
+        cloudObject.matrix.copy(scene.matrix).invert().multiply(roomMatrix(roomIndexAt(cloudMediaTime), roomTmp));
+      }
       if (referenceMesh) {                                       // the reference was captured from another gantry angle
         const u = referenceMesh.userData;
         if (!u.roomScene) { referenceMesh.updateMatrix(); u.roomScene = scene.matrix.clone(); u.roomLocal = referenceMesh.matrix.clone(); }
@@ -2157,7 +2181,7 @@
      */
     let roomRef = { key: null }, roomSwapDepth = 0;
     function roomPoseIndex() {
-      return Math.max(0, Math.min(roomPose.pose.length - 1, Math.round((video.currentTime - ROOM_DELAY_S) * roomPose.fps)));
+      return roomIndexAt(meshMediaTime);                         // the mesh being tracked, at the moment it was measured
     }
     function toRoomTracking(vertices, camT, p) {
       // p: the view's camera frame -> the view's room frame (y up). Camera coordinates have y and z flipped against the view's.
@@ -3336,6 +3360,7 @@
     }
 
     function updateMesh(vertexValues, predCamT, captureTimestampMs) {
+      if (Number.isFinite(captureTimestampMs)) meshMediaTime = mediaAt(captureTimestampMs);   // the video time this mesh belongs to
       const geometry = bodyMesh.geometry;
       const positions = geometry.attributes.position.array;
 
