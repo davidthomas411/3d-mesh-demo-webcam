@@ -895,6 +895,18 @@
       // The voxel DRR marches a ray per pixel: drawn at most 20 times a second, so that it never competes with the model for the
       // GPU (drawn on every animation frame, two open pages were enough to slow inference to a second a frame).
       const nowMs = performance.now(), drrDue = !voxelDrr || nowMs - lastVoxelDrrMs >= 50;
+      if (!meshLive()) {
+        // Not live, not shown: the radiograph and the CT slice are pictures of the rig, and the rig is only as live as the fit.
+        for (const [canvas, caption, on] of [[drrCanvas, drrCaption, showX], [ctCanvas, ctCaption, showC]]) {
+          if (!on) continue;
+          const g = canvas.getContext("2d");
+          g.fillStyle = "#000"; g.fillRect(0, 0, canvas.width, canvas.height);
+          g.fillStyle = "#8493a8"; g.font = Math.round(canvas.width / 26) + "px system-ui, sans-serif"; g.textAlign = "center";
+          g.fillText("no live depth fit", canvas.width / 2, canvas.height / 2);
+          caption.textContent = "not live: nothing shown";
+        }
+        return;
+      }
       if (showX && drrDue) {
         if (voxelDrr) lastVoxelDrrMs = nowMs;
         const turned = drrOrbit.yaw !== 0 || drrOrbit.pitch !== 0;
@@ -1729,7 +1741,7 @@
      * distrusted (the fit holding its last result, depth or pose running late, a shift outside tolerance). Refreshed five
      * times a second. H hides it.
      */
-    let hudEl = null, hudLast = 0, hudHidden = false;
+    let hudEl = null, hudLast = 0, hudHidden = false, hudWhy = null, hudWhyAt = 0;
     window.addEventListener("keydown", (e) => { if (e.key === "h" && !/INPUT|SELECT|TEXTAREA/.test(e.target.tagName)) { hudHidden = !hudHidden; hudLast = 0; } });
     function hudTick() {
       const now = performance.now();
@@ -1758,7 +1770,19 @@
       } else L.push(row("frame", warn("camera") + dim(replay ? "  (no camera poses for this replay)" : "")));
       if (replay && video.duration) L.push(row("video", video.currentTime.toFixed(1) + " / " + video.duration.toFixed(1) + " s"));
       const fit = window.demoFit, fresh = fit && fitStats.last && now - fitStats.last < 1500, d = (fit && fit.info) || {};
-      if (!meshLive()) L.push(row("body", bad("NOT LIVE: hidden") + dim("  (shifts frozen)")));
+      if (!meshLive()) {
+        L.push(row("body", bad("NOT LIVE: hidden") + dim("  (shifts frozen)")));
+        if (now - hudWhyAt > 1500) {
+          hudWhyAt = now;
+          fetch("/status", { cache: "no-store" }).then((r) => r.json()).then((j) => { hudWhy = j.fit || null; }).catch(() => {});
+        }
+        if (hudWhy) {
+          const f = hudWhy;
+          L.push(row("why", warn(f.last_failure || (f.model_age_s > 1 ? "pictures reach the model too slowly (page busy?)"
+            : f.model_too_old ? "the model's mesh is too old" : "no reason reported"))));
+          L.push(row("server", dim("fits " + f.fits + "  failed " + f.failed + "  stale " + f.model_too_old + "  age " + f.model_age_s + " s  motion " + (f.camera_motion ? "yes" : "no"))));
+        }
+      }
       if (!depthFuse) L.push(row("depth fit", dim("off")));
       else if (!fresh) L.push(row("depth fit", bad("NO FITS")));
       else if (d.held) L.push(row("depth fit", warn("HOLDING") + dim("  " + (d.reason || "no depth on the body"))));
@@ -2287,7 +2311,7 @@
      * frame: X across the couch (LAT), Y along it towards the feet (LNG), Z down (VRT). The tracking code itself is unchanged:
      * it is run with the four arrays it reads swapped for their room versions.
      */
-    let roomRef = { key: null }, roomSwapDepth = 0;
+    let roomRef = { key: null }, roomSwapDepth = 0, roomRegion = { regions: null, key: null, indices: [] }, roomTrackAt = 0;
     let roomViewCentre = null;                                   // the pictures' centre, fixed in the room (tracking coordinates, m)
     function roomImagingView(centreRaw) {
       if (!roomOn || !roomPose || video.srcObject || !latestPredCamT) return null;
@@ -2336,7 +2360,12 @@
       const p = roomPose.pose[roomPoseIndex()];
       roomSwapDepth++;
       try {
-        const region = getSelectedRegionIndices();
+        // the selected region's vertices: worked out once per selection, not for every mesh (it is a set of up to 18,000)
+        const regionKey = getSelectedRegionNames().join("+");
+        if (roomRegion.regions !== anatomicalRegions || roomRegion.key !== regionKey) {
+          roomRegion = { regions: anatomicalRegions, key: regionKey, indices: getSelectedRegionIndices() };
+        }
+        const region = roomRegion.indices;
         if (saved[0] && saved[1]) { const live = aboutRegion(toRoomTracking(saved[0], saved[1], p), region); latestVertices = live.v; latestPredCamT = live.t; }
         if (saved[2] && saved[3]) {
           if (roomRef.key !== saved[2]) roomRef = { key: saved[2], P: toRoomTracking(saved[2], saved[3], p) };   // with the pose at capture
@@ -2350,7 +2379,18 @@
       }
     }
     function updateMeshRegionColors() { return inRoomFrame(() => updateMeshRegionColorsIn(), null); }
-    function updateLiveMeshAlignmentColor(vertexValues) { if (!meshLive()) return; return inRoomFrame((v) => updateLiveMeshAlignmentColorIn(v || vertexValues), vertexValues); }
+    function updateLiveMeshAlignmentColor(vertexValues) {
+      if (!meshLive()) return;
+      if (roomOn && roomPose && !video.srcObject) {
+        // Fitted meshes arrive thirty times a second. Tracking each one (two 18,000-vertex transforms, a rotation fit and the
+        // colouring) held the page up so much that pictures were no longer sent in time and the server's fit stopped for
+        // want of them. Ten times a second is plenty for the bars. A new reference is always taken at once: its camera
+        // pose is that of this very moment.
+        const now = performance.now();
+        if (referenceVertices === roomRef.key && now - roomTrackAt < 100) return;
+        roomTrackAt = now;
+      }
+      return inRoomFrame((v) => updateLiveMeshAlignmentColorIn(v || vertexValues), vertexValues); }
 
     function updateMeshRegionColorsIn() {
       if (!anatomicalRegions) {

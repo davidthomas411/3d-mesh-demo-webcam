@@ -49,7 +49,7 @@ def main():
                 except Exception as exc:                         # report, do not die: the next frame may be fine
                     print(f"fit process: {type(exc).__name__}: {exc}", flush=True)
                     state = FitState()
-            conn.send(out)
+            conn.send(out if out is not None else {"_fail": getattr(state, "fail", None) or "the fit raised an error (see the server log)"})
     conn.close()
 
 

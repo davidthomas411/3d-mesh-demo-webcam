@@ -74,6 +74,7 @@ def fit_one(state, body, model, frame, refit_every=10 ** 9, hold_frames=45):
         # model's newest pose, without the skin layer.
         if state.M_good is None or state.held >= hold_frames:
             state.M_good = None
+            state.fail = info.get("reason") or "no fit"          # why, for whoever asks (GET /status)
             return None
         state.held += 1
         Mn, held = state.M_good, True
@@ -106,7 +107,8 @@ class LiveFit:
         self.result = None            # newest fitted result (dict)
         self.thread = None
         self.wanted_until = 0.0
-        self.stats = {"fits": 0, "fit_ms": 0.0, "process": False}
+        self.stats = {"fits": 0, "fit_ms": 0.0, "process": False, "no_model": 0, "model_too_old": 0, "failed": 0, "no_answer": 0,
+                      "last_failure": None, "model_age_s": None, "camera_motion": False, "loop_starts": 0}
         # body_args: (faces, joint_names, w_joint, w_vert, w), what a BodyFit is made from, for the fit process
         self.body_args = body_args
         self.use_process = (os.environ.get("FIT_PROCESS", "1") == "1") if process is None else process
@@ -119,7 +121,10 @@ class LiveFit:
             self.model = {"owner": owner, "verts": np.asarray(verts_cam_mm, np.float64), "jpos": jpos_cam_mm, "jrot": jrot,
                           "t": time.time(), "mesh_id": mesh_id, "extra": extra,
                           "cam_t_mm": np.asarray(extra.get("cam_t_mm", np.zeros(3)), np.float64)}
-        self.wanted_until = time.time() + 2.0
+        # The loop and its fit process stay up for a while without a new mesh. They used to stop after 2 s: one long pause of
+        # the model (it happens: a busy page, a reference being captured) then shut the fit process down, and starting it
+        # again cost enough processor to cause the next pause, so the fit came and went every few seconds for good.
+        self.wanted_until = time.time() + 30.0
         if self.thread is None or not self.thread.is_alive():
             self.thread = threading.Thread(target=self._run, name="live-fit", daemon=True)
             self.thread.start()
@@ -180,6 +185,7 @@ class LiveFit:
     # ---- the loop
     def _run(self):
         last_seq, fid, state, sent_mesh = -1, 0, FitState(), None
+        self.stats["loop_starts"] += 1
         try:
             while time.time() < self.wanted_until:
                 item = self.cloud.get()
@@ -198,11 +204,14 @@ class LiveFit:
                     m_from, m_to = model["extra"].get("media_time"), getattr(self.cloud, "seq_media", {}).get(item[0])
                     if m_from is not None and m_to is not None:
                         motion = self.cloud.camera_motion(m_from, m_to)
+                self.stats["camera_motion"] = motion is not None
+                self.stats["model_age_s"] = None if model is None else round(time.time() - model["t"], 2)
                 if model is None or time.time() - model["t"] > (4.0 if motion is not None else self.max_model_age_s):
+                    self.stats["no_model" if model is None else "model_too_old"] += 1
                     state = FitState(); sent_mesh = None
                     if self.conn is not None:
                         self.conn.send(("reset",))
-                    time.sleep(0.005)
+                    time.sleep(0.03)
                     continue
                 last_seq = item[0]
                 t_depth = item[2] if len(item) > 2 else time.time()
@@ -225,7 +234,13 @@ class LiveFit:
                     depth = np.frombuffer(item[1], np.uint16).reshape(cal["h"], cal["w"])
                     frame = DepthFrame(depth, self.cloud.rays, cal["R"], cal["t"], cal["kd"], cal["dist"])
                     out = fit_one(state, self.fit, moved_model(model, motion), frame, self.refit_every)
+                if isinstance(out, dict) and "_fail" in out:      # the fit process says why it has nothing
+                    self.stats["last_failure"] = out["_fail"]; out = None
+                elif out is None:
+                    self.stats["last_failure"] = getattr(state, "fail", None) if self.conn is None else "no answer from the fit process in 2 s"
+                    self.stats["no_answer"] += self.conn is not None
                 if out is None:
+                    self.stats["failed"] += 1
                     with self.cond:
                         self.result = None
                     continue

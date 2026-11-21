@@ -285,9 +285,18 @@ The server now carries each mesh into the depth frame's viewpoint with the known
 (`RecordedCloud.camera_motion`, `tracker.moved_model`). Through the whole loop it then holds about 30 fits a second with
 the skin 0.6-0.8 mm from the depth (2 mm at moments).
 
+A second cause of drop-outs had nothing to do with the gantry: the fit loop and its process stopped whenever the model
+sent no mesh for 2 s. One long pause of the model (a busy page, a reference being captured) shut the process down, and
+starting it again took enough processor to cause the next pause, so the fit came and went every few seconds for good. It
+now stays up for 30 s without a mesh. `GET /status` reports the fit's counters and its last reason for giving up, and the
+head-up display shows them whenever the body is not live.
+
 **Not live, not shown.** With the depth fit on, the body and skeleton are drawn only while the depth camera is placing
-them: if nothing has been fitted for 0.6 s, or the fit is only holding its last placement, they are hidden and the shift
-bars freeze, instead of falling back to the model's own mesh (a guess at distance).
+them: if nothing has been fitted for 0.6 s, or the fit is only holding its last placement, they are hidden, the DRR and
+CT panels go blank and the shift bars freeze, instead of falling back to the model's own mesh (a guess at distance).
+
+The room-frame tracking runs ten times a second, not on every one of the thirty fitted meshes, and works out the
+selected region's vertices once per selection.
 
 **DRR in the room.** The DRR's viewpoint and centre are fixed in the room for a replay (from above the couch, head up), so
 a still patient gives a still radiograph while the gantry turns and the green reference shows the patient's own movement.
@@ -307,8 +316,9 @@ depth frame. The reference ghost is left whole.
 in room coordinates: live mesh and reference are each taken to the room with the camera pose of their own moment, LAT is
 across the couch, LNG along it, VRT up-down, and the reference ghost stays where it was captured while the gantry moves
 on. The position is the centre of the selected region's vertices as placed by the depth fit, not the model's own distance
-estimate (which made the bars swing by 400 mm). Through the sweep, on a person lying still, the bars read mostly 2-30 mm
-(40 mm at worst) and under 1 degree once the depth fit holds: that is the body mesh placed by the depth, not the depth
+estimate (which made the bars swing by 400 mm). On a person lying still, with the depth fit holding, the bars read a few
+millimetres and under a degree where checked (2, 2 and 1 mm at 64 degrees of gantry from the reference), up to tens of
+millimetres at the worst angles: that is the body mesh placed by the depth, not the depth
 registration's 1 mm, which is not wired into the bars yet.
 
 ### The tracking analysis as a player

@@ -715,6 +715,7 @@ def status():
     with state_lock:
         return jsonify({
             "estimator_ready": estimator_ready,
+            "fit": None if live_fit is None else {k: (v if not isinstance(v, (np.integer, np.floating, np.bool_)) else v.item()) for k, v in live_fit.stats.items()},
             "received_frames": frame_id,
             "dropped_frames": dropped_frames,
             "mesh_id": mesh_id,
