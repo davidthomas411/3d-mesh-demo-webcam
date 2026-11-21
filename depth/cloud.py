@@ -1,15 +1,24 @@
-"""Live point cloud from an Orbbec Femto Bolt, for display in the page.
+"""Live depth from an Orbbec Femto Bolt, for the point cloud in the page and for the depth anchor.
 
-The depth stream alone is opened (the browser can keep the Bolt's colour camera for the webcam picture). Each depth frame is turned
-into 3-D points by the SDK's own point-cloud filter, which applies the factory calibration including the lens distortion, and the
-points are moved into the COLOUR camera's frame with the factory depth-to-colour extrinsics. That is the frame the body mesh lives
-in when the page's webcam is the Bolt's colour camera: x right, y down, z forward, origin at the colour camera.
+The depth stream alone is opened (the browser can keep the Bolt's colour camera for the webcam picture). What goes to the page is
+the RAW depth image, 640 x 576 uint16 millimetres (the unbinned narrow mode), plus the calibration once:
 
-Capture starts on the first request and stops by itself a few seconds after the last one, so the device is free when the option is
-off. Needs pyorbbecsdk (pip install pyorbbecsdk2). Tested on a Femto Bolt, firmware 1.1.3, SDK wrapper 2.1.3, Windows.
+  rays    for every depth pixel, the direction (x/z, y/z) it looks along, from the factory intrinsics and lens distortion
+          (cv2.undistortPoints, 6-coefficient rational model). Checked against the SDK's own point-cloud filter on a live
+          frame: median 0.004 mm at 1.5 m.
+  R, t    factory depth-to-colour extrinsics: point_colour = R point_depth + t (mm)
+  k       colour intrinsics as fractions of the picture size (the Bolt's 16:9 modes are one view at different sizes)
 
-What it is not: a registration. The cloud is metric; the mesh's distance from the camera comes from the RGB model's estimate of
-focal length and body size, so the two agree only as well as that estimate is right (depth/fusion.py is the code that corrects it).
+The page's graphics card turns that into one point per depth pixel (368,640 of them) in the COLOUR camera's frame, x right, y
+down, z forward, and colours each from the video. The server therefore does no per-point work: a frame is copied and served. An
+earlier version made the points here with the SDK's filter and thinned them to 30,000; converting every frame slowed inference
+from about 120 to 210 ms (this thread shares the interpreter with the model loop) and the cloud was visibly coarser.
+
+depth_map() is the one thing computed here, and only while the depth anchor asks for it: a small depth image as the colour
+camera would see it (depth/live.py).
+
+Capture starts on the first request and stops by itself a few seconds after the last one. Needs pyorbbecsdk
+(pip install pyorbbecsdk2). Tested on a Femto Bolt, firmware 1.1.3, wrapper 2.1.3, Windows.
 """
 import threading
 import time
@@ -32,31 +41,52 @@ def to_colour_frame(points_mm, R, t_mm):
 
 
 def pack(points_mm):
-    """(N, 3) mm -> little-endian int16 triples (1 mm steps, +-32 m): what /cloud sends."""
+    """(N, 3) mm -> little-endian int16 triples (1 mm steps, +-32 m)."""
     return np.clip(np.round(points_mm), -32767, 32767).astype("<i2").tobytes()
 
 
+def ray_table(fx, fy, cx, cy, dist8, width, height):
+    """(height, width, 2) float32: for each depth pixel the direction (x/z, y/z) it looks along.
+    dist8 = (k1, k2, p1, p2, k3, k4, k5, k6), OpenCV's rational model."""
+    import cv2
+    u, v = np.meshgrid(np.arange(width, dtype=np.float64), np.arange(height, dtype=np.float64))
+    K = np.array([[fx, 0, cx], [0, fy, cy], [0, 0, 1.0]])
+    # iterated to convergence: the default five rounds leave half a pixel of error in the corners of this strongly distorted lens
+    rays = cv2.undistortPointsIter(np.stack([u.ravel(), v.ravel()], 1).reshape(-1, 1, 2), K, np.asarray(dist8, np.float64), None, None,
+                                   (cv2.TERM_CRITERIA_COUNT + cv2.TERM_CRITERIA_EPS, 60, 1e-9))
+    return rays.reshape(height, width, 2).astype(np.float32)
+
+
+def points_from_depth(depth_mm, rays, step=1):
+    """Depth image + ray table -> (N, 3) points in the depth camera's frame (mm), invalid pixels dropped."""
+    z = depth_mm[::step, ::step].astype(np.float32)
+    r = rays[::step, ::step]
+    ok = z > 0
+    z = z[ok]
+    return np.column_stack([r[ok][:, 0] * z, r[ok][:, 1] * z, z])
+
+
 class FemtoCloud:
-    # 320 x 288 is the Bolt's binned narrow mode: 92,000 points a frame (30,000 are shown), less noise than the unbinned mode
-    # and a quarter of the work. Clouds are made at most `rate` times a second: this thread shares the interpreter with the
-    # inference loop, and converting every frame at 640 x 576 slowed inference from about 120 to 210 ms.
-    def __init__(self, width=320, height=288, fps=30, max_points=30000, idle_stop_s=5.0, rate=15.0):
-        self.size, self.fps, self.max_points, self.idle_stop_s = (width, height), fps, max_points, idle_stop_s
-        self.min_interval = 1.0 / rate
+    MAP_HW = (180, 320)
+
+    def __init__(self, width=640, height=576, fps=30, idle_stop_s=5.0, map_rate=10.0):
+        self.size, self.fps, self.idle_stop_s, self.map_interval = (width, height), fps, idle_stop_s, 1.0 / map_rate
         self.lock = threading.Lock()
         self.thread = None
-        self.latest = None            # (seq, bytes, n_points)
+        self.latest = None            # (seq, depth bytes)
         self.seq = 0
         self.last_request = 0.0
         self.error = None
         self.error_time = 0.0
         self.info = {}
-        self.map_until = 0.0          # a depth image aligned to the colour camera is made while somebody asks for it
+        self.calibration = None       # {"w", "h", "R" (9, row-major), "t" (3, mm), "k" (4)}: fixed for the device
+        self.rays = None              # (h, w, 2) float32
+        self.map_until = 0.0
         self.map_latest = None        # (depth_mm HxW, K)
 
     # ---- called from request threads
     def get(self):
-        """Latest cloud as (seq, bytes, n) or None while there is none yet; starts the capture if it is not running."""
+        """Latest depth frame as (seq, bytes) or None while there is none yet; starts the capture if it is not running."""
         self.last_request = time.time()
         with self.lock:
             if self.thread is None or not self.thread.is_alive():
@@ -66,8 +96,6 @@ class FemtoCloud:
                 self.thread = threading.Thread(target=self._run, name="femto-cloud", daemon=True)
                 self.thread.start()
             return self.latest
-
-    MAP_HW = (180, 320)
 
     def depth_map(self):
         """Latest depth image as the COLOUR camera would see it, (depth_mm, K), or None. For depth/live.py."""
@@ -84,42 +112,44 @@ class FemtoCloud:
         pipe = None
         try:
             import pyorbbecsdk as ob
+            from .live import depth_map_from_points
             pipe = ob.Pipeline()
-            dp = pipe.get_stream_profile_list(ob.OBSensorType.DEPTH_SENSOR).get_video_stream_profile(self.size[0], self.size[1], ob.OBFormat.Y16, self.fps)
+            w, h = self.size
+            dp = pipe.get_stream_profile_list(ob.OBSensorType.DEPTH_SENSOR).get_video_stream_profile(w, h, ob.OBFormat.Y16, self.fps)
             cprof = pipe.get_stream_profile_list(ob.OBSensorType.COLOR_SENSOR).get_default_video_stream_profile()
             ex = dp.get_extrinsic_to(cprof)
             # the device reports the rotation rounded to four decimals: make it a proper rotation again
             U, _, Vt = np.linalg.svd(np.array(ex.rot, np.float64).reshape(3, 3))
             R, t = U @ Vt, np.array(ex.transform, np.float64)
+            di, dd, ci = dp.get_intrinsic(), dp.get_distortion(), cprof.get_intrinsic()
+            self.rays = ray_table(di.fx, di.fy, di.cx, di.cy, (dd.k1, dd.k2, dd.p1, dd.p2, dd.k3, dd.k4, dd.k5, dd.k6), w, h)
+            k = [ci.fx / cprof.get_width(), ci.fy / cprof.get_height(), ci.cx / cprof.get_width(), ci.cy / cprof.get_height()]
+            self.calibration = {"w": w, "h": h, "R": [float(x) for x in R.ravel()], "t": [float(x) for x in t], "k": k}
             cfg = ob.Config(); cfg.enable_stream(dp)
             pipe.start(cfg)
-            pc = ob.PointCloudFilter(); pc.set_create_point_format(ob.OBFormat.POINT)
             dev = pipe.get_device().get_device_info()
-            ci = cprof.get_intrinsic()
-            k = [ci.fx / cprof.get_width(), ci.fy / cprof.get_height(), ci.cx / cprof.get_width(), ci.cy / cprof.get_height()]
-            # colour intrinsics as fractions of the picture size (the Bolt's 16:9 modes are the same view at different sizes)
-            self.info = {"device": dev.get_name(), "connection": dev.get_connection_type(), "depth": list(self.size), "colour_k": k}
-            h, w = self.MAP_HW
-            K_map = np.array([[k[0] * w, 0, k[2] * w], [0, k[1] * h, k[3] * h], [0, 0, 1.0]])
-            t_fps, n_fps = time.time(), 0
-            t_frame = time.time()
+            self.info = {"device": dev.get_name(), "connection": dev.get_connection_type(), "depth": [w, h], "colour_k": k}
+            mh, mw = self.MAP_HW
+            K_map = np.array([[k[0] * mw, 0, k[2] * mw], [0, k[1] * mh, k[3] * mh], [0, 0, 1.0]])
+            t_fps, n_fps, t_frame, t_map = time.time(), 0, time.time(), 0.0
             while time.time() - self.last_request < self.idle_stop_s:
                 frames = pipe.wait_for_frames(200)
-                if frames is None or frames.get_depth_frame() is None:
+                d = frames.get_depth_frame() if frames is not None else None
+                if d is None:
                     if time.time() - t_frame > 3.0:           # unplugged, or taken by another program: stop, so a retry reopens it
                         raise TimeoutError("no depth frames from the camera for 3 s")
                     continue
-                if time.time() - t_frame < self.min_interval:
-                    continue                                  # newer than needed: leave the processor to the model
                 t_frame = time.time()
-                pts = np.asarray(pc.calculate(pc.process(frames)), np.float32).reshape(-1, 3)
-                if time.time() < self.map_until:
-                    from .live import depth_map_from_points
-                    full = pts[pts[:, 2] > 0]
-                    self.map_latest = (depth_map_from_points(to_colour_frame(full, R, t), K_map, self.MAP_HW), K_map)
-                pts = to_colour_frame(subsample(pts, self.max_points), R, t)
+                depth = np.frombuffer(d.get_data(), np.uint16)
+                scale = d.get_depth_scale()
+                if abs(scale - 1.0) > 1e-6:
+                    depth = np.clip(depth.astype(np.float32) * scale, 0, 65535).astype(np.uint16)
                 self.seq += 1
-                self.latest = (self.seq, pack(pts), len(pts))
+                self.latest = (self.seq, depth.tobytes())
+                if t_frame < self.map_until and t_frame - t_map >= self.map_interval:
+                    t_map = t_frame
+                    pts = to_colour_frame(points_from_depth(depth.reshape(h, w), self.rays, step=2), R, t)
+                    self.map_latest = (depth_map_from_points(pts, K_map, self.MAP_HW), K_map)
                 n_fps += 1
                 if time.time() - t_fps >= 2.0:
                     self.info["fps"] = round(n_fps / (time.time() - t_fps), 1); t_fps, n_fps = time.time(), 0

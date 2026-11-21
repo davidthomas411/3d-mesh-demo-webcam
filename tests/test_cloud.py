@@ -65,3 +65,23 @@ def test_live_anchor_recovers_the_scale_of_a_body_from_a_depth_map_made_of_point
     assert not wall["ok"] and "does not match" in wall["reason"] and wall["scale"] == info["scale"]
     empty = a.update(P, np.zeros(hw), K)                        # nobody in the depth image: keep the last scale, say why
     assert not empty["ok"] and empty["scale"] == info["scale"] and empty["reason"]
+
+
+def test_ray_table_inverts_the_lens_model_and_rebuilds_points_from_depth():
+    """A pixel's ray, pushed back through the camera's lens model, must land on that pixel; depth times ray is the point."""
+    import cv2
+    from depth.cloud import ray_table, points_from_depth
+    fx, fy, cx, cy, w, h = 505.34, 505.41, 336.46, 325.32, 640, 576
+    dist = (15.1418, 8.0094, 1.3e-05, -2.4e-05, 0.3178, 15.4481, 13.1165, 1.9121)            # a Femto Bolt's narrow mode
+    rays = ray_table(fx, fy, cx, cy, dist, w, h)
+    assert rays.shape == (h, w, 2)
+    vv, uu = np.mgrid[40:h - 40:23, 40:w - 40:29]
+    r = rays[vv, uu].reshape(-1, 2).astype(np.float64)
+    K = np.array([[fx, 0, cx], [0, fy, cy], [0, 0, 1.0]])
+    back = cv2.projectPoints(np.column_stack([r, np.ones(len(r))]), np.zeros(3), np.zeros(3), K, np.array(dist))[0].reshape(-1, 2)
+    assert np.abs(back - np.column_stack([uu.ravel(), vv.ravel()])).max() < 0.05           # pixels
+    depth = np.zeros((h, w), np.uint16); depth[100:300, 200:400] = 1500
+    pts = points_from_depth(depth, rays)
+    assert len(pts) == 200 * 200 and np.allclose(pts[:, 2], 1500)
+    assert np.allclose(pts[0, :2], rays[100, 200] * 1500, atol=1e-3)
+    assert len(points_from_depth(depth, rays, step=2)) == 100 * 100

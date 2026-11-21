@@ -1124,13 +1124,10 @@
      * the mesh is placed, so the cloud and the mesh share a space when the page's webcam is the Bolt's colour camera. The
      * cloud is metric and the mesh's distance is an estimate from the picture, so they need not coincide.
      */
-    const CLOUD_MAX = 30000;
     let cloudOn = false, cloudObject = null, cloudSeq = 0;
     // Depth fusion (server: depth/live.py). The server measures ONE number, how much bigger and farther the body really is than
     // the picture alone suggested; the mesh is scaled about the camera by it. Only meaningful when the webcam is the Bolt.
     let boltCamera = false, depthFuse = false, depthScale = 1;
-    const cloudSample = document.createElement("canvas");
-    cloudSample.width = 320; cloudSample.height = 180;
 
     function sendDepthConfig() {
       if (streamSocket && streamSocket.readyState === WebSocket.OPEN) {
@@ -1148,17 +1145,87 @@
       else el.textContent = (info.scale ? "holding x" + info.scale.toFixed(3) + ": " : "") + (info.reason || "no depth");
     }
 
+    /*
+     * One point per depth pixel, made on the graphics card. The server sends the raw depth image (uint16 mm) and, once, the
+     * calibration: for each depth pixel the direction it looks along, the depth-to-colour rotation and offset, and the colour
+     * camera's intrinsics. The vertex shader reads a pixel's depth, puts the point along its ray, moves it into the colour
+     * camera's frame and works out where it lands in the colour picture; the fragment shader takes that pixel of the video.
+     * Points that fall outside the picture, and all points when the webcam is not the Bolt, are coloured by distance.
+     */
+    async function buildCloudObject(statusEl) {
+      const r = await fetch("/cloud/calibration", { cache: "no-store" });
+      if (r.status === 503) {
+        const info = await r.json().catch(() => ({}));
+        if (statusEl) statusEl.textContent = "unavailable: " + (info.error || "no camera");
+        return false;
+      }
+      if (r.status === 404) { if (statusEl) statusEl.textContent = "the server needs a restart for this option"; return false; }
+      if (r.status !== 200) { if (statusEl) statusEl.textContent = "starting the camera..."; return false; }
+      const calib = await r.json();
+      const rr = await fetch("/cloud/rays", { cache: "no-store" });
+      if (rr.status !== 200) return false;
+      const rays = new Float32Array(await rr.arrayBuffer()), w = calib.w, h = calib.h, n = w * h;
+      if (rays.length !== n * 2) return false;
+      const position = new Float32Array(n * 3), duv = new Float32Array(n * 2);
+      for (let i = 0; i < n; i++) {
+        position[i * 3] = rays[i * 2]; position[i * 3 + 1] = rays[i * 2 + 1];           // the ray; z is filled in by the shader
+        duv[i * 2] = ((i % w) + 0.5) / w; duv[i * 2 + 1] = (Math.floor(i / w) + 0.5) / h;
+      }
+      const geometry = new THREE.BufferGeometry();
+      geometry.setAttribute("position", new THREE.BufferAttribute(position, 3));
+      geometry.setAttribute("duv", new THREE.BufferAttribute(duv, 2));
+      const depthTex = new THREE.DataTexture(new Uint8Array(n * 2), w, h, THREE.RGFormat, THREE.UnsignedByteType);   // low byte, high byte
+      depthTex.minFilter = depthTex.magFilter = THREE.NearestFilter; depthTex.unpackAlignment = 1; depthTex.needsUpdate = true;
+      const videoTex = new THREE.VideoTexture(video);
+      videoTex.colorSpace = THREE.SRGBColorSpace;
+      const R = calib.R, material = new THREE.ShaderMaterial({
+        uniforms: {
+          uDepth: { value: depthTex }, uVideo: { value: videoTex }, uUseVideo: { value: 0 }, uSize: { value: 1.5 },
+          uR: { value: new THREE.Matrix3().set(R[0], R[1], R[2], R[3], R[4], R[5], R[6], R[7], R[8]) },
+          uT: { value: new THREE.Vector3(calib.t[0], calib.t[1], calib.t[2]) },
+          uK: { value: new THREE.Vector4(calib.k[0], calib.k[1], calib.k[2], calib.k[3]) },
+        },
+        vertexShader: `
+          attribute vec2 duv;
+          uniform sampler2D uDepth; uniform mat3 uR; uniform vec3 uT; uniform vec4 uK; uniform float uSize;
+          varying vec2 vUv; varying float vZ; varying float vOk;
+          void main() {
+            vec2 b = texture2D(uDepth, duv).rg;
+            float z = floor(b.r * 255.0 + 0.5) + 256.0 * floor(b.g * 255.0 + 0.5);            // mm
+            vOk = (z > 250.0 && z < 6000.0) ? 1.0 : 0.0;
+            vec3 pc = uR * vec3(position.xy * z, z) + uT;                                    // colour camera frame, mm
+            vUv = vec2(uK.x * pc.x / pc.z + uK.z, uK.y * pc.y / pc.z + uK.w);                // where it lands in the picture
+            vZ = pc.z / 1000.0;
+            // the 3-D view's camera space is the colour camera's frame with y and z flipped (as for the mesh)
+            gl_Position = vOk > 0.5 ? projectionMatrix * modelViewMatrix * vec4(pc.x / 1000.0, -pc.y / 1000.0, -pc.z / 1000.0, 1.0)
+                                    : vec4(2.0, 2.0, 2.0, 1.0);
+            gl_PointSize = uSize;
+          }`,
+        fragmentShader: `
+          uniform sampler2D uVideo; uniform float uUseVideo;
+          varying vec2 vUv; varying float vZ; varying float vOk;
+          void main() {
+            if (vOk < 0.5) discard;
+            vec3 c;
+            if (uUseVideo > 0.5 && vUv.x > 0.0 && vUv.x < 1.0 && vUv.y > 0.0 && vUv.y < 1.0) {
+              c = texture2D(uVideo, vec2(vUv.x, 1.0 - vUv.y)).rgb;
+            } else {
+              float t = clamp((vZ - 0.5) / 3.0, 0.0, 1.0);                                   // near: warm, far: cool
+              c = (uUseVideo > 0.5 ? 0.3 : 1.0) * vec3(1.0 - 0.8 * t, 0.85 - 0.35 * abs(t - 0.4), 0.35 + 0.65 * t);
+            }
+            gl_FragColor = vec4(c, 1.0);
+            #include <colorspace_fragment>
+          }`,
+      });
+      cloudObject = new THREE.Points(geometry, material);
+      cloudObject.frustumCulled = false;
+      cloudObject.userData = { depthTex, pixels: n };
+      scene.add(cloudObject);
+      return true;
+    }
+
     function setCloud(on) {
       const statusEl = document.querySelector("#anaCloudStatus");
-      if (on && !cloudObject) {
-        const geometry = new THREE.BufferGeometry();
-        geometry.setAttribute("position", new THREE.BufferAttribute(new Float32Array(CLOUD_MAX * 3), 3));
-        geometry.setAttribute("color", new THREE.BufferAttribute(new Float32Array(CLOUD_MAX * 3), 3));
-        geometry.setDrawRange(0, 0);
-        cloudObject = new THREE.Points(geometry, new THREE.PointsMaterial({ size: 2, sizeAttenuation: false, vertexColors: true }));
-        cloudObject.frustumCulled = false;
-        scene.add(cloudObject);
-      }
       if (cloudObject) cloudObject.visible = on;
       const start = on && !cloudOn;
       cloudOn = on;
@@ -1169,44 +1236,21 @@
     async function cloudLoop(statusEl) {
       const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
       while (cloudOn) {
-        let pause = 40;
+        let pause = 15;
         try {
+          if (!cloudObject) {
+            if (!(await buildCloudObject(statusEl))) { await wait(1000); continue; }
+            cloudObject.visible = cloudOn;
+          }
           const r = await fetch("/cloud?after=" + cloudSeq, { cache: "no-store" });
           if (r.status === 200) {
-            const mm = new Int16Array(await r.arrayBuffer());
+            const bytes = new Uint8Array(await r.arrayBuffer()), tex = cloudObject.userData.depthTex;
             cloudSeq = Number(r.headers.get("X-Cloud-Seq")) || cloudSeq;
-            const n = Math.min(Math.floor(mm.length / 3), CLOUD_MAX), g = cloudObject.geometry;
-            const P = g.attributes.position.array, C = g.attributes.color.array;
-            // Colour: the Bolt's own picture. Each point is projected into the colour camera with the factory intrinsics and
-            // takes the pixel it lands on. Only when the page's webcam IS that camera; otherwise (and outside the picture)
-            // points are coloured by distance, near warm and far cool.
-            const k = (r.headers.get("X-Cloud-K") || "").split(",").map(Number);
-            let rgb = null;
-            const W = cloudSample.width, H = cloudSample.height;
-            if (boltCamera && k.length === 4 && video.videoWidth) {
-              const c2 = cloudSample.getContext("2d", { willReadFrequently: true });
-              c2.drawImage(video, 0, 0, W, H);
-              rgb = c2.getImageData(0, 0, W, H).data;
-            }
-            for (let i = 0; i < n; i++) {
-              const x = mm[i * 3], y = mm[i * 3 + 1], zm = mm[i * 3 + 2], z = zm / 1000;
-              P[i * 3] = x / 1000; P[i * 3 + 1] = -y / 1000; P[i * 3 + 2] = -z;
-              let done = false;
-              if (rgb) {
-                const u = Math.round((k[0] * x / zm + k[2]) * W), v = Math.round((k[1] * y / zm + k[3]) * H);
-                if (u >= 0 && u < W && v >= 0 && v < H) {
-                  const o = (v * W + u) * 4;
-                  C[i * 3] = rgb[o] / 255; C[i * 3 + 1] = rgb[o + 1] / 255; C[i * 3 + 2] = rgb[o + 2] / 255; done = true;
-                }
-              }
-              if (!done) {
-                const t = Math.min(1, Math.max(0, (z - 0.5) / 3.0)), dim = rgb ? 0.35 : 1;
-                C[i * 3] = dim * (1.0 - 0.8 * t); C[i * 3 + 1] = dim * (0.85 - 0.35 * Math.abs(t - 0.4)); C[i * 3 + 2] = dim * (0.35 + 0.65 * t);
-              }
-            }
-            g.setDrawRange(0, n); g.attributes.position.needsUpdate = true; g.attributes.color.needsUpdate = true;
+            if (bytes.length === tex.image.data.length) { tex.image.data.set(bytes); tex.needsUpdate = true; }
+            cloudObject.material.uniforms.uUseVideo.value = boltCamera && video.videoWidth ? 1 : 0;
             const fps = r.headers.get("X-Cloud-Fps"), link = r.headers.get("X-Cloud-Link") || "";
-            if (statusEl) statusEl.textContent = n + " points" + (fps ? ", " + fps + " fps" : "") + (link.includes("2.") ? " (" + link + ": use USB 3 for 30 fps)" : "");
+            if (statusEl) statusEl.textContent = (fps ? fps + " fps" : "on") + (boltCamera ? "" : ", coloured by distance (webcam is not the Bolt)")
+              + (link.includes("2.") ? " (" + link + ": use USB 3 for 30 fps)" : "");
           } else if (r.status === 503) {
             const info = await r.json().catch(() => ({}));
             if (statusEl) statusEl.textContent = "unavailable: " + (info.error || "no camera");

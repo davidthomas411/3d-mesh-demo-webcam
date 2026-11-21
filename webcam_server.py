@@ -704,10 +704,10 @@ def get_cloud():
 
 @app.get("/cloud")
 def cloud():
-    """Latest Femto Bolt point cloud: int16 mm triples in the colour camera's frame (depth/cloud.py). 204 while there is nothing
-    newer than ?after=SEQ, 503 with the reason when the camera or its SDK is not available. Capture runs only while this is polled."""
-    get_cloud()
-    item = cloud_source.get()
+    """Latest Femto Bolt depth image: uint16 millimetres, little-endian, row by row (depth/cloud.py). 204 while there is nothing
+    newer than ?after=SEQ, 503 with the reason when the camera or its SDK is not available. Capture runs only while this is
+    polled. The page turns it into points with /cloud/calibration and /cloud/rays."""
+    item = get_cloud().get()
     if cloud_source.error:
         return jsonify({"error": cloud_source.error}), 503
     try:
@@ -718,9 +718,27 @@ def cloud():
         return Response(status=204)
     info = cloud_source.status()
     return Response(item[1], mimetype="application/octet-stream", headers={
-        "X-Cloud-Seq": str(item[0]), "X-Cloud-Points": str(item[2]), "X-Cloud-Fps": str(info.get("fps", "")),
-        "X-Cloud-Link": str(info.get("connection", "")), "X-Cloud-K": ",".join(f"{v:.6f}" for v in info.get("colour_k", [])),
+        "X-Cloud-Seq": str(item[0]), "X-Cloud-Fps": str(info.get("fps", "")), "X-Cloud-Link": str(info.get("connection", "")),
         "Cache-Control": "no-store"})
+
+
+@app.get("/cloud/calibration")
+def cloud_calibration():
+    """Depth image size, depth-to-colour extrinsics (R row-major, t in mm) and colour intrinsics as fractions of the picture."""
+    get_cloud().get()
+    if cloud_source.error:
+        return jsonify({"error": cloud_source.error}), 503
+    if cloud_source.calibration is None:
+        return Response(status=204)                           # the camera is still starting
+    return jsonify(cloud_source.calibration)
+
+
+@app.get("/cloud/rays")
+def cloud_rays():
+    """For every depth pixel, the direction (x/z, y/z) it looks along: float32 pairs, row by row."""
+    if cloud_source is None or cloud_source.rays is None:
+        return Response(status=204)
+    return Response(cloud_source.rays.tobytes(), mimetype="application/octet-stream")
 
 
 @sock.route("/stream")

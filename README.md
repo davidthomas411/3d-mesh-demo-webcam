@@ -334,14 +334,16 @@ With an Orbbec Femto Bolt attached, the 3-D view's gear menu has two options. Bo
 wrapper 2.1.3, Bolt firmware 1.1.3, Windows) and the camera on a USB 3 port; without the SDK or the camera each option says why
 it is unavailable. The page asks for the Bolt's colour camera as its webcam when one is present.
 
-**Depth point cloud.** The server opens the Bolt's depth stream only (the browser keeps the colour camera), turns frames into
-points with the SDK's own filter (factory calibration, lens distortion included), moves them into the colour camera's frame
-with the factory extrinsics, thins them to 30,000 and serves the latest at `GET /cloud` (`depth/cloud.py`). Each point is
-coloured from the Bolt's own picture: it is projected into the colour camera with the factory intrinsics and takes the pixel it
-lands on (points outside the picture, or any point when the webcam is another camera, are coloured by distance). The depth mode
-is the binned 320 x 288 one and clouds are made at most 15 times a second: converting every 640 x 576 frame slowed inference
-from about 120 to 210 ms, because the capture thread shares the interpreter with the model loop. Capture runs only while an
-option is on.
+**Depth point cloud.** The server opens the Bolt's depth stream only (the browser keeps the colour camera) in the unbinned
+narrow mode, 640 x 576 at 30 fps, and serves the raw depth image at `GET /cloud` (uint16 mm). The calibration goes to the page
+once: for every depth pixel the direction it looks along (`/cloud/rays`, from the factory intrinsics and lens distortion,
+iterated to convergence; it matches the SDK's own point-cloud filter to a median 0.004 mm at 1.5 m), and the depth-to-colour
+extrinsics and colour intrinsics (`/cloud/calibration`). The graphics card then makes one point per depth pixel, 368,640 of
+them: the vertex shader reads the pixel's depth, puts the point along its ray, moves it into the colour camera's frame and
+finds where it lands in the colour picture; the fragment shader takes that pixel of the live video. Points outside the
+picture, and all points when the webcam is another camera, are coloured by distance. The server does no per-point work, so
+the cloud costs the model loop nothing; an earlier version that made and thinned the points in Python (30,000 points) was
+both coarser and slowed inference from about 120 to 210 ms. Capture runs only while an option is on (`depth/cloud.py`).
 
 **Mesh distance and size from depth** (`depth/live.py`). A body mesh estimated from one picture has an unknown overall scale:
 making it s times bigger and s times farther from the camera leaves its outline where it was. The server measures that one
@@ -351,9 +353,9 @@ While this is on and the webcam is the Bolt, the model is also given the Bolt's 
 estimated from the picture. A fit worse than 60 mm rms is refused ("depth does not match the mesh") and the last good scale is
 kept. It adds no measurable latency (129 ms round trip with it on or off).
 
-- Checked: the scale is recovered to 1% on a synthetic body (`tests/test_cloud.py`), and the server path runs against the real
-  camera's depth. **Not yet checked on a live person**: the fit quality and the scale value on a real body, and whether the
-  cloud's colours line up with the picture.
+- Checked: the scale is recovered to 1% on a synthetic body and the ray table inverts the lens model to 0.05 pixel
+  (`tests/test_cloud.py`); the server path and the dense cloud run against the real camera. **Not yet checked on a live
+  person**: the fit quality and the scale value on a real body, and whether the cloud's colours line up with the picture.
 - Depth frame and picture are not time-matched: the newest depth is used. The scale changes slowly and is filtered, so this
   matters little for it; it would matter for a per-frame pose refinement, which is not done here.
 
