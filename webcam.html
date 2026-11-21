@@ -1113,6 +1113,13 @@
       }
       document.querySelector("#anaCloud").addEventListener("change", (e) => setCloud(e.target.checked));
       document.querySelector("#anaCloudPerson").addEventListener("change", (e) => { cloudPersonOnly = e.target.checked; });
+      if (boltCamera) {
+        // The webcam is the Femto Bolt: the depth fit is what this set-up is for, so it starts switched on. If the depth
+        // camera cannot be opened the server says why and the model's own mesh is shown, as without it.
+        depthFuse = true;
+        document.querySelector("#anaFuse").checked = true;
+        sendDepthConfig();
+      }
       document.querySelector("#anaFuse").addEventListener("change", (e) => {
         depthFuse = e.target.checked;
         if (!depthFuse) { depthScale = 1; fitStats.n = 0; fitStats.last = 0; document.querySelector("#anaFuseStatus").textContent = ""; }

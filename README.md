@@ -330,7 +330,7 @@ These values are deployment observations, not guaranteed benchmarks.
 
 ## Femto Bolt in the page: point cloud and depth fusion
 
-With an Orbbec Femto Bolt attached, the 3-D view's gear menu has two options. Both need `pip install pyorbbecsdk2` (tested:
+With an Orbbec Femto Bolt attached, the 3-D view's gear menu has three options (point cloud, only the person, fit the mesh to the depth). Both need `pip install pyorbbecsdk2` (tested:
 wrapper 2.1.3, Bolt firmware 1.1.3, Windows) and the camera on a USB 3 port; without the SDK or the camera each option says why
 it is unavailable. The page asks for the Bolt's colour camera as its webcam when one is present.
 
@@ -345,19 +345,78 @@ picture, and all points when the webcam is another camera, are coloured by dista
 the cloud costs the model loop nothing; an earlier version that made and thinned the points in Python (30,000 points) was
 both coarser and slowed inference from about 120 to 210 ms. Capture runs only while an option is on (`depth/cloud.py`).
 
-**Mesh distance and size from depth** (`depth/live.py`). A body mesh estimated from one picture has an unknown overall scale:
-making it s times bigger and s times farther from the camera leaves its outline where it was. The server measures that one
-number against the depth (robust median of measured depth over mesh depth, over the vertices the camera can see), filters it,
-and the page scales the mesh about the camera by it; the shift readouts are scaled with it. Pose and outline are untouched.
-While this is on and the webcam is the Bolt, the model is also given the Bolt's factory intrinsics instead of a focal length
-estimated from the picture. A fit worse than 60 mm rms is refused ("depth does not match the mesh") and the last good scale is
-kept. It adds no measurable latency (129 ms round trip with it on or off).
+**Fit the mesh to the depth (low latency)** (`depth/fit.py`, `depth/tracker.py`). On by default when the page's webcam is the
+Bolt. The mesh shown is no longer the RGB model's: it is the model's newest mesh fitted to the newest depth frame, so it sits on
+the measured surface and is as old as the depth frame, not as old as the picture.
 
-- Checked: the scale is recovered to 1% on a synthetic body and the ray table inverts the lens model to 0.05 pixel
-  (`tests/test_cloud.py`); the server path and the dense cloud run against the real camera. **Not yet checked on a live
-  person**: the fit quality and the scale value on a real body, and whether the cloud's colours line up with the picture.
-- Depth frame and picture are not time-matched: the newest depth is used. The scale changes slowly and is filtered, so this
-  matters little for it; it would matter for a per-frame pose refinement, which is not done here.
+Why: the model's mesh has the right outline in the picture but a guessed distance (in the recordings below it is 130-155 mm
+behind the measured surface), and it reaches the screen 150-350 ms after the picture was taken, five to seven times a second,
+while the depth arrives thirty times a second. Shown together, the mesh trails the point cloud and floats behind it.
+
+The fit, per depth frame, in three stages, each explaining what the previous one cannot:
+
+1. **Distance.** Every body part gets a scale about the camera (a point slides along its ray, the outline does not move): the
+   weighted mean of measured depth over mesh depth at the part's visible vertices. A part with no evidence takes its parent's.
+2. **Pose.** Articulated point-to-plane ICP over 19 body parts. Each part gets a small rigid motion; a vertex moves with the
+   blend of its parts' motions (the body model's own skinning weights). One Gauss-Newton solve for all parts, with a term
+   that keeps a part attached to its parent and damping that is strong only where the camera sees little of a part.
+3. **Surface.** What is left is shape (clothing, build, breathing). Each visible vertex's remaining error along its ray is
+   spread over the mesh by a few rounds of smoothing and applied; it fades into what the camera cannot see.
+
+Stages 1 and 2 are similarity transforms per part, so the joints go through them too and the skeleton follows; stage 3 moves
+the skin only. The depth is read as the camera delivers it: a vertex is taken into the depth camera's frame and through its
+lens model to a pixel, and compared with the 3-D point that pixel measures. Pixels on a depth edge are not used.
+
+Over time (`LiveFit`): each frame's fit starts from the previous frame's part transforms and takes one pose step. A step that
+would move what the camera sees by less than 0.8 mm is not taken (point-to-plane ICP otherwise creeps along surfaces for
+ever, which shows as shimmer and as skin sliding over the anatomy). The surface offsets are averaged with the previous
+frame's, and start afresh when the model delivers a new mesh. The model's own mesh is not sent while fitted meshes flow.
+
+**Measured** (`tools/evaluate_fit.py`, `tools/replay_stream.py`, `tests/test_fit.py`), on three recordings of one person
+seated 55 cm from the camera (360 frames; head, shoulders, upper arms in view) and on a synthetic body with known truth:
+
+| Held-out vertices, error along the ray (mm) | rms | median | 90th pct |
+|---|---|---|---|
+| mesh from the picture alone | 138-155 | 125-144 | 174-185 |
+| one scale about the camera | 17-19 | 7.4-8.4 | 25-28 |
+| 1 distance per part | 15-16 | 8.2-8.8 | 23-26 |
+| 2 + articulated pose | 14 | 6.4-6.8 | 21-24 |
+| 3 + surface | 4.4-5.2 | **0.9** | 4.5-5.3 |
+
+- Held-out: the fit sees a random 70% of the vertices and the error is measured on the other 30%. After stage 3, 74-75% of
+  them are within 2 mm of the measured surface and 89-91% within 5 mm. The tail is the upper arms and the lower edge of the
+  picture, where the measured surface is the shirt, in front of the body.
+- Synthetic truth (a body 12% nearer than the model thought, leaning 6 degrees): along the ray the fit ends under 1 mm; in 3-D
+  the visible vertices are a median 3.6 mm from the true ones (90% within 10.7 mm) and the hidden ones 10.6 mm. So the
+  SURFACE is matched to under a millimetre; WHICH skin point is where is known to a few millimetres, because a depth image
+  does not hold a smooth surface against sliding along itself.
+- Stability: on an unchanged frame the fit stops moving entirely. With 1 mm of depth noise per pixel on a still body, a
+  vertex changes by a median 0.24 mm between frames and the fitted surface is a median 0.39 mm from the true one.
+- Speed: 25-31 ms a fit when tracking (56 ms from scratch) on its own; 43 ms inside the server, where it shares the Python
+  interpreter with the model loop. The model loop is not slowed (114-117 ms inference, as without it).
+- Latency, replaying a recording through the server (the depth frames served as if live, thirty a second): 22 fitted meshes
+  a second; the depth frame is a median 64 ms old (95th percentile 85 ms) when its fitted mesh reaches the client. In a
+  headless browser on the same computer the page reported 104 ms from depth frame to screen. Not included, because it
+  cannot be measured from here: the time from the scene to the depth frame arriving at the computer (exposure, read-out,
+  USB). **Not yet run against the live camera**: it was unplugged before this path was written.
+
+Limits, plainly:
+- The surface it matches is whatever the depth camera sees. Through clothing that is cloth, not skin.
+- Sub-millimetre is the distance to the measured surface. It is not a claim about the anatomy inside: bones follow the body
+  parts' transforms, and a part's position along the surface is only known to a few millimetres (above).
+- All recordings are one seated person at 55 cm, which is the near limit of the depth mode (0.5 m). Standing, full body,
+  arms reaching towards the camera, and fast motion are untested.
+- When the model delivers a new mesh, parts the depth camera cannot see can jump by the model's own frame-to-frame noise.
+
+To reproduce: record with the page streaming (`GET /record?frames=150&name=NAME`, saved to `../recordings/`), then
+`python tools/evaluate_fit.py mhr_model.pt ../recordings/NAME.npz` and `python tools/fit_figure.py mhr_model.pt
+../recordings/NAME.npz out.png`. To run the server path without the camera: `set CLOUD_REPLAY=..\recordings\NAME.npz`,
+`set PORT=8098`, `run_local.cmd`, then `python tools/replay_stream.py ../recordings/NAME.npz`; the page can be pointed at it
+with `http://127.0.0.1:8098/?bolt=1`.
+
+**Point cloud: only the person.** A point is kept if it lies on the body mesh as the colour camera sees it: the mesh's depth
+is drawn from that camera into a small target and the cloud's shader looks each point up there (5 cm tolerance with the depth
+fit on; 30% of the distance without it, since the mesh's distance is then only an estimate).
 
 ## Femto Bolt depth fusion with ICP (experimental, older, not used by the page)
 
