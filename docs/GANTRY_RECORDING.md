@@ -59,12 +59,73 @@ one cloud (`fuse ... --flat-above`). If the geometry were wrong the cube would s
 So the depth-only calibration is good to roughly 4 mm. That is enough to reconstruct and to study pose by angle; it is not
 enough for the clinical aim. The systematic drift with angle is what the cube is for (next steps).
 
+## Calibration with the cube (`tools/aprilcube_target.py`, `tools/gantry_cube.py`)
+
+The cube is an [aprilcube](https://github.com/younghyopark/aprilcube) target (MIT). No `config.json` came with the
+recording, so the cube was identified from the pictures: 6x6 ArUco markers, ids 0-53, three by three on each face, which is
+`aprilcube generate --grid 3x3x3 --dict 6x6_100 --tag-size 30` with the default one-cell margin and border, a 105 mm cube.
+The border was confirmed by the reprojection error across two or more faces (0.86 px at one cell, 1.1-1.6 px at any other
+width). aprilcube is not installed: its layout rules (face order, marker order, corner order) are restated in
+`aprilcube_target.py`, which also reads an aprilcube `config.json` (`--config`). **The 30 mm marker size is inferred, not
+known**: the depth puts the markers' spacing at 33.9 mm against 33.75 nominal. Measure the cube, or supply its config.
+
+The cube stands still on the couch (on a stand, tilted, so that three faces show), so its pose in each picture is the
+camera's pose in the cube's frame, and those poses lie on a circle about the gantry's axis.
+
+1. **Pose per frame.** All visible markers at once (PnP, as aprilcube does). Then the position, not the orientation, is
+   corrected with the depth on the cube's faces.
+2. **Fit a rotation.** One axis, one point on it, one camera pose at angle 0, and an angle per frame.
+3. **Table of departures.** What is left over (sag, wobble, and the pose's own noise), as medians in 10-degree bins, added
+   back when a pose is asked for.
+4. **Angle for frames without the cube.** The depth-only angle above, mapped by a straight line fitted on the cube sweep.
+
+Two things turned up on the way and shaped the method:
+
+- **Markers alone put the cube about 8 mm too near** (at 0.77 m, about 1%). The markers fix direction well and distance
+  weakly, and either the cube is about 1% larger than assumed or the depth reads long (the Bolt's specification allows
+  11 mm). The depth clouds are what is being fused, so the depth sets the distance.
+- **The depth must not set the cube's orientation.** On faces this small and oblique the depth camera's planes are tilted
+  by a few degrees (two faces of the cube measure 89.4 degrees apart in a single frame, 86.6 to 91.7 over the sweep).
+  Letting them turn the cube put the gantry angle 5 degrees out at the far end of the sweep. The markers and the room's
+  planes, which share nothing, agree: 170.4 and 171.0 degrees.
+
+Result:
+
+| | |
+|---|---|
+| frames with a cube pose | 475, of which 430 with two or more faces |
+| sweep | -0.6 to 170.8 degrees |
+| cube centre to the gantry axis | 4 mm (the cube was put at the isocentre, or very near) |
+| camera to axis | 766 mm (depth only: 778) |
+| depth-only calibration against the cube | axis direction 0.64 degrees off, axis position 10 mm off, angle 0.6 degrees rms (2.3 worst) |
+| cube centre as the fitted rotation places it, over the sweep | 1.9 mm rms, 4.1 worst |
+| the same with the table of departures | 0.7 mm rms, 2.0 worst (fitted and tested on the same sweep) |
+
+**Check against the cube's true faces.** The depth of 167 frames, taken to the cube frame, against the six planes of a
+105 mm cube (signed distance of every depth point lying over a face):
+
+| Camera pose from | rms | 95% within | bias |
+|---|---|---|---|
+| depth-only calibration (above; thickness of the fused faces, not distance to truth) | 3.5 - 4.1 mm | | drift 6 mm |
+| markers alone, each frame | 4.7 mm | 9.6 mm | 0.7 mm |
+| markers + depth, each frame | 2.6 | 5.0 | 0.1 |
+| fitted rotation at the cube's angle | 2.6 | 5.1 | 0.1 |
+| **fitted rotation at the depth-only angle** (what a frame without the cube gets) | **2.7** | **5.2** | **0.1** |
+
+So a frame of the person is placed as well as a frame in which the cube itself is visible. What is left, 2.6 mm, is no
+longer the gantry model: a single depth frame is already 1.8 mm rms on a cube face and biased by up to 3 mm from face to
+face. That is this depth camera on a small, oblique, black-and-white target; it is the floor for this check, and it is
+not sub-millimetre.
+
+Room frame from here on (`fuse ... --cube`): origin at the **cube's centre**, Y along the gantry axis, Z up. In the
+depth-only frame the cube's centre is at (8, 271, 1) mm.
+
 ## The person, extracted and rebuilt
 
 With the camera's pose known, "the person" is simply what lies in a box above the couch top in the room frame, after the
 gantry-fixed pixels are removed. Ninety-one frames of the person sweep fuse into 4.9 million coloured points covering the
 head and upper trunk from one side over the top to the other (`person.ply`, and `person.jpg` with front, side and top
-views). The legs were never in view. The person breathes and the fusion is rigid, so the chest is blurred by that much.
+views; `person_iso` is the same with the cube calibration, origin at the cube's centre). The legs were never in view. The person breathes and the fusion is rigid, so the chest is blurred by that much.
 
 ## Pose tracking from the rotating camera
 
@@ -96,16 +157,21 @@ orientation the model likes best before it is given to it, and the fused cloud s
     python tools/gantry_recording.py FOLDER fuse OUT_DIR cube   --frames 300:1800:15  --box -200,200,60,460,-180,220 --flat-above -39
     python tools/gantry_recording.py FOLDER fuse OUT_DIR person --frames 4440:5530:12 --box -420,420,-500,1100,-70,380
     python tools/gantry_recording.py FOLDER pose OUT_DIR --frames 4410:5560:36      (needs the demo server running)
+    python tools/gantry_recording.py FOLDER cube OUT_DIR --frames 0:2500:5          (after calibrate; --config for an aprilcube config.json)
+    python tools/gantry_recording.py FOLDER fuse OUT_DIR person_iso --frames 4440:5530:12 --box -430,410,-770,830,-70,380 --cube
 
 Boxes are x0,x1,y0,y1,z0,z1 in the room frame, millimetres: origin on the axis, Y along the axis, Z up.
 
 ## Not done yet
 
-- **Absolute gantry 0 and the isocentre.** Angle 0 is "where the gantry stood at frame 0", and the origin is arbitrary
-  along the axis. The treatment head is fixed in the camera's view, so the beam direction can be measured from its face and
-  compared with the floor; that gives absolute gantry angle and, with the axis, the isocentre.
-- **Calibration with the cube.** Detect the cube's markers, or register each frame's cube to the fused one, to remove the
-  drift with angle and to tie the room frame to the cube.
+- **Absolute gantry 0.** Angle 0 is "where the gantry stood at frame 0". The treatment head is fixed in the camera's view,
+  so the beam direction can be measured from its face and compared with the floor. The origin is now the cube's centre,
+  4 mm from the axis; whether the cube was set to the lasers is not recorded.
+- **The cube's true size**, and with it whether the depth reads 1% long. Callipers on the cube, or its `config.json`.
+- **A depth error map.** The cube shows face-dependent depth errors of up to 3 mm. A larger flat target seen at several
+  distances and angles would map them (docs/DEPTH_STUDY.md, experiment 3).
+- **The table of departures is tested on the sweep it was fitted on.** A second cube sweep would test it properly, and
+  would say how repeatable the gantry is.
 - **Upload in the page** (depth, infrared, colour files instead of a live camera).
 - **Pose given the angle**, and a head detector for extreme roll if that is not enough.
 - The infrared stream is unused.

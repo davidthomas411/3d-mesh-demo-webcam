@@ -168,18 +168,25 @@ def calibrate(rec, out_dir, step=24, fine=6, floor=None):
     return info
 
 
-def fuse(rec, out_dir, name, frames, box, step=2):
+def fuse(rec, out_dir, name, frames, box, step=2, cube=False):
     """Every frame's points taken to the room frame; those inside box = (x0, x1, y0, y1, z0, z1) are kept, with their colours.
-    Writes NAME.npz (X, C as BGR, T = gantry angle), NAME.ply and NAME.jpg (front, side and top views)."""
+    Writes NAME.npz (X, C as BGR, T = gantry angle), NAME.ply and NAME.jpg (front, side and top views).
+    cube=True: the camera's pose comes from the cube calibration (gantry_cube.py) at the depth-only angle, and the origin
+    is the cube's centre."""
     import cv2
     geo = GantryGeometry(os.path.join(out_dir, "geometry.npz"))
+    to_room = geo.to_room
+    if cube:
+        from gantry_cube import CubeGantry
+        cg = CubeGantry(os.path.join(out_dir, "cube_geometry.npz"))
+        to_room = lambda P, i: cg.to_room(P, cg.angle_from_planes(geo.angle(i)))
     pts, cols, ths = [], [], []
     for i in frames:
         z, im = rec.depth(i), rec.color(i)
         if z is None or im is None:
             continue
         P, (v, u) = rec.points(z, mask=~geo.fixed, step=step)
-        X = geo.to_room(P, i)
+        X = to_room(P, i)
         m = (X[:, 0] > box[0]) & (X[:, 0] < box[1]) & (X[:, 1] > box[2]) & (X[:, 1] < box[3]) & (X[:, 2] > box[4]) & (X[:, 2] < box[5])
         pts.append(X[m].astype(np.float32)); cols.append(im[v[m], u[m]]); ths.append(np.full(int(m.sum()), geo.angle(i), np.float32))
     X, C, T = np.vstack(pts), np.vstack(cols), np.concatenate(ths)

@@ -14,7 +14,8 @@ Because the depth is aligned to the colour picture, a depth pixel (u, v) with va
     python tools/gantry_recording.py FOLDER info
     python tools/gantry_recording.py FOLDER sheet OUT.jpg [--n 24]
     python tools/gantry_recording.py FOLDER calibrate OUT_DIR [--floor K]     gantry angle and axis per frame, from the depth
-    python tools/gantry_recording.py FOLDER fuse OUT_DIR NAME --frames a:b:step --box x0,x1,y0,y1,z0,z1 [--flat-above Z]
+    python tools/gantry_recording.py FOLDER cube OUT_DIR [--frames a:b:step] [--config aprilcube config.json]   calibrate from the cube
+    python tools/gantry_recording.py FOLDER fuse OUT_DIR NAME --frames a:b:step --box x0,x1,y0,y1,z0,z1 [--flat-above Z] [--cube]
     python tools/gantry_recording.py FOLDER pose OUT_DIR [--frames a:b:step] [--url ws://127.0.0.1:8098/stream]
 """
 import json
@@ -216,10 +217,17 @@ def main():
         gg.calibrate(rec, sys.argv[3], floor=arg("--floor"))
     elif cmd == "fuse":
         import gantry_geometry as gg
-        X, C, T = gg.fuse(rec, sys.argv[3], sys.argv[4], parse_frames(arg("--frames", "0::30"), rec.n), [float(x) for x in arg("--box").split(",")], int(arg("--step", 2)))
+        X, C, T = gg.fuse(rec, sys.argv[3], sys.argv[4], parse_frames(arg("--frames", "0::30"), rec.n), [float(x) for x in arg("--box").split(",")], int(arg("--step", 2)), cube="--cube" in sys.argv)
         if "--flat-above" in sys.argv:                            # a cube: how flat are its faces once fused?
             m = X[:, 2] > float(arg("--flat-above"))
             print(json.dumps(gg.flatness(X[m].astype(np.float64), T[m]), indent=1))
+    elif cmd == "cube":                                           # calibrate from the aprilcube target, then check against the depth
+        import gantry_cube as gc
+        from aprilcube_target import Cube
+        cube = Cube.from_config(arg("--config")) if arg("--config") else Cube()
+        fr = parse_frames(arg("--frames", "0:2500:5"), rec.n)
+        gc.calibrate(rec, sys.argv[3], fr, cube)
+        gc.check(rec, sys.argv[3], fr[::3], cube)
     elif cmd == "probe":
         mc = ModelClient(arg("--url", "ws://127.0.0.1:8098/stream"))
         meta, verts = mc.infer(rec.color(int(sys.argv[3])))
